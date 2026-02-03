@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from loops.run_record import (
     CodexSession,
     RunPR,
@@ -72,3 +74,19 @@ def test_write_run_record_writes_required_keys(tmp_path) -> None:
 
     roundtrip = read_run_record(path)
     assert roundtrip.task.id == record.task.id
+
+
+def test_read_run_record_rejects_non_bool_needs_user_input(tmp_path) -> None:
+    payload = {
+        "task": _task().to_dict(),
+        "pr": None,
+        "codex_session": None,
+        "needs_user_input": "false",
+        "last_state": "RUNNING",
+        "updated_at": "2026-02-03T00:00:00Z",
+    }
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps(payload))
+
+    with pytest.raises(TypeError):
+        read_run_record(path)

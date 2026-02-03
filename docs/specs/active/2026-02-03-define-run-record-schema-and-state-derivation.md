@@ -124,3 +124,4 @@ State derivation rules from `DESIGN.md`:
 ## Notes
 
 - Default layout chosen: `loops/` package + `tests/`.
+- Added CI workflow and Makefile during PR feedback fixes, plus stricter input validation.

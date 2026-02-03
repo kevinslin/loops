@@ -137,6 +137,9 @@ def _now_iso() -> str:
 
 def read_run_record(path: str | Path) -> RunRecord:
     payload = json.loads(Path(path).read_text())
+    needs_user_input = payload.get("needs_user_input")
+    if not isinstance(needs_user_input, bool):
+        raise TypeError('payload["needs_user_input"] must be a boolean')
     return RunRecord(
         task=Task.from_dict(payload["task"]),
         pr=RunPR.from_dict(payload["pr"]) if payload.get("pr") else None,
@@ -145,7 +148,7 @@ def read_run_record(path: str | Path) -> RunRecord:
             if payload.get("codex_session")
             else None
         ),
-        needs_user_input=bool(payload["needs_user_input"]),
+        needs_user_input=needs_user_input,
         last_state=payload["last_state"],
         updated_at=payload["updated_at"],
     )
