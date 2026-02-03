@@ -54,14 +54,14 @@ State derivation rules from `DESIGN.md`:
 ## Steps
 
 ### Phase 1: Schema and Helpers
-- [ ] Create `loops` package structure.
-- [ ] Implement dataclasses and JSON serialization for run record.
-- [ ] Implement `derive_run_state` function.
-- [ ] Implement `read_run_record`/`write_run_record` helpers that ensure required keys and cache `last_state`.
+- [x] Create `loops` package structure.
+- [x] Implement dataclasses and JSON serialization for run record.
+- [x] Implement `derive_run_state` function.
+- [x] Implement `read_run_record`/`write_run_record` helpers that ensure required keys and cache `last_state`.
 
 ### Phase 2: Tests
-- [ ] Add pytest coverage for the four required cases.
-- [ ] Verify `run.json` includes required keys and `last_state` is cached.
+- [x] Add pytest coverage for the four required cases.
+- [x] Verify `run.json` includes required keys and `last_state` is cached.
 
 **Dependencies between phases:**
 - Tests depend on helper implementations.
