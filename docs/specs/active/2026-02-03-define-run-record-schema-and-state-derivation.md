@@ -1,7 +1,7 @@
 # Execution Plan: Define run record schema and state derivation
 
 **Date:** 2026-02-03
-**Status:** In Progress
+**Status:** Completed
 
 ---
 
@@ -114,10 +114,10 @@ State derivation rules from `DESIGN.md`:
 
 ## Success Criteria
 
-- [ ] `run.json` schema matches `DESIGN.md` and includes required keys.
-- [ ] `derive_run_state` covers all required cases.
-- [ ] Tests cover the four specified scenarios.
-- [ ] Tests pass.
+- [x] `run.json` schema matches `DESIGN.md` and includes required keys.
+- [x] `derive_run_state` covers all required cases.
+- [x] Tests cover the four specified scenarios.
+- [x] Tests pass.
 
 ---
 
