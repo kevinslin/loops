@@ -45,8 +45,9 @@ Create a small `loops` Python package with dataclasses (or typed dicts) for `Tas
 ### Important Context
 State derivation rules from `DESIGN.md`:
 - `NEEDS_INPUT` if `needs_user_input` is true.
+- `DONE` if PR exists and `merged_at` is set.
+- `PR_APPROVED` if PR exists, review status is approved, and `needs_user_input` is false.
 - `WAITING_ON_REVIEW` if PR exists and review status is not approved.
-- `DONE` if PR exists, review status is approved, and `needs_user_input` is false.
 - `RUNNING` otherwise.
 
 ---
@@ -116,7 +117,7 @@ State derivation rules from `DESIGN.md`:
 
 - [x] `run.json` schema matches `DESIGN.md` and includes required keys.
 - [x] `derive_run_state` covers all required cases.
-- [x] Tests cover the four specified scenarios.
+- [x] Tests cover the required scenarios (including PR-approved vs merged).
 - [x] Tests pass.
 
 ---

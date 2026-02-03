@@ -30,8 +30,17 @@ def test_derive_run_state_needs_input() -> None:
 
 
 def test_derive_run_state_done() -> None:
-    pr = RunPR(url="https://example.com/pr/1", review_status="approved")
+    pr = RunPR(
+        url="https://example.com/pr/1",
+        review_status="approved",
+        merged_at="2026-02-03T00:00:00Z",
+    )
     assert derive_run_state(pr, False) == "DONE"
+
+
+def test_derive_run_state_pr_approved() -> None:
+    pr = RunPR(url="https://example.com/pr/1", review_status="approved")
+    assert derive_run_state(pr, False) == "PR_APPROVED"
 
 
 def test_derive_run_state_waiting_on_review() -> None:

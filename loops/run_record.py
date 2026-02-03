@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Literal, Mapping, Optional
 
-RunState = Literal["RUNNING", "WAITING_ON_REVIEW", "NEEDS_INPUT", "DONE"]
+RunState = Literal["RUNNING", "WAITING_ON_REVIEW", "NEEDS_INPUT", "PR_APPROVED", "DONE"]
 ReviewStatus = Literal["open", "changes_requested", "approved"]
 
 
@@ -55,6 +55,7 @@ class RunPR:
     number: Optional[int] = None
     repo: Optional[str] = None
     review_status: Optional[ReviewStatus] = None
+    merged_at: Optional[str] = None
     last_checked_at: Optional[str] = None
 
     @staticmethod
@@ -64,6 +65,7 @@ class RunPR:
             number=data.get("number"),
             repo=data.get("repo"),
             review_status=data.get("review_status"),
+            merged_at=data.get("merged_at"),
             last_checked_at=data.get("last_checked_at"),
         )
 
@@ -75,6 +77,8 @@ class RunPR:
             payload["repo"] = self.repo
         if self.review_status is not None:
             payload["review_status"] = self.review_status
+        if self.merged_at is not None:
+            payload["merged_at"] = self.merged_at
         if self.last_checked_at is not None:
             payload["last_checked_at"] = self.last_checked_at
         return payload
@@ -124,10 +128,12 @@ class RunRecord:
 def derive_run_state(pr: Optional[RunPR], needs_user_input: bool) -> RunState:
     if needs_user_input:
         return "NEEDS_INPUT"
-    if pr is not None and pr.review_status != "approved":
-        return "WAITING_ON_REVIEW"
-    if pr is not None and pr.review_status == "approved":
+    if pr is not None and pr.merged_at is not None:
         return "DONE"
+    if pr is not None and pr.review_status == "approved":
+        return "PR_APPROVED"
+    if pr is not None:
+        return "WAITING_ON_REVIEW"
     return "RUNNING"
 
 
