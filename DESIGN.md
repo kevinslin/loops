@@ -76,7 +76,7 @@ type Task = {
 
 }
 
-type RunState = "RUNNING" | "WAITING_ON_REVIEW" | "NEEDS_INPUT" | "DONE"
+type RunState = "RUNNING" | "WAITING_ON_REVIEW" | "NEEDS_INPUT" | "PR_APPROVED" | "DONE"
 
 type RunPR = {
     url: string
@@ -84,6 +84,7 @@ type RunPR = {
     repo?: string
     // open | changes_requested | approved
     review_status?: "open" | "changes_requested" | "approved"
+    merged_at?: string
     last_checked_at?: string
 }
 
@@ -182,9 +183,10 @@ Task provider (GitHub Projects V2)
 
 `run.json` fields (minimal set):
 - `task`: serialized `Task` from the provider.
-- `pr`: `{ url, number, repo, review_status, last_checked_at }`.
+- `pr`: `{ url, number, repo, review_status, merged_at, last_checked_at }`.
+- `pr.merged_at`: optional ISO timestamp when the PR was merged.
 - `codex_session`: `{ id, last_prompt }`.
-- `needs_user_input`: boolean flag.
+- `needs_user_input`: boolean flag (readers must validate this is a boolean and reject malformed values).
 - `last_state`: cached derived state.
 - `updated_at`: ISO timestamp.
 
@@ -205,8 +207,9 @@ Task provider (GitHub Projects V2)
 
 Derived states:
 - `NEEDS_INPUT` if `needs_user_input == true`.
+- `DONE` if a PR exists and `merged_at` is set (merged).
+- `PR_APPROVED` if a PR exists, `review_status` is approved, and `needs_user_input == false`.
 - `WAITING_ON_REVIEW` if a PR exists and `review_status` is not approved.
-- `DONE` if a PR exists and `review_status` is approved and `needs_user_input == false`.
 - `RUNNING` otherwise.
 
 State derivation uses only PR status plus the single `needs_user_input` flag; `last_state` is cached in `run.json`.
