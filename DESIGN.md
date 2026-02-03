@@ -184,7 +184,7 @@ Task provider (GitHub Projects V2)
 - `task`: serialized `Task` from the provider.
 - `pr`: `{ url, number, repo, review_status, last_checked_at }`.
 - `codex_session`: `{ id, last_prompt }`.
-- `needs_user_input`: boolean flag.
+- `needs_user_input`: boolean flag (readers must validate this is a boolean and reject malformed values).
 - `last_state`: cached derived state.
 - `updated_at`: ISO timestamp.
 
