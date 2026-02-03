@@ -1,0 +1,171 @@
+import pytest
+
+from loops.providers.github_projects_v2 import (
+    GithubProjectsV2TaskProvider,
+    GithubProjectsV2TaskProviderConfig,
+    _extract_status_value,
+    _map_item_to_task,
+    parse_project_url,
+)
+
+
+def test_parse_project_url_org() -> None:
+    locator = parse_project_url("https://github.com/orgs/acme/projects/42")
+    assert locator.owner_type == "organization"
+    assert locator.login == "acme"
+    assert locator.number == 42
+
+
+def test_parse_project_url_user() -> None:
+    locator = parse_project_url("https://github.com/users/octo/projects/3")
+    assert locator.owner_type == "user"
+    assert locator.login == "octo"
+    assert locator.number == 3
+
+
+def test_parse_project_url_invalid() -> None:
+    with pytest.raises(ValueError):
+        parse_project_url("https://github.com/acme/projects")
+
+
+def test_extract_status_value() -> None:
+    assert (
+        _extract_status_value(
+            {
+                "__typename": "ProjectV2ItemFieldSingleSelectValue",
+                "name": "Ready",
+            }
+        )
+        == "Ready"
+    )
+    assert (
+        _extract_status_value(
+            {
+                "__typename": "ProjectV2ItemFieldTextValue",
+                "text": "Backlog",
+            }
+        )
+        == "Backlog"
+    )
+    assert _extract_status_value(None) == ""
+
+
+def test_map_item_to_task_issue() -> None:
+    item = {
+        "id": "PVTI_1",
+        "fieldValueByName": {
+            "__typename": "ProjectV2ItemFieldSingleSelectValue",
+            "name": "Ready",
+        },
+        "content": {
+            "__typename": "Issue",
+            "id": "ISSUE_1",
+            "title": "Ship it",
+            "url": "https://github.com/acme/repo/issues/1",
+            "createdAt": "2026-02-03T00:00:00Z",
+            "updatedAt": "2026-02-03T01:00:00Z",
+            "repository": {"nameWithOwner": "acme/repo"},
+        },
+    }
+    task = _map_item_to_task(item)
+    assert task is not None
+    assert task.title == "Ship it"
+    assert task.status == "Ready"
+    assert task.repo == "acme/repo"
+
+
+def test_poll_maps_tasks(monkeypatch) -> None:
+    response = {
+        "data": {
+            "organization": {
+                "projectV2": {
+                    "items": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [
+                            {
+                                "id": "PVTI_1",
+                                "fieldValueByName": {
+                                    "__typename": "ProjectV2ItemFieldSingleSelectValue",
+                                    "name": "Ready",
+                                },
+                                "content": {
+                                    "__typename": "Issue",
+                                    "id": "ISSUE_1",
+                                    "title": "Ship it",
+                                    "url": "https://github.com/acme/repo/issues/1",
+                                    "createdAt": "2026-02-03T00:00:00Z",
+                                    "updatedAt": "2026-02-03T01:00:00Z",
+                                    "repository": {"nameWithOwner": "acme/repo"},
+                                },
+                            },
+                            {
+                                "id": "PVTI_2",
+                                "fieldValueByName": {
+                                    "__typename": "ProjectV2ItemFieldSingleSelectValue",
+                                    "name": "Ready",
+                                },
+                                "content": {
+                                    "__typename": "Issue",
+                                    "id": "ISSUE_2",
+                                    "title": "Next",
+                                    "url": "https://github.com/acme/repo/issues/2",
+                                    "createdAt": "2026-02-03T00:00:00Z",
+                                    "updatedAt": "2026-02-03T01:00:00Z",
+                                    "repository": {"nameWithOwner": "acme/repo"},
+                                },
+                            },
+                        ],
+                    }
+                }
+            }
+        }
+    }
+
+    def fake_run(*, query, variables, gh_bin):
+        assert variables["login"] == "acme"
+        assert variables["number"] == 1
+        assert variables["statusField"] == "Status"
+        return response
+
+    from loops.providers import github_projects_v2
+
+    monkeypatch.setattr(github_projects_v2, "_run_gh_graphql", fake_run)
+
+    provider = GithubProjectsV2TaskProvider(
+        GithubProjectsV2TaskProviderConfig(
+            url="https://github.com/orgs/acme/projects/1"
+        )
+    )
+    tasks = provider.poll(limit=1)
+    assert len(tasks) == 1
+    assert tasks[0].title == "Ship it"
+
+
+def test_poll_handles_empty_results(monkeypatch) -> None:
+    response = {
+        "data": {
+            "organization": {
+                "projectV2": {
+                    "items": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [],
+                    }
+                }
+            }
+        }
+    }
+
+    def fake_run(*, query, variables, gh_bin):
+        return response
+
+    from loops.providers import github_projects_v2
+
+    monkeypatch.setattr(github_projects_v2, "_run_gh_graphql", fake_run)
+
+    provider = GithubProjectsV2TaskProvider(
+        GithubProjectsV2TaskProviderConfig(
+            url="https://github.com/orgs/acme/projects/1"
+        )
+    )
+    tasks = provider.poll()
+    assert tasks == []
