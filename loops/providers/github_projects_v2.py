@@ -10,6 +10,7 @@ from loops.run_record import Task
 
 GITHUB_PROJECTS_V2_PROVIDER_ID = "github_projects_v2"
 OwnerType = Literal["organization", "user"]
+GH_API_TIMEOUT_SECONDS = 30
 
 
 @dataclass(frozen=True)
@@ -224,7 +225,12 @@ def _run_gh_graphql(
             check=True,
             capture_output=True,
             text=True,
+            timeout=GH_API_TIMEOUT_SECONDS,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"gh api graphql timed out after {GH_API_TIMEOUT_SECONDS}s"
+        ) from exc
     except subprocess.CalledProcessError as exc:
         stderr = exc.stderr.strip()
         raise RuntimeError(f"gh api graphql failed: {stderr}") from exc

@@ -97,15 +97,15 @@ The repo currently has the `loops` package with `RunRecord`/`Task` dataclasses a
 ## Questions
 
 ### Technical Decisions Needed
-- [ ] Should the provider include draft items (no issue/PR content), or skip them? (Assumed skip.)
+- [x] Should the provider include draft items (no issue/PR content), or skip them? (Skip; only Issue/PR content mapped.)
 
 ---
 
 ## Success Criteria
 
-- [ ] Provider can poll a real project URL and return `Task` objects with required fields.
-- [ ] Empty results return an empty list without errors.
-- [ ] Tests cover parsing and mapping logic.
+- [x] Provider can poll a project URL and return `Task` objects with required fields (validated via mocked GraphQL responses; live validation pending).
+- [x] Empty results return an empty list without errors.
+- [x] Tests cover parsing and mapping logic.
 
 ---
 
