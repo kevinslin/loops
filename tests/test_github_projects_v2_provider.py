@@ -28,6 +28,11 @@ def test_parse_project_url_invalid() -> None:
         parse_project_url("https://github.com/acme/projects")
 
 
+def test_parse_project_url_non_positive() -> None:
+    with pytest.raises(ValueError):
+        parse_project_url("https://github.com/orgs/acme/projects/0")
+
+
 def test_extract_status_value() -> None:
     assert (
         _extract_status_value(
@@ -252,3 +257,33 @@ def test_poll_paginates(monkeypatch) -> None:
     tasks = provider.poll()
     assert [task.title for task in tasks] == ["First", "Second"]
     assert calls == [None, "cursor-1"]
+
+
+def test_poll_missing_cursor_raises(monkeypatch) -> None:
+    response = {
+        "data": {
+            "organization": {
+                "projectV2": {
+                    "items": {
+                        "pageInfo": {"hasNextPage": True, "endCursor": None},
+                        "nodes": [],
+                    }
+                }
+            }
+        }
+    }
+
+    def fake_run(*, query, variables, gh_bin):
+        return response
+
+    from loops.providers import github_projects_v2
+
+    monkeypatch.setattr(github_projects_v2, "_run_gh_graphql", fake_run)
+
+    provider = GithubProjectsV2TaskProvider(
+        GithubProjectsV2TaskProviderConfig(
+            url="https://github.com/orgs/acme/projects/1"
+        )
+    )
+    with pytest.raises(RuntimeError):
+        provider.poll()

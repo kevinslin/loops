@@ -43,6 +43,8 @@ def parse_project_url(url: str) -> ProjectLocator:
         project_number = int(number)
     except ValueError as exc:
         raise ValueError("Project URL must end with a numeric project id") from exc
+    if project_number <= 0:
+        raise ValueError("Project id must be a positive integer")
     owner_type: OwnerType = "organization" if scope == "orgs" else "user"
     return ProjectLocator(owner_type=owner_type, login=login, number=project_number)
 
@@ -188,9 +190,12 @@ class GithubProjectsV2TaskProvider:
                 tasks.append(task)
                 if limit is not None and len(tasks) >= limit:
                     return tasks
-            if not page_info.get("hasNextPage"):
+            has_next_page = bool(page_info.get("hasNextPage"))
+            if not has_next_page:
                 return tasks
             after = page_info.get("endCursor")
+            if not after:
+                raise RuntimeError("Pagination missing endCursor while hasNextPage=true")
 
     def _page_size(self, remaining: int | None) -> int:
         if remaining is None:
@@ -234,7 +239,17 @@ def _run_gh_graphql(
     except subprocess.CalledProcessError as exc:
         stderr = exc.stderr.strip()
         raise RuntimeError(f"gh api graphql failed: {stderr}") from exc
-    payload = json.loads(result.stdout)
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        snippet = (result.stdout or "").strip()
+        if not snippet:
+            snippet = "<empty output>"
+        if len(snippet) > 500:
+            snippet = f"{snippet[:500]}..."
+        raise RuntimeError(
+            f"gh api graphql returned invalid JSON: {snippet}"
+        ) from exc
     if payload.get("errors"):
         raise RuntimeError(f"GraphQL returned errors: {payload['errors']}")
     return payload
