@@ -1,7 +1,7 @@
 # Execution Plan: Implement outer loop runner
 
 **Date:** 2026-02-05
-**Status:** In Progress
+**Status:** Completed
 
 ---
 
@@ -62,15 +62,15 @@ The repo has the run record helpers and the GitHub Projects V2 provider implemen
 ## Steps
 
 ### Phase 1: Outer loop core
-- [ ] Implement config dataclasses and JSON loader.
-- [ ] Implement outer state read/write helpers.
-- [ ] Implement task filtering + run directory creation + `run.json` write.
-- [ ] Add inner loop launcher hook and logging.
+- [x] Implement config dataclasses and JSON loader.
+- [x] Implement outer state read/write helpers.
+- [x] Implement task filtering + run directory creation + `run.json` write.
+- [x] Add inner loop launcher hook and logging.
 
 ### Phase 2: Tests
-- [ ] Add tests for run directory creation and run.json contents with a stub provider.
-- [ ] Add tests for dedupe behavior and `force=true`.
-- [ ] Add test for `emit_on_first_run=false` baseline behavior.
+- [x] Add tests for run directory creation and run.json contents with a stub provider.
+- [x] Add tests for dedupe behavior and `force=true`.
+- [x] Add test for `emit_on_first_run=false` baseline behavior.
 
 **Dependencies between phases:**
 - Tests depend on outer loop implementation.
@@ -126,10 +126,10 @@ The repo has the run record helpers and the GitHub Projects V2 provider implemen
 
 ## Success Criteria
 
-- [ ] Outer loop creates run directories + `run.json` for ready tasks.
-- [ ] `outer_state.json` is updated and dedupe works across polls unless `force=true`.
-- [ ] `emit_on_first_run=false` skips launching tasks on first run but records state.
-- [ ] Tests cover the validation scenario described in the issue.
+- [x] Outer loop creates run directories + `run.json` for ready tasks.
+- [x] `outer_state.json` is updated and dedupe works across polls unless `force=true`.
+- [x] `emit_on_first_run=false` skips launching tasks on first run but records state.
+- [x] Tests cover the validation scenario described in the issue.
 
 ---
 
