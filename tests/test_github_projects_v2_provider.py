@@ -126,10 +126,11 @@ def test_poll_maps_tasks(monkeypatch) -> None:
         }
     }
 
-    def fake_run(*, query, variables, gh_bin):
+    def fake_run(*, query, variables, github_token, gh_bin):
         assert variables["login"] == "acme"
         assert variables["number"] == 1
         assert variables["statusField"] == "Status"
+        assert github_token == "token"
         return response
 
     from loops.providers import github_projects_v2
@@ -138,7 +139,8 @@ def test_poll_maps_tasks(monkeypatch) -> None:
 
     provider = GithubProjectsV2TaskProvider(
         GithubProjectsV2TaskProviderConfig(
-            url="https://github.com/orgs/acme/projects/1"
+            url="https://github.com/orgs/acme/projects/1",
+            github_token="token",
         )
     )
     tasks = provider.poll(limit=1)
@@ -160,7 +162,7 @@ def test_poll_handles_empty_results(monkeypatch) -> None:
         }
     }
 
-    def fake_run(*, query, variables, gh_bin):
+    def fake_run(*, query, variables, github_token, gh_bin):
         return response
 
     from loops.providers import github_projects_v2
@@ -169,7 +171,8 @@ def test_poll_handles_empty_results(monkeypatch) -> None:
 
     provider = GithubProjectsV2TaskProvider(
         GithubProjectsV2TaskProviderConfig(
-            url="https://github.com/orgs/acme/projects/1"
+            url="https://github.com/orgs/acme/projects/1",
+            github_token="token",
         )
     )
     tasks = provider.poll()
@@ -237,7 +240,7 @@ def test_poll_paginates(monkeypatch) -> None:
     }
     calls: list[str | None] = []
 
-    def fake_run(*, query, variables, gh_bin):
+    def fake_run(*, query, variables, github_token, gh_bin):
         calls.append(variables.get("after"))
         if variables.get("after") is None:
             return first_page
@@ -251,7 +254,8 @@ def test_poll_paginates(monkeypatch) -> None:
 
     provider = GithubProjectsV2TaskProvider(
         GithubProjectsV2TaskProviderConfig(
-            url="https://github.com/orgs/acme/projects/1"
+            url="https://github.com/orgs/acme/projects/1",
+            github_token="token",
         )
     )
     tasks = provider.poll()
@@ -273,7 +277,7 @@ def test_poll_missing_cursor_raises(monkeypatch) -> None:
         }
     }
 
-    def fake_run(*, query, variables, gh_bin):
+    def fake_run(*, query, variables, github_token, gh_bin):
         return response
 
     from loops.providers import github_projects_v2
@@ -282,8 +286,23 @@ def test_poll_missing_cursor_raises(monkeypatch) -> None:
 
     provider = GithubProjectsV2TaskProvider(
         GithubProjectsV2TaskProviderConfig(
-            url="https://github.com/orgs/acme/projects/1"
+            url="https://github.com/orgs/acme/projects/1",
+            github_token="token",
         )
     )
     with pytest.raises(RuntimeError):
+        provider.poll()
+
+
+def test_poll_requires_token(monkeypatch) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+
+    provider = GithubProjectsV2TaskProvider(
+        GithubProjectsV2TaskProviderConfig(
+            url="https://github.com/orgs/acme/projects/1"
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="GITHUB_TOKEN"):
         provider.poll()

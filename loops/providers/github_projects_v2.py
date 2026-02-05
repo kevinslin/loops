@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -18,6 +19,7 @@ class GithubProjectsV2TaskProviderConfig:
     url: str
     status_field: str = "Status"
     page_size: int = 50
+    github_token: str | None = None
 
 
 @dataclass(frozen=True)
@@ -163,6 +165,7 @@ class GithubProjectsV2TaskProvider:
         if limit is not None and limit <= 0:
             return []
 
+        github_token = _resolve_github_token(self.config)
         locator = parse_project_url(self.config.url)
         tasks: list[Task] = []
         after: str | None = None
@@ -180,6 +183,7 @@ class GithubProjectsV2TaskProvider:
                     "first": page_size,
                     "statusField": self.config.status_field,
                 },
+                github_token=github_token,
                 gh_bin=self.gh_bin,
             )
             items, page_info = _extract_items(response, locator.owner_type)
@@ -213,12 +217,25 @@ def _normalize_query(query: str) -> str:
     return " ".join(query.split())
 
 
+def _resolve_github_token(config: GithubProjectsV2TaskProviderConfig) -> str:
+    if config.github_token:
+        return config.github_token
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if not token:
+        raise RuntimeError("GITHUB_TOKEN is required to poll GitHub Projects V2")
+    return token
+
+
 def _run_gh_graphql(
     *,
     query: str,
     variables: dict[str, Any],
+    github_token: str,
     gh_bin: str,
 ) -> dict[str, Any]:
+    env = os.environ.copy()
+    env["GITHUB_TOKEN"] = github_token
+    env["GH_TOKEN"] = github_token
     args = [gh_bin, "api", "graphql", "-f", f"query={query}"]
     for key, value in variables.items():
         if value is None:
@@ -231,6 +248,7 @@ def _run_gh_graphql(
             capture_output=True,
             text=True,
             timeout=GH_API_TIMEOUT_SECONDS,
+            env=env,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(
