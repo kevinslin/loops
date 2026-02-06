@@ -54,11 +54,14 @@ def main(
     if force is not None:
         loop_config = replace(loop_config, force=force)
     provider = build_provider(config)
-    launcher = build_inner_loop_launcher(config)
+    launcher = None
+    if config.inner_loop is not None:
+        launcher = build_inner_loop_launcher(config)
+    loops_root = _resolve_loops_root(config_path)
     runner = OuterLoopRunner(
         provider,
         loop_config,
-        loops_root=Path.cwd() / ".loops",
+        loops_root=loops_root,
         inner_loop_launcher=launcher,
     )
     if run_once:
@@ -69,3 +72,12 @@ def main(
 
 if __name__ == "__main__":
     main()
+
+
+def _resolve_loops_root(config_path: Path) -> Path:
+    """Resolve the loops root directory based on the config path."""
+
+    resolved = config_path.resolve()
+    if resolved.parent.name == ".loops":
+        return resolved.parent
+    return resolved.parent / ".loops"

@@ -4,6 +4,8 @@ from dataclasses import replace
 import json
 from pathlib import Path
 
+import pytest
+
 from loops.outer_loop import OuterLoopConfig, OuterLoopRunner, load_config, read_outer_state
 from loops.run_record import Task, read_run_record
 
@@ -42,7 +44,7 @@ def test_run_once_creates_run_records(tmp_path: Path) -> None:
     loops_root = tmp_path / ".loops"
     launched: list[Path] = []
 
-    def launcher(run_dir: Path, task: Task) -> None:
+    def launcher(run_dir: Path, _task: Task) -> None:
         launched.append(run_dir)
 
     config = OuterLoopConfig(task_ready_status="Ready", emit_on_first_run=True)
@@ -69,7 +71,7 @@ def test_run_once_dedupes_without_force(tmp_path: Path) -> None:
     loops_root = tmp_path / ".loops"
     launched: list[Path] = []
 
-    def launcher(run_dir: Path, task: Task) -> None:
+    def launcher(run_dir: Path, _task: Task) -> None:
         launched.append(run_dir)
 
     config = OuterLoopConfig(task_ready_status="Ready", emit_on_first_run=True)
@@ -91,7 +93,7 @@ def test_force_reprocesses_tasks(tmp_path: Path) -> None:
     loops_root = tmp_path / ".loops"
     launched: list[Path] = []
 
-    def launcher(run_dir: Path, task: Task) -> None:
+    def launcher(run_dir: Path, _task: Task) -> None:
         launched.append(run_dir)
 
     config = OuterLoopConfig(task_ready_status="Ready", emit_on_first_run=True)
@@ -119,7 +121,7 @@ def test_emit_on_first_run_skips_launch(tmp_path: Path) -> None:
     loops_root = tmp_path / ".loops"
     launched: list[Path] = []
 
-    def launcher(run_dir: Path, task: Task) -> None:
+    def launcher(run_dir: Path, _task: Task) -> None:
         launched.append(run_dir)
 
     config = OuterLoopConfig(task_ready_status="Ready", emit_on_first_run=False)
@@ -155,3 +157,16 @@ def test_load_config_resolves_working_dir(tmp_path: Path) -> None:
     assert config.inner_loop is not None
     assert config.inner_loop.append_task_url is False
     assert config.inner_loop.working_dir == str((tmp_path / "inner").resolve())
+
+
+def test_load_config_rejects_bool_ints(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    payload = {
+        "provider_id": "github_projects_v2",
+        "provider_config": {},
+        "loop_config": {"poll_interval_seconds": True},
+    }
+    config_path.write_text(json.dumps(payload))
+
+    with pytest.raises(TypeError, match="poll_interval_seconds"):
+        load_config(config_path)

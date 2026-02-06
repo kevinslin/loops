@@ -405,7 +405,7 @@ def _load_int(payload: dict[str, Any], key: str, default: int) -> int:
     """Load an integer config value with validation."""
 
     value = payload.get(key, default)
-    if not isinstance(value, int):
+    if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"{key} must be an integer")
     return value
 
