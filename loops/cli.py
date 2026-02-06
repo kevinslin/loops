@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Command-line interface for the Loops outer loop runner."""
+
 from dataclasses import replace
 from pathlib import Path
 from typing import Optional
@@ -45,6 +47,8 @@ def main(
     limit: Optional[int],
     force: Optional[bool],
 ) -> None:
+    """Run the outer loop runner using the provided config."""
+
     config = load_config(config_path)
     loop_config = config.loop_config
     if force is not None:

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 from pathlib import Path
 
-from loops.outer_loop import OuterLoopConfig, OuterLoopRunner, read_outer_state
+from loops.outer_loop import OuterLoopConfig, OuterLoopRunner, load_config, read_outer_state
 from loops.run_record import Task, read_run_record
 
 
@@ -135,3 +136,22 @@ def test_emit_on_first_run_skips_launch(tmp_path: Path) -> None:
     runner.run_once()
     assert list_run_dirs(loops_root) == []
     assert launched == []
+
+
+def test_load_config_resolves_working_dir(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    payload = {
+        "provider_id": "github_projects_v2",
+        "provider_config": {},
+        "inner_loop": {
+            "command": "echo hello",
+            "working_dir": "inner",
+            "append_task_url": False,
+        },
+    }
+    config_path.write_text(json.dumps(payload))
+
+    config = load_config(config_path)
+    assert config.inner_loop is not None
+    assert config.inner_loop.append_task_url is False
+    assert config.inner_loop.working_dir == str((tmp_path / "inner").resolve())

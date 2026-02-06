@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Outer loop runner utilities for the Loops harness."""
+
 import json
 import os
 import re
@@ -27,6 +29,8 @@ DEFAULT_TASK_READY_STATUS = "Ready"
 
 @dataclass(frozen=True)
 class OuterLoopConfig:
+    """Configuration for the outer loop polling and dispatch behavior."""
+
     poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS
     parallel_tasks: bool = False
     parallel_tasks_limit: int = DEFAULT_PARALLEL_TASKS_LIMIT
@@ -37,12 +41,21 @@ class OuterLoopConfig:
 
 @dataclass(frozen=True)
 class InnerLoopCommandConfig:
+    """Configuration for launching inner loop commands."""
+
     command: list[str]
     working_dir: Optional[str] = None
     env: Optional[dict[str, str]] = None
+    append_task_url: bool = True
 
     @staticmethod
-    def from_dict(payload: dict[str, Any]) -> "InnerLoopCommandConfig":
+    def from_dict(
+        payload: dict[str, Any],
+        *,
+        base_dir: Optional[Path] = None,
+    ) -> "InnerLoopCommandConfig":
+        """Build an InnerLoopCommandConfig from a dict payload."""
+
         if "command" not in payload:
             raise KeyError("inner_loop.command is required")
         raw_command = payload["command"]
@@ -59,6 +72,10 @@ class InnerLoopCommandConfig:
         working_dir = payload.get("working_dir")
         if working_dir is not None and not isinstance(working_dir, str):
             raise TypeError("inner_loop.working_dir must be a string")
+        if working_dir is not None and base_dir is not None:
+            working_path = Path(working_dir)
+            if not working_path.is_absolute():
+                working_dir = str((base_dir / working_path).resolve())
         env = payload.get("env")
         if env is not None:
             if not isinstance(env, dict) or not all(
@@ -66,11 +83,21 @@ class InnerLoopCommandConfig:
                 for key, value in env.items()
             ):
                 raise TypeError("inner_loop.env must be a string-to-string map")
-        return InnerLoopCommandConfig(command=command, working_dir=working_dir, env=env)
+        append_task_url = payload.get("append_task_url", True)
+        if not isinstance(append_task_url, bool):
+            raise TypeError("inner_loop.append_task_url must be a boolean")
+        return InnerLoopCommandConfig(
+            command=command,
+            working_dir=working_dir,
+            env=env,
+            append_task_url=append_task_url,
+        )
 
 
 @dataclass(frozen=True)
 class LoopsConfig:
+    """Top-level Loops configuration loaded from JSON."""
+
     provider_id: str
     provider_config: dict[str, Any]
     loop_config: OuterLoopConfig
@@ -79,18 +106,26 @@ class LoopsConfig:
 
 @dataclass
 class OuterLoopState:
+    """Persisted outer loop state used for deduplication."""
+
     initialized: bool
     tasks: dict[str, dict[str, Any]]
     updated_at: str
 
     @staticmethod
     def empty() -> "OuterLoopState":
+        """Return an empty state snapshot."""
+
         return OuterLoopState(initialized=False, tasks={}, updated_at=_now_iso())
 
     def has_task(self, task: Task) -> bool:
+        """Return True if the task has been seen before."""
+
         return _task_key(task) in self.tasks
 
     def record_task(self, task: Task, now_iso: str) -> None:
+        """Record a task in the state ledger."""
+
         key = _task_key(task)
         entry = self.tasks.get(key)
         if entry is None:
@@ -101,6 +136,8 @@ class OuterLoopState:
 
 
 class OuterLoopRunner:
+    """Run the outer loop to poll providers and start inner loops."""
+
     def __init__(
         self,
         provider: TaskProvider,
@@ -117,11 +154,15 @@ class OuterLoopRunner:
         self.log_path = self.loops_root / "oloops.log"
 
     def run_once(self, limit: int | None = None) -> list[Path]:
+        """Run a single poll cycle and return created run directories."""
+
         self.loops_root.mkdir(parents=True, exist_ok=True)
         state = read_outer_state(self.state_path)
-        ready_tasks = [task for task in self.provider.poll(limit) if _is_ready(task, self.config)]
+        ready_tasks = [
+            task for task in self.provider.poll(limit) if _is_ready(task, self.config)
+        ]
         now_iso = _now_iso()
-        to_launch: list[tuple[Path, Task]] = []
+        emit_tasks: list[Task] = []
         first_run = not state.initialized
         should_emit = self.config.emit_on_first_run or self.config.force or not first_run
 
@@ -132,6 +173,12 @@ class OuterLoopRunner:
                 continue
             if already_seen and not self.config.force:
                 continue
+            emit_tasks.append(task)
+
+        if emit_tasks and self.inner_loop_launcher is None:
+            raise RuntimeError("inner_loop_launcher is required to launch tasks")
+        to_launch: list[tuple[Path, Task]] = []
+        for task in emit_tasks:
             run_dir = create_run_dir(task, self.loops_root)
             record = RunRecord(
                 task=task,
@@ -145,8 +192,6 @@ class OuterLoopRunner:
             _touch(run_dir / "run.log")
             to_launch.append((run_dir, task))
 
-        if to_launch and self.inner_loop_launcher is None:
-            raise RuntimeError("inner_loop_launcher is required to launch tasks")
         if to_launch:
             self._launch_tasks(to_launch)
 
@@ -157,11 +202,15 @@ class OuterLoopRunner:
         return [run_dir for run_dir, _ in to_launch]
 
     def run_forever(self, limit: int | None = None) -> None:
+        """Run poll cycles forever until interrupted."""
+
         while True:
             self.run_once(limit=limit)
             time.sleep(self.config.poll_interval_seconds)
 
     def _launch_tasks(self, tasks: list[tuple[Path, Task]]) -> None:
+        """Launch tasks sequentially or in parallel based on config."""
+
         launcher = self.inner_loop_launcher
         if launcher is None:
             raise RuntimeError("inner_loop_launcher is required to launch tasks")
@@ -181,6 +230,8 @@ class OuterLoopRunner:
 
 
 def load_config(path: str | Path) -> LoopsConfig:
+    """Load a LoopsConfig from a JSON file."""
+
     payload = json.loads(Path(path).read_text())
     if not isinstance(payload, dict):
         raise TypeError("Config must be a JSON object")
@@ -196,7 +247,11 @@ def load_config(path: str | Path) -> LoopsConfig:
     if inner_loop_payload is not None:
         if not isinstance(inner_loop_payload, dict):
             raise TypeError("inner_loop must be an object")
-        inner_loop = InnerLoopCommandConfig.from_dict(inner_loop_payload)
+        base_dir = Path(path).resolve().parent
+        inner_loop = InnerLoopCommandConfig.from_dict(
+            inner_loop_payload,
+            base_dir=base_dir,
+        )
     return LoopsConfig(
         provider_id=provider_id,
         provider_config=provider_config,
@@ -206,6 +261,8 @@ def load_config(path: str | Path) -> LoopsConfig:
 
 
 def build_provider(config: LoopsConfig) -> TaskProvider:
+    """Construct the task provider for the configured provider id."""
+
     if config.provider_id != GITHUB_PROJECTS_V2_PROVIDER_ID:
         raise ValueError(f"Unsupported provider_id: {config.provider_id}")
     provider_kwargs = _filter_provider_config(config.provider_config)
@@ -215,11 +272,15 @@ def build_provider(config: LoopsConfig) -> TaskProvider:
 def build_inner_loop_launcher(
     config: LoopsConfig,
 ) -> Callable[[Path, Task], None]:
+    """Build the launcher callable for inner loop executions."""
+
     if config.inner_loop is None:
         raise ValueError("inner_loop.command is required to launch tasks")
     inner_loop = config.inner_loop
 
     def launcher(run_dir: Path, task: Task) -> None:
+        """Launch a single inner loop invocation."""
+
         run_dir.mkdir(parents=True, exist_ok=True)
         run_log = run_dir / "run.log"
         env = os.environ.copy()
@@ -230,9 +291,12 @@ def build_inner_loop_launcher(
         env["LOOPS_TASK_PROVIDER"] = task.provider_id
         if inner_loop.env:
             env.update(inner_loop.env)
+        command = list(inner_loop.command)
+        if inner_loop.append_task_url:
+            command.append(task.url)
         with run_log.open("a", encoding="utf-8") as handle:
             subprocess.Popen(
-                inner_loop.command + [task.url],
+                command,
                 cwd=inner_loop.working_dir,
                 stdout=handle,
                 stderr=subprocess.STDOUT,
@@ -243,6 +307,8 @@ def build_inner_loop_launcher(
 
 
 def read_outer_state(path: str | Path) -> OuterLoopState:
+    """Read the outer state ledger from disk or return empty."""
+
     target = Path(path)
     if not target.exists():
         return OuterLoopState.empty()
@@ -260,6 +326,8 @@ def read_outer_state(path: str | Path) -> OuterLoopState:
 
 
 def write_outer_state(path: str | Path, state: OuterLoopState) -> None:
+    """Persist outer state to disk."""
+
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -271,6 +339,8 @@ def write_outer_state(path: str | Path, state: OuterLoopState) -> None:
 
 
 def create_run_dir(task: Task, loops_root: Path) -> Path:
+    """Create a run directory for a task and return its path."""
+
     date_prefix = datetime.now(timezone.utc).date().isoformat()
     title_slug = _slugify(task.title) or "task"
     id_slug = _slugify(task.id) or "id"
@@ -289,6 +359,8 @@ def create_run_dir(task: Task, loops_root: Path) -> Path:
 
 
 def _load_outer_loop_config(payload: Any) -> OuterLoopConfig:
+    """Load outer loop configuration from JSON payload."""
+
     if payload is None:
         return OuterLoopConfig()
     if not isinstance(payload, dict):
@@ -310,11 +382,19 @@ def _load_outer_loop_config(payload: Any) -> OuterLoopConfig:
 
 
 def _filter_provider_config(payload: dict[str, Any]) -> dict[str, Any]:
+    """Filter provider config and reject unknown keys."""
+
     allowed_keys = {"url", "status_field", "page_size", "github_token"}
-    return {key: value for key, value in payload.items() if key in allowed_keys}
+    unknown_keys = set(payload.keys()) - allowed_keys
+    if unknown_keys:
+        formatted = ", ".join(sorted(unknown_keys))
+        raise ValueError(f"provider_config contains unsupported keys: {formatted}")
+    return dict(payload)
 
 
 def _load_bool(payload: dict[str, Any], key: str, default: bool) -> bool:
+    """Load a boolean config value with validation."""
+
     value = payload.get(key, default)
     if not isinstance(value, bool):
         raise TypeError(f"{key} must be a boolean")
@@ -322,6 +402,8 @@ def _load_bool(payload: dict[str, Any], key: str, default: bool) -> bool:
 
 
 def _load_int(payload: dict[str, Any], key: str, default: int) -> int:
+    """Load an integer config value with validation."""
+
     value = payload.get(key, default)
     if not isinstance(value, int):
         raise TypeError(f"{key} must be an integer")
@@ -329,6 +411,8 @@ def _load_int(payload: dict[str, Any], key: str, default: int) -> int:
 
 
 def _load_str(payload: dict[str, Any], key: str, default: str) -> str:
+    """Load a string config value with validation."""
+
     value = payload.get(key, default)
     if not isinstance(value, str):
         raise TypeError(f"{key} must be a string")
@@ -336,14 +420,20 @@ def _load_str(payload: dict[str, Any], key: str, default: str) -> str:
 
 
 def _is_ready(task: Task, config: OuterLoopConfig) -> bool:
+    """Return True if a task matches the configured ready status."""
+
     return task.status.casefold() == config.task_ready_status.casefold()
 
 
 def _task_key(task: Task) -> str:
+    """Return the dedupe key for a task."""
+
     return f"{task.provider_id}:{task.id}"
 
 
 def _slugify(value: str) -> str:
+    """Normalize a string for filesystem-friendly directory names."""
+
     normalized = value.lower()
     normalized = re.sub(r"[^a-z0-9]+", "-", normalized)
     normalized = normalized.strip("-")
@@ -352,10 +442,14 @@ def _slugify(value: str) -> str:
 
 
 def _now_iso() -> str:
+    """Return the current time as ISO-8601 UTC string."""
+
     return datetime.now(timezone.utc).isoformat()
 
 
 def _log(path: Path, message: str) -> None:
+    """Append a log message to the outer loop log."""
+
     path.parent.mkdir(parents=True, exist_ok=True)
     timestamp = _now_iso()
     with path.open("a", encoding="utf-8") as handle:
@@ -363,9 +457,13 @@ def _log(path: Path, message: str) -> None:
 
 
 def _format_log_line(ready_count: int, processed_count: int) -> str:
+    """Format a log line for the outer loop runner."""
+
     return f"ready={ready_count} processed={processed_count}"
 
 
 def _touch(path: Path) -> None:
+    """Ensure a file exists on disk."""
+
     path.parent.mkdir(parents=True, exist_ok=True)
     path.touch(exist_ok=True)
