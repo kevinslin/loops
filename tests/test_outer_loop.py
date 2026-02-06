@@ -170,3 +170,24 @@ def test_load_config_rejects_bool_ints(tmp_path: Path) -> None:
 
     with pytest.raises(TypeError, match="poll_interval_seconds"):
         load_config(config_path)
+
+
+def test_run_once_persists_state_on_launch_error(tmp_path: Path) -> None:
+    tasks = [make_task("1", "Ship it")]
+    provider = StubProvider(tasks)
+    loops_root = tmp_path / ".loops"
+
+    def launcher(_run_dir: Path, _task: Task) -> None:
+        raise RuntimeError("boom")
+
+    config = OuterLoopConfig(task_ready_status="Ready", emit_on_first_run=True)
+    runner = OuterLoopRunner(
+        provider, config, loops_root=loops_root, inner_loop_launcher=launcher
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        runner.run_once()
+
+    state = read_outer_state(loops_root / "outer_state.json")
+    assert state.initialized is True
+    assert len(state.tasks) == 1

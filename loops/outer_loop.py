@@ -192,13 +192,14 @@ class OuterLoopRunner:
             _touch(run_dir / "run.log")
             to_launch.append((run_dir, task))
 
-        if to_launch:
-            self._launch_tasks(to_launch)
-
-        state.initialized = True
-        state.updated_at = now_iso
-        write_outer_state(self.state_path, state)
-        _log(self.log_path, _format_log_line(len(ready_tasks), len(to_launch)))
+        try:
+            if to_launch:
+                self._launch_tasks(to_launch)
+        finally:
+            state.initialized = True
+            state.updated_at = now_iso
+            write_outer_state(self.state_path, state)
+            _log(self.log_path, _format_log_line(len(ready_tasks), len(to_launch)))
         return [run_dir for run_dir, _ in to_launch]
 
     def run_forever(self, limit: int | None = None) -> None:
