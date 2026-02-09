@@ -295,14 +295,18 @@ def build_inner_loop_launcher(
         command = list(inner_loop.command)
         if inner_loop.append_task_url:
             command.append(task.url)
-        with run_log.open("a", encoding="utf-8") as handle:
+        
+        log_fd = os.open(str(run_log), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)   
+        try:
             subprocess.Popen(
                 command,
                 cwd=inner_loop.working_dir,
-                stdout=handle,
+                stdout=log_fd,
                 stderr=subprocess.STDOUT,
                 env=env,
             )
+        finally:
+            os.close(log_fd)
 
     return launcher
 
