@@ -1,0 +1,1 @@
+Always refer to DESIGN.md before starting work
