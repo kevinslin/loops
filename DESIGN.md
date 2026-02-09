@@ -128,7 +128,59 @@ Key types:
 - `RunState`: `RUNNING | WAITING_ON_REVIEW | NEEDS_INPUT | DONE`.
 - `RunRecord`: persisted run metadata for `run.json`.
 
-## 3. Architecture
+## 3. Configuration
+
+### Config file
+- Default path: `.loops/config.json`
+- Top-level keys: `provider_id`, `provider_config`, `loop_config`, `inner_loop`
+- `inner_loop` keys: `command`, `working_dir`, `env`, `append_task_url`
+
+Config shape:
+```ts
+type LoopsConfigFile = {
+    provider_id: "github_projects_v2"
+    provider_config: GithubProjectsV2TaskProviderConfig
+    loop_config?: OuterLoopConfig
+    inner_loop?: InnerLoopCommandConfig
+}
+
+type OuterLoopConfig = {
+    poll_interval_seconds?: number
+    parallel_tasks?: boolean
+    parallel_tasks_limit?: number
+    emit_on_first_run?: boolean
+    force?: boolean
+    task_ready_status?: string
+}
+
+type InnerLoopCommandConfig = {
+    command: string | string[]
+    working_dir?: string
+    env?: Record<string, string>
+    append_task_url?: boolean
+}
+
+type GithubProjectsV2TaskProviderConfig = {
+    url: string
+    status_field: "Status"
+    page_size?: number
+    github_token?: string
+}
+```
+
+Notes:
+- `provider_id` currently supports only `"github_projects_v2"`.
+- `loop_config` is optional; omitted keys fall back to defaults.
+- `inner_loop` is optional when running via the CLI; if omitted, the CLI uses
+  `python -m loops.inner_loop` with `append_task_url=false`.
+
+### Environment variables
+- `LOOPS_RUN_DIR`: required path to the inner loop run directory.
+- `CODEX_CMD`: command used to invoke Codex (default: `codex exec --yolo`).
+- `LOOPS_PROMPT_FILE` / `CODEX_PROMPT_FILE`: optional base prompt file path.
+- `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`: task metadata injected by the outer loop launcher.
+
+## 4. Architecture
 
 ### High-level diagram
 
@@ -168,7 +220,7 @@ Task provider (GitHub Projects V2)
 - Called when the agent needs input.
 - Default implementation reads from stdin and returns the user response.
 
-## 4. Storage layout
+## 5. Storage layout
 
 `LOOPS_ROOT` is runtime state and logs. Each inner loop run gets its own directory.
 
@@ -202,7 +254,7 @@ Task provider (GitHub Projects V2)
 
 The outer loop uses `outer_state.json` as a dedupe ledger to avoid re-processing tasks unless `force=true`.
 
-## 5. Control flow
+## 6. Control flow
 
 ### Outer loop algorithm
 1. Load config and initialize the single provider.
@@ -232,20 +284,20 @@ Use dev.do to implement the task, open a PR, wait for review, address feedback, 
 Task: [task]
 ```
 
-## 6. PR review handling
+## 7. PR review handling
 
 - When a PR is opened, the inner loop records it in `run.json`.
 - The inner loop polls PR status and updates `pr.review_status`.
 - If review comments appear, the same Codex session is resumed with the same prompt.
 - When approval is detected, the inner loop runs cleanup immediately; if cleanup fails it sets `needs_user_input=true`.
 
-## 7. Error handling and recovery
+## 8. Error handling and recovery
 
 - Non-fatal errors set `needs_user_input=true` and write the error message to `run.log`.
 - Fatal errors still write to `run.json` and terminate the run.
 - On restart, the inner loop recomputes derived state from `run.json` and resumes accordingly.
 
-## 8. Observability
+## 9. Observability
 
 ### Logging
 - Outer loop logs: `[LOOPS_ROOT]/oloops.log`.
@@ -254,13 +306,13 @@ Task: [task]
 ### Metrics (optional)
 - Task pickup latency, time-to-PR, time-in-review, retries.
 
-## 9. Security and safety
+## 10. Security and safety
 
 - Use GitHub auth from `gh` or environment-provided tokens.
 - Avoid logging secrets; redact tokens in logs.
 - Constrain Codex execution to the repo working directory.
 
-## 10. MVP
+## 11. MVP
 
 ### Implementation
 - Only Codex and GitHub Projects V2 in the initial release.
