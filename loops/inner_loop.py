@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -71,7 +72,11 @@ def run_inner_loop(
     base_prompt = _load_prompt_file(prompt_file)
     command = _resolve_codex_command()
     pr_status_fetcher = pr_status_fetcher or _fetch_pr_status_with_gh
+    using_default_handoff_handler = user_handoff_handler is None
     user_handoff_handler = user_handoff_handler or _default_user_handoff_handler
+    non_interactive_default_handoff = (
+        using_default_handoff_handler and not _has_interactive_stdin()
+    )
     backoff_seconds = initial_poll_seconds
     idle_polls = 0
     next_user_response: Optional[str] = None
@@ -93,6 +98,12 @@ def run_inner_loop(
                 run_log,
             )
             if response is None:
+                if non_interactive_default_handoff:
+                    _append_log(
+                        run_log,
+                        "[loops] non-interactive mode; exiting while waiting for user input",
+                    )
+                    return read_run_record(run_json_path)
                 sleep_fn(min(backoff_seconds, max_poll_seconds))
                 backoff_seconds = min(backoff_seconds * 2, max_poll_seconds)
                 continue
@@ -111,55 +122,16 @@ def run_inner_loop(
             continue
 
         if state == "RUNNING":
-            prompt = _build_prompt(
-                run_record.task.url,
-                base_prompt,
+            run_record = _run_codex_turn(
+                run_json_path=run_json_path,
+                run_log=run_log,
+                run_record=run_record,
+                command=command,
+                base_prompt=base_prompt,
                 user_response=next_user_response,
+                review_feedback=False,
             )
             next_user_response = None
-            output, exit_code = _run_codex(command, prompt)
-            _append_log(run_log, output)
-
-            session_id = _extract_session_id(output)
-            codex_session = run_record.codex_session
-            if session_id is not None:
-                codex_session = CodexSession(id=session_id, last_prompt=prompt)
-            elif exit_code == 0:
-                _append_log(run_log, "[loops] warning: no session id detected in codex output")
-
-            discovered_pr = _extract_pr_from_output(output)
-            pr = _merge_pr_records(run_record.pr, discovered_pr)
-            needs_user_input = exit_code != 0
-            needs_user_input_payload = run_record.needs_user_input_payload
-            if exit_code != 0:
-                _append_log(run_log, f"[loops] codex exit code {exit_code}")
-                needs_user_input_payload = {
-                    "message": "Codex exited with a non-zero status. Provide guidance.",
-                    "context": {"exit_code": exit_code},
-                }
-            elif pr is None:
-                needs_user_input = True
-                needs_user_input_payload = {
-                    "message": (
-                        "Codex run completed without opening a PR or requesting input. "
-                        "What should Loops do next?"
-                    )
-                }
-                _append_log(
-                    run_log,
-                    "[loops] no PR detected after codex run; requesting user input",
-                )
-
-            run_record = write_run_record(
-                run_json_path,
-                replace(
-                    run_record,
-                    pr=pr,
-                    codex_session=codex_session,
-                    needs_user_input=needs_user_input,
-                    needs_user_input_payload=needs_user_input_payload,
-                ),
-            )
             cleanup_executed_for_pr = None
             backoff_seconds = initial_poll_seconds
             idle_polls = 0
@@ -196,6 +168,20 @@ def run_inner_loop(
                 run_json_path,
                 replace(run_record, pr=updated_pr),
             )
+            if run_record.pr is not None and run_record.pr.review_status == "changes_requested":
+                _append_log(run_log, "[loops] review changes requested; resuming codex")
+                run_record = _run_codex_turn(
+                    run_json_path=run_json_path,
+                    run_log=run_log,
+                    run_record=run_record,
+                    command=command,
+                    base_prompt=base_prompt,
+                    review_feedback=True,
+                )
+                cleanup_executed_for_pr = None
+                backoff_seconds = initial_poll_seconds
+                idle_polls = 0
+                continue
             next_state = derive_run_state(run_record.pr, run_record.needs_user_input)
             if next_state == "WAITING_ON_REVIEW":
                 idle_polls += 1
@@ -311,6 +297,15 @@ def _build_cleanup_prompt(task_url: str, base_prompt: Optional[str]) -> str:
     return prompt
 
 
+def _build_review_feedback_prompt(task_url: str, base_prompt: Optional[str], pr_url: str) -> str:
+    prompt = _build_prompt(task_url, base_prompt)
+    prompt += (
+        f"\nPR {pr_url} has changes requested. Address review feedback, update the PR, "
+        "and summarize what changed.\n"
+    )
+    return prompt
+
+
 def _run_codex(command: list[str], prompt: str) -> tuple[str, int]:
     try:
         result = subprocess.run(
@@ -355,6 +350,77 @@ def _extract_session_id(output: str) -> Optional[str]:
     if match:
         return match.group(0)
     return None
+
+
+def _run_codex_turn(
+    *,
+    run_json_path: Path,
+    run_log: Path,
+    run_record: RunRecord,
+    command: list[str],
+    base_prompt: Optional[str],
+    user_response: Optional[str] = None,
+    review_feedback: bool,
+) -> RunRecord:
+    if review_feedback and run_record.pr is not None:
+        prompt = _build_review_feedback_prompt(
+            run_record.task.url,
+            base_prompt,
+            run_record.pr.url,
+        )
+    else:
+        prompt = _build_prompt(
+            run_record.task.url,
+            base_prompt,
+            user_response=user_response,
+        )
+
+    output, exit_code = _run_codex(command, prompt)
+    _append_log(run_log, output)
+
+    session_id = _extract_session_id(output)
+    codex_session = run_record.codex_session
+    if session_id is not None:
+        codex_session = CodexSession(id=session_id, last_prompt=prompt)
+    elif exit_code == 0:
+        _append_log(run_log, "[loops] warning: no session id detected in codex output")
+
+    discovered_pr = _extract_pr_from_output(output)
+    pr = _merge_pr_records(run_record.pr, discovered_pr)
+    needs_user_input = exit_code != 0
+    needs_user_input_payload = run_record.needs_user_input_payload
+    if exit_code != 0:
+        _append_log(run_log, f"[loops] codex exit code {exit_code}")
+        needs_user_input_payload = {
+            "message": "Codex exited with a non-zero status. Provide guidance.",
+            "context": {"exit_code": exit_code},
+        }
+    elif pr is None:
+        needs_user_input = True
+        needs_user_input_payload = {
+            "message": (
+                "Codex run completed without opening a PR or requesting input. "
+                "What should Loops do next?"
+            )
+        }
+        _append_log(
+            run_log,
+            "[loops] no PR detected after codex run; requesting user input",
+        )
+    elif review_feedback:
+        # After addressing feedback, wait for next review cycle.
+        pr = replace(pr, review_status="open")
+
+    return write_run_record(
+        run_json_path,
+        replace(
+            run_record,
+            pr=pr,
+            codex_session=codex_session,
+            needs_user_input=needs_user_input,
+            needs_user_input_payload=needs_user_input_payload,
+        ),
+    )
 
 
 def _extract_pr_from_output(output: str) -> Optional[RunPR]:
@@ -468,6 +534,13 @@ def _default_user_handoff_handler(payload: dict[str, Any]) -> str:
     return input().strip()
 
 
+def _has_interactive_stdin() -> bool:
+    try:
+        return sys.stdin.isatty()
+    except Exception:
+        return False
+
+
 def _handle_needs_input(
     run_record: RunRecord,
     handler: UserHandoffHandler,
@@ -525,11 +598,11 @@ def _read_signal_offset(offset_path: Path) -> int:
     return max(value, 0)
 
 
-def _read_pending_signals(run_dir: Path) -> list[dict[str, Any]]:
+def _read_pending_signals(run_dir: Path) -> tuple[list[dict[str, Any]], int]:
     queue_path = run_dir / SIGNAL_QUEUE_FILE
     offset_path = run_dir / SIGNAL_OFFSET_FILE
     if not queue_path.exists():
-        return []
+        return [], 0
 
     previous_offset = _read_signal_offset(offset_path)
     file_size = queue_path.stat().st_size
@@ -539,7 +612,6 @@ def _read_pending_signals(run_dir: Path) -> list[dict[str, Any]]:
         handle.seek(previous_offset)
         chunk = handle.read()
         new_offset = handle.tell()
-    offset_path.write_text(str(new_offset))
 
     signals: list[dict[str, Any]] = []
     for line in chunk.splitlines():
@@ -552,12 +624,36 @@ def _read_pending_signals(run_dir: Path) -> list[dict[str, Any]]:
             continue
         if isinstance(payload, dict):
             signals.append(payload)
-    return signals
+    return signals, new_offset
+
+
+def _write_signal_offset(run_dir: Path, offset: int) -> None:
+    offset_path = run_dir / SIGNAL_OFFSET_FILE
+    offset_path.write_text(str(max(offset, 0)))
+
+
+def _normalize_signal_payload(signal: dict[str, Any]) -> Optional[dict[str, Any]]:
+    payload = signal.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    message = payload.get("message")
+    if not isinstance(message, str) or not message.strip():
+        return None
+    context = payload.get("context")
+    if context is not None and not isinstance(context, dict):
+        return None
+    normalized: dict[str, Any] = {"message": message.strip()}
+    if context is not None:
+        normalized["context"] = context
+    return normalized
 
 
 def _apply_pending_signals(run_dir: Path, run_record: RunRecord) -> RunRecord:
-    signals = _read_pending_signals(run_dir)
+    signals, new_offset = _read_pending_signals(run_dir)
     if not signals:
+        queue_path = run_dir / SIGNAL_QUEUE_FILE
+        if queue_path.exists():
+            _write_signal_offset(run_dir, new_offset)
         return run_record
     run_log = run_dir / "run.log"
     updated = run_record
@@ -566,8 +662,8 @@ def _apply_pending_signals(run_dir: Path, run_record: RunRecord) -> RunRecord:
         if state != "NEEDS_INPUT":
             _append_log(run_log, f"[loops] ignoring unsupported signal state: {state}")
             continue
-        payload = signal.get("payload")
-        if not isinstance(payload, dict):
+        payload = _normalize_signal_payload(signal)
+        if payload is None:
             _append_log(run_log, "[loops] ignoring NEEDS_INPUT signal with invalid payload")
             continue
         _append_log(run_log, "[loops] signal applied: NEEDS_INPUT")
@@ -577,8 +673,11 @@ def _apply_pending_signals(run_dir: Path, run_record: RunRecord) -> RunRecord:
             needs_user_input_payload=payload,
         )
     if updated == run_record:
+        _write_signal_offset(run_dir, new_offset)
         return run_record
-    return write_run_record(run_dir / "run.json", updated)
+    written = write_run_record(run_dir / "run.json", updated)
+    _write_signal_offset(run_dir, new_offset)
+    return written
 
 
 def _resolve_run_dir(run_dir: Optional[str]) -> Path:

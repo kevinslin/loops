@@ -6,6 +6,9 @@ import shlex
 import sys
 from pathlib import Path
 
+import pytest
+
+from loops import inner_loop as inner_loop_module
 from loops.inner_loop import run_inner_loop
 from loops.run_record import RunPR, RunRecord, Task, read_run_record, write_run_record
 from loops.state_signal import enqueue_state_signal
@@ -236,3 +239,136 @@ def test_inner_loop_resumes_from_waiting_on_review_without_codex(tmp_path, monke
 
     assert result.last_state == "DONE"
     assert not marker.exists()
+
+
+def test_inner_loop_resumes_codex_when_review_changes_requested(
+    tmp_path, monkeypatch
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        pr=RunPR(
+            url="https://github.com/acme/api/pull/42",
+            number=42,
+            repo="acme/api",
+            review_status="open",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:00Z",
+        ),
+    )
+
+    stub = tmp_path / "codex_stub.py"
+    _write_codex_stub(stub)
+    counter_path = tmp_path / "counter.txt"
+    monkeypatch.setenv("STUB_COUNTER_PATH", str(counter_path))
+    monkeypatch.setenv(
+        "CODEX_CMD",
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(stub))}",
+    )
+
+    poll_calls = {"count": 0}
+
+    def pr_status_fetcher(pr: RunPR) -> RunPR:
+        poll_calls["count"] += 1
+        if poll_calls["count"] == 1:
+            return RunPR(
+                url=pr.url,
+                number=pr.number,
+                repo=pr.repo,
+                review_status="changes_requested",
+                merged_at=None,
+                last_checked_at="2026-02-09T00:00:01Z",
+            )
+        return RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="approved",
+            merged_at="2026-02-09T00:00:02Z",
+            last_checked_at="2026-02-09T00:00:02Z",
+        )
+
+    result = run_inner_loop(
+        run_dir,
+        pr_status_fetcher=pr_status_fetcher,
+        sleep_fn=lambda _seconds: None,
+        max_iterations=20,
+    )
+
+    assert result.last_state == "DONE"
+    assert counter_path.read_text() == "1"  # resumed once to address feedback
+
+
+def test_apply_pending_signals_does_not_advance_offset_on_write_failure(
+    tmp_path, monkeypatch
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(run_dir)
+
+    enqueue_state_signal(
+        run_dir,
+        state="NEEDS_INPUT",
+        message="Need user decision",
+        context={"priority": "high"},
+    )
+
+    original_write_run_record = inner_loop_module.write_run_record
+    attempts = {"count": 0}
+
+    def flaky_write_run_record(path: Path, record: RunRecord) -> RunRecord:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise RuntimeError("simulated write failure")
+        return original_write_run_record(path, record)
+
+    monkeypatch.setattr(inner_loop_module, "write_run_record", flaky_write_run_record)
+    with pytest.raises(RuntimeError, match="simulated write failure"):
+        inner_loop_module._apply_pending_signals(
+            run_dir,
+            read_run_record(run_dir / "run.json"),
+        )
+
+    offset_path = run_dir / inner_loop_module.SIGNAL_OFFSET_FILE
+    assert not offset_path.exists()
+
+    monkeypatch.setattr(inner_loop_module, "write_run_record", original_write_run_record)
+    updated = inner_loop_module._apply_pending_signals(
+        run_dir,
+        read_run_record(run_dir / "run.json"),
+    )
+    assert updated.needs_user_input is True
+    assert offset_path.exists()
+    assert int(offset_path.read_text().strip()) > 0
+
+
+def test_inner_loop_exits_promptly_when_needs_input_and_non_interactive(
+    tmp_path, monkeypatch
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        needs_user_input=True,
+        needs_user_input_payload={"message": "Need manual input"},
+    )
+
+    monkeypatch.setattr(inner_loop_module, "_has_interactive_stdin", lambda: False)
+    monkeypatch.setattr(
+        inner_loop_module,
+        "_default_user_handoff_handler",
+        lambda _payload: (_ for _ in ()).throw(EOFError()),
+    )
+
+    sleep_calls: list[float] = []
+    result = run_inner_loop(
+        run_dir,
+        sleep_fn=lambda seconds: sleep_calls.append(seconds),
+        max_iterations=5,
+    )
+
+    assert result.last_state == "NEEDS_INPUT"
+    assert sleep_calls == []
+    log_output = (run_dir / "run.log").read_text()
+    assert "non-interactive mode; exiting while waiting for user input" in log_output
