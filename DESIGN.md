@@ -282,77 +282,117 @@ The outer loop uses `outer_state.json` as a dedupe ledger to avoid re-processing
 
 ### Inner loop state model
 
-Derived states:
+#### Prerequisites
+- **Signals skill**: The LLM uses a skill (e.g. `$needs_input`) to send signals to the inner loop via the signal queue (`state_signals.jsonl`).
+- **State file (S)**: `run.json` is the persisted state file. `last_state` caches the derived state. The state file is the single source of truth.
+- **Retry**: When the inner loop starts and finds an existing state file, it is resuming after a crash. Each state defines its own retry behavior for idempotent recovery.
+
+#### States
+
+| State | Description |
+|-------|-------------|
+| `START` | LLM launched with initial prompt. Session being established. |
+| `NEEDS_INPUT` | LLM needs human input before continuing. |
+| `WAIT_REVIEW` | PR submitted. Polling for reviewer feedback. |
+| `CLEANUP` | PR approved. Running merge and post-merge cleanup. |
+| `DONE` | PR merged. Terminal state. |
+
+#### State derivation
 - `NEEDS_INPUT` if `needs_user_input == true`.
 - `DONE` if a PR exists and `merged_at` is set (merged).
-- `PR_APPROVED` if a PR exists, `review_status` is approved, and `needs_user_input == false`.
-- `WAITING_ON_REVIEW` if a PR exists and `review_status` is not approved.
-- `RUNNING` otherwise.
+- `CLEANUP` if a PR exists, `review_status` is approved, and `needs_user_input == false`.
+- `WAIT_REVIEW` if a PR exists and `review_status` is not approved.
+- `START` / `RUNNING` otherwise.
 
 State derivation uses only PR status plus the single `needs_user_input` flag; `last_state` is cached in `run.json`.
+
+Precedence rule: `NEEDS_INPUT` has priority over `DONE`; if `needs_user_input=true`, state is `NEEDS_INPUT` even when `pr.merged_at` is set.
+
+#### Logic
+
+**Initial entry (no state file):**
+- LLM: start with prompt. Send signal to set S:START, payload: `{ sessionID }`.
+- Retry: resume session ID with prompt `"continue"`.
+
+**Loop** (read `run.json`, derive state, dispatch):
+
+- **If `NEEDS_INPUT`**: send signal S:NEEDS_INPUT, payload: `{ questions }`. Block until user responds. Clear flag, persist answer, resume LLM. Retry: still wait for input.
+- **If PR submitted → `WAIT_REVIEW`**: set S:WAIT_REVIEW. Run poll script. If changes requested, exec trigger:fix-pr. If approved, transition to CLEANUP. Retry: continue polling.
+- **If PR approved → `CLEANUP`**: set S:CLEANUP. Run trigger:merge-pr. On success, derive DONE from `pr.merged_at`. Retry: re-run trigger (idempotent).
 
 ### State transitions (ASCII)
 
 ```text
-                            (start)
+                         (no state file)
                                |
                                v
                         +--------------+
-                        |   RUNNING    |
+                        |    START     |
+                        +--------------+
+                               |
+                               | LLM sends signal S:START
+                               | payload: { sessionID }
+                               v
+                        +--------------+
+                        |   RUNNING    |  (LLM executing task)
                         +--------------+
                           |          |
-          pr exists + not approved   | pr.review_status == approved
-                          |          |
+          PR submitted    |          | needs input
                           v          v
-                 +-------------------+      pr.merged_at set
-                 | WAITING_ON_REVIEW |-----------------------------+
-                 +-------------------+                             |
-                          |                                        |
-                          | pr.review_status == approved           |
-                          v                                        |
-                    +---------------+                              |
-                    |  PR_APPROVED  |------------------------------+
-                    +---------------+                              |
-                          |                                        v
-                          +-------------------------------> +-------------+
-                                                         |    DONE      |
-                                                         +-------------+
+                 +-------------------+    +---------------+
+                 |   WAIT_REVIEW     |    |  NEEDS_INPUT  |
+                 +-------------------+    +---------------+
+                    |           |                |
+       changes      |           | approved       | user responds
+       requested    |           |                |
+          |         |           v                v
+          v         |     +---------------+   (back to RUNNING
+  trigger:fix-pr    |     |    CLEANUP    |    or WAIT_REVIEW)
+  (back to          |     +---------------+
+   WAIT_REVIEW)     |           |
+                    |           | trigger:merge-pr
+                    |           | pr.merged_at set
+                    |           v
+                    |     +-------------+
+                    +---->|    DONE     |
+                          +-------------+
 
 From any non-DONE state:
   needs_user_input = true  ->  NEEDS_INPUT
-
-                    +---------------+
-                    |  NEEDS_INPUT  |
-                    +---------------+
-                          |
-                          | user handoff response persisted,
-                          | needs_user_input = false
-                          v
-     derive next state from PR fields:
-       - no PR -> RUNNING
-       - PR approved -> PR_APPROVED
-       - PR open/changes_requested -> WAITING_ON_REVIEW
-       - PR merged (and needs_user_input=false) -> DONE
 ```
 
-Precedence rule for derived states:
-- `NEEDS_INPUT` has priority over `DONE`; if `needs_user_input=true`, state is `NEEDS_INPUT` even when `pr.merged_at` is set.
+### Retry behavior
+
+| State | On crash / restart | Action |
+|-------|--------------------|--------|
+| `START` (no state file) | State file missing | Start fresh with prompt |
+| `START` (session recorded) | Resume existing session | Resume session ID with prompt `"continue"` |
+| `NEEDS_INPUT` | Still waiting | Re-enter wait; do not re-send signal |
+| `WAIT_REVIEW` | Polling interrupted | Continue polling PR status |
+| `CLEANUP` | Merge may be partial | Re-run trigger:merge-pr (idempotent) |
+| `DONE` | Terminal | Exit immediately |
 
 ### Signal handling
 
 - `run.json` is authoritative for lifecycle state.
 - Model output text is not authoritative for state transitions.
-- Model tools request state changes through the signal CLI, which appends to `state_signals.jsonl`.
+- Model tools request state changes through the signals skill, which appends to `state_signals.jsonl`.
 - Inner loop consumes queued signals in-order and is the only process that persists resulting state to `run.json`.
 - For `NEEDS_INPUT`, the inner loop sets `needs_user_input=true`, persists `needs_user_input_payload`, and blocks on user handoff until a response is available.
 - After handoff completes, inner loop clears `needs_user_input` and `needs_user_input_payload`, writes `run.json`, and resumes the state machine.
+
+### Triggers
+
+| Trigger | Invoked from | Description |
+|---------|-------------|-------------|
+| `trigger:fix-pr` | `WAIT_REVIEW` | Resume Codex to address review feedback and update the PR. |
+| `trigger:merge-pr` | `CLEANUP` | Merge the PR and run post-merge cleanup. Idempotent. |
 
 ### CLI callers
 
 - `python -m loops.cli` starts the outer loop runner.
 - `python -m loops.inner_loop` runs one inner-loop execution for a run directory.
-- No Loops component currently auto-invokes a state-signal CLI because it is not implemented yet.
-- Once implemented, the state-signal CLI caller is expected to be the model path (for example via the `$needs_input` skill), not the outer loop.
+- The signals skill (`$needs_input`) enqueues signals; it does not write `run.json` directly.
 
 ### Prompt
 Single prompt used for initial run and all resumes:
