@@ -16,6 +16,7 @@ from loops.run_record import CodexSession, RunRecord, read_run_record, write_run
 PROMPT_TEMPLATE = (
     "Use dev.do to implement the task, open a PR, wait for review, address feedback, "
     "and cleanup when approved.\n"
+    'If needing input from user, use "$needs_input" skill to request user input.\n'
     "Task: {task}\n"
 )
 

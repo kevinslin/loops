@@ -65,6 +65,11 @@ def test_inner_loop_records_session_id_and_logs(tmp_path, monkeypatch) -> None:
     record = read_run_record(run_dir / "run.json")
     assert record.codex_session is not None
     assert record.codex_session.id == session_id
+    assert record.codex_session.last_prompt is not None
+    assert (
+        'If needing input from user, use "$needs_input" skill to request user input.'
+        in record.codex_session.last_prompt
+    )
 
     log_output = (run_dir / "run.log").read_text()
     assert "stub output" in log_output

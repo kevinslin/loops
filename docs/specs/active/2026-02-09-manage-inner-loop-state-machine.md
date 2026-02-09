@@ -7,7 +7,7 @@
 
 ## Goal
 
-Implement a durable inner-loop state machine that runs until derived `DONE`, keeps `run.json` authoritative, and supports model-initiated `NEEDS_INPUT` requests through a validated state-writer script.
+Implement a durable inner-loop state machine that runs until derived `DONE`, keeps `run.json` authoritative under a single-writer model, and supports model-initiated `NEEDS_INPUT` requests through a validated signal script consumed by the inner loop.
 
 ---
 
@@ -36,7 +36,9 @@ The current inner loop executes Codex once per invocation and only toggles `need
 - Add an inner-loop orchestrator that repeats until `derive_run_state(record.pr, record.needs_user_input) == "DONE"`.
 - Introduce a state-handling dispatcher: `_handle_state(state, state_args, record)` returns the next prompt or a wait action.
 - Persist state transitions by writing `run.json` on every loop iteration and after every side effect (Codex call, PR poll result, user handoff result).
-- Add a small CLI script that the model can call to request `NEEDS_INPUT` with payload; script validates inputs and writes through `run_record` helpers.
+- Enforce a single-writer contract: only the inner-loop orchestrator writes `run.json`.
+- Add a small CLI signal script that the model can call to request `NEEDS_INPUT` with payload; script validates input and appends to a run-local signal queue.
+- Inner loop consumes queued signals and applies them to `run.json` via `run_record` helpers.
 - Treat model output as untrusted text; the authoritative transition signal is only persisted `run.json` data.
 
 ### Technology Stack
@@ -46,18 +48,19 @@ The current inner loop executes Codex once per invocation and only toggles `need
 ### Integration Points
 - `loops/inner_loop.py`: convert from single-run executor to orchestrated state machine runner.
 - `loops/run_record.py`: add optional persisted payload for handoff context and strict validation.
-- New script module (e.g., `loops/state_signal.py`) for model-initiated state writes.
+- New script module (e.g., `loops/state_signal.py`) for model-initiated signal enqueueing.
 - Existing PR metadata in `run.json.pr` for transition derivation.
 
 ### Design Patterns
 - Deterministic FSM with pure state derivation and side-effect adapters.
-- Command/query separation: model writes intent via script; loop consumes persisted state.
+- Command/query separation: model writes intent via signal script; loop consumes signals and updates persisted state.
 - Crash-safe persistence by frequent, explicit `run.json` writes.
 
 ### Important Context
 - `_handle_state` owns waiting logic. In `WAITING_ON_REVIEW`, it polls PR status and sleeps/backoffs instead of repeatedly invoking Codex.
-- `NEEDS_INPUT` is set via state-writer script or runtime failures; user response clears the flag and is fed back into the next Codex prompt.
+- `NEEDS_INPUT` is set by the inner loop after processing a signal (or runtime failure); when in `NEEDS_INPUT`, the loop blocks until user handoff returns a response, then clears the flag and continues.
 - `PR_APPROVED` triggers cleanup flow; `DONE` is reached only after merged PR state is observed in `run.json`.
+- Default inner-loop prompt template must include: `If needing input from user, use "$needs_input" skill to request user input.`
 
 ---
 
@@ -69,18 +72,19 @@ The current inner loop executes Codex once per invocation and only toggles `need
 - [ ] Keep `derive_run_state` unchanged (still based on `pr` + `needs_user_input`).
 - [ ] Add tests for round-trip persistence and validation errors.
 
-### Phase 2: Add model-accessible state writer
-- [ ] Implement script entrypoint to write `NEEDS_INPUT` with payload to `run.json`.
-- [ ] Reject unsupported direct state writes (especially direct `DONE` writes).
-- [ ] Add audit log entry in `run.log` when state writer updates record.
-- [ ] Add tests for accepted/rejected state-writer commands.
+### Phase 2: Add model-accessible signal channel (no direct state writes)
+- [ ] Implement script entrypoint to enqueue `NEEDS_INPUT` with payload to a run-local signal queue.
+- [ ] Reject unsupported signal types and malformed payloads.
+- [ ] Add audit log entry in `run.log` when signals are accepted and when applied.
+- [ ] Add tests for accepted/rejected signal commands and queue parsing.
 
 ### Phase 3: Implement inner-loop orchestrator + handlers
 - [ ] Refactor `run_inner_loop` into a loop: read state -> `_handle_state` -> optional Codex invocation -> persist -> repeat.
+- [ ] Ensure `PROMPT_TEMPLATE` includes explicit instruction to use `$needs_input` when user input is required.
 - [ ] Implement handler behavior per state:
 - [ ] `RUNNING`: invoke/resume Codex and persist outputs/session.
 - [ ] `WAITING_ON_REVIEW`: poll PR status with wait/backoff and update `pr.review_status`.
-- [ ] `NEEDS_INPUT`: hand off to user with payload context; persist response and clear input flag.
+- [ ] `NEEDS_INPUT`: hand off to user with payload context; block until response, persist response, and clear input flag.
 - [ ] `PR_APPROVED`: run cleanup path, then continue polling for merge to reach `DONE`.
 - [ ] Add guardrails: max idle polls, structured logging, and safe retries on transient errors.
 
@@ -102,7 +106,7 @@ The current inner loop executes Codex once per invocation and only toggles `need
 - Integration test: `RUNNING -> WAITING_ON_REVIEW -> PR_APPROVED -> DONE` using stubs for Codex + PR polling.
 - Integration test: `RUNNING -> NEEDS_INPUT -> RUNNING` with persisted payload and user handoff response.
 - Recovery test: restart mid-`WAITING_ON_REVIEW` and verify loop resumes from `run.json`.
-- Validation test: state-writer rejects direct `DONE` or malformed payload.
+- Validation test: signal script rejects malformed payload and unsupported signal types.
 - Regression test: existing `derive_run_state` behavior remains unchanged.
 - Full suite: `python -m pytest`.
 
@@ -128,7 +132,7 @@ The current inner loop executes Codex once per invocation and only toggles `need
 
 | Risk | Impact | Probability | Mitigation Strategy |
 |------|--------|-------------|---------------------|
-| Concurrent writes to `run.json` from loop + state-writer script | High | Med | Centralize writes via helpers and use atomic file replacement semantics |
+| Handoff can block indefinitely waiting for user response | High | Med | Add heartbeat logging, timeout alerts, and explicit operator resume procedure |
 | Model writes invalid or oversized payloads | Med | Med | Strict schema validation, size limits, and clear error return from script |
 | Busy-looping while waiting for review | Med | Med | Backoff + sleep in `WAITING_ON_REVIEW`, with periodic heartbeat logs |
 | Premature terminal state due to model instruction | High | Low | Disallow direct `DONE` writes; only derived `DONE` from `pr.merged_at` |
@@ -138,11 +142,13 @@ The current inner loop executes Codex once per invocation and only toggles `need
 ## Questions
 
 ### Technical Decisions Needed
-- [ ] Choose canonical payload field name (`needs_user_input_payload` vs `state_args`).
-- [ ] Decide whether state-writer script should support only `NEEDS_INPUT` (recommended) or additional non-terminal states.
+- [x] `NEEDS_INPUT` behavior: block until user response is received.
+- [x] `run.json` ownership model: single writer (inner loop process only).
+- [x] Signal scope for MVP: support `NEEDS_INPUT` only.
+- [x] Canonical payload field name: `needs_user_input_payload`.
 
 ### Clarifications Required
-- [ ] Define exact user-handoff payload schema (required keys + optional metadata).
+- [x] User-handoff payload schema (MVP): `{ "message": string, "context"?: object }`.
 
 ### Research Tasks
 - [ ] Confirm best existing PR polling utility in repo to reuse (avoid duplicate API logic).
@@ -153,7 +159,9 @@ The current inner loop executes Codex once per invocation and only toggles `need
 
 - [ ] Inner loop process continues until derived `DONE`.
 - [ ] `run.json` remains authoritative for all transitions and restart recovery.
-- [ ] Model can request `NEEDS_INPUT` + payload only through validated script.
+- [ ] Model can request `NEEDS_INPUT` + payload only through validated signal script.
+- [ ] Inner loop is the only process that writes `run.json`.
+- [ ] `NEEDS_INPUT` path blocks until user response is provided.
 - [ ] `WAITING_ON_REVIEW` uses polling/backoff and does not repeatedly invoke Codex.
 - [ ] No path allows direct model-declared `DONE`.
 - [ ] Integration tests cover lifecycle, handoff, and restart scenarios.
@@ -163,4 +171,4 @@ The current inner loop executes Codex once per invocation and only toggles `need
 ## Notes
 
 - Simplification applied: removed XML `<exit>...</exit>` as the lifecycle authority. Control plane is persisted `run.json`; model output is only advisory.
-- Simplification applied: scope model-writable state to `NEEDS_INPUT` first, avoiding a generic model-driven transition API.
+- Simplification applied: scope model signals to `NEEDS_INPUT` first, avoiding a generic model-driven transition API.
