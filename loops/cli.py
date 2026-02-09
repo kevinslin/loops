@@ -3,12 +3,14 @@ from __future__ import annotations
 """Command-line interface for the Loops outer loop runner."""
 
 from dataclasses import replace
+import sys
 from pathlib import Path
 from typing import Optional
 
 import click
 
 from loops.outer_loop import (
+    InnerLoopCommandConfig,
     OuterLoopRunner,
     build_inner_loop_launcher,
     build_provider,
@@ -53,10 +55,16 @@ def main(
     loop_config = config.loop_config
     if force is not None:
         loop_config = replace(loop_config, force=force)
+    if config.inner_loop is None:
+        config = replace(
+            config,
+            inner_loop=InnerLoopCommandConfig(
+                command=[sys.executable, "-m", "loops.inner_loop"],
+                append_task_url=False,
+            ),
+        )
     provider = build_provider(config)
-    launcher = None
-    if config.inner_loop is not None:
-        launcher = build_inner_loop_launcher(config)
+    launcher = build_inner_loop_launcher(config)
     loops_root = _resolve_loops_root(config_path)
     runner = OuterLoopRunner(
         provider,

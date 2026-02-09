@@ -21,7 +21,7 @@ PROMPT_TEMPLATE = (
 
 SESSION_ID_PATTERN = re.compile(r"session[_\s-]*id\s*[:=]\s*([\w-]+)", re.IGNORECASE)
 UUID_PATTERN = re.compile(
-    r"\\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\b",
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
     re.IGNORECASE,
 )
 
@@ -90,7 +90,7 @@ def _build_prompt(task_url: str, base_prompt: Optional[str]) -> str:
     prompt = PROMPT_TEMPLATE.format(task=task_url)
     if base_prompt:
         trimmed = base_prompt.rstrip()
-        return f"{trimmed}\\n\\n{prompt}"
+        return f"{trimmed}\n\n{prompt}"
     return prompt
 
 
@@ -116,8 +116,8 @@ def _append_log(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(content)
-        if not content.endswith("\\n"):
-            handle.write("\\n")
+        if not content.endswith("\n"):
+            handle.write("\n")
 
 
 def _extract_session_id(output: str) -> Optional[str]:

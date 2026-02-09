@@ -22,9 +22,10 @@ def _write_stub(path: Path, *, session_id: str, exit_code: int) -> None:
     path.write_text(
         "\n".join(
             [
+                "import json",
                 "import sys",
                 "sys.stdin.read()",
-                f"print('session_id: {session_id}')",
+                f"print(json.dumps({{'session_id': '{session_id}'}}))",
                 "print('stub output')",
                 f"sys.exit({exit_code})",
                 "",
