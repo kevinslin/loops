@@ -135,6 +135,45 @@ Key types:
 - Top-level keys: `provider_id`, `provider_config`, `loop_config`, `inner_loop`
 - `inner_loop` keys: `command`, `working_dir`, `env`, `append_task_url`
 
+Config shape:
+```ts
+type LoopsConfigFile = {
+    provider_id: "github_projects_v2"
+    provider_config: GithubProjectsV2TaskProviderConfig
+    loop_config?: OuterLoopConfig
+    inner_loop?: InnerLoopCommandConfig
+}
+
+type OuterLoopConfig = {
+    poll_interval_seconds?: number
+    parallel_tasks?: boolean
+    parallel_tasks_limit?: number
+    emit_on_first_run?: boolean
+    force?: boolean
+    task_ready_status?: string
+}
+
+type InnerLoopCommandConfig = {
+    command: string | string[]
+    working_dir?: string
+    env?: Record<string, string>
+    append_task_url?: boolean
+}
+
+type GithubProjectsV2TaskProviderConfig = {
+    url: string
+    status_field: "Status"
+    page_size?: number
+    github_token?: string
+}
+```
+
+Notes:
+- `provider_id` currently supports only `"github_projects_v2"`.
+- `loop_config` is optional; omitted keys fall back to defaults.
+- `inner_loop` is optional when running via the CLI; if omitted, the CLI uses
+  `python -m loops.inner_loop` with `append_task_url=false`.
+
 ### Environment variables
 - `LOOPS_RUN_DIR`: required path to the inner loop run directory.
 - `CODEX_CMD`: command used to invoke Codex (default: `codex exec --yolo`).
