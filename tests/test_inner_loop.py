@@ -1,9 +1,14 @@
+from __future__ import annotations
+
+import json
+import os
 import shlex
 import sys
 from pathlib import Path
 
 from loops.inner_loop import run_inner_loop
-from loops.run_record import RunRecord, Task, read_run_record, write_run_record
+from loops.run_record import RunPR, RunRecord, Task, read_run_record, write_run_record
+from loops.state_signal import enqueue_state_signal
 
 
 def _task() -> Task:
@@ -18,93 +23,216 @@ def _task() -> Task:
     )
 
 
-def _write_stub(path: Path, *, session_id: str, exit_code: int) -> None:
-    path.write_text(
-        "\n".join(
-            [
-                "import json",
-                "import sys",
-                "sys.stdin.read()",
-                f"print(json.dumps({{'session_id': '{session_id}'}}))",
-                "print('stub output')",
-                f"sys.exit({exit_code})",
-                "",
-            ]
-        )
-    )
-
-
-def _write_run_record(run_dir: Path, *, needs_user_input: bool = False) -> None:
+def _write_run_record(
+    run_dir: Path,
+    *,
+    pr: RunPR | None = None,
+    needs_user_input: bool = False,
+    needs_user_input_payload: dict[str, object] | None = None,
+) -> None:
     record = RunRecord(
         task=_task(),
-        pr=None,
+        pr=pr,
         codex_session=None,
         needs_user_input=needs_user_input,
+        needs_user_input_payload=needs_user_input_payload,
         last_state="NEEDS_INPUT" if needs_user_input else "RUNNING",
         updated_at="",
     )
     write_run_record(run_dir / "run.json", record)
 
 
-def test_inner_loop_records_session_id_and_logs(tmp_path, monkeypatch) -> None:
+def _write_codex_stub(path: Path) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "import json",
+                "import os",
+                "import sys",
+                "from pathlib import Path",
+                "",
+                "stdin = sys.stdin.read()",
+                "prompt_log = os.environ.get('STUB_PROMPT_LOG')",
+                "if prompt_log:",
+                "    with Path(prompt_log).open('a', encoding='utf-8') as handle:",
+                "        handle.write(stdin.replace('\\n', '\\\\n'))",
+                "        handle.write('\\n')",
+                "",
+                "counter_path = Path(os.environ['STUB_COUNTER_PATH'])",
+                "if counter_path.exists():",
+                "    count = int(counter_path.read_text())",
+                "else:",
+                "    count = 0",
+                "count += 1",
+                "counter_path.write_text(str(count))",
+                "",
+                "print(json.dumps({'session_id': f'session-{count}'}))",
+                "if count == 1:",
+                "    print('Opened PR https://github.com/acme/api/pull/42')",
+                "else:",
+                "    print('cleanup complete')",
+                "sys.exit(0)",
+                "",
+            ]
+        )
+    )
+
+
+def test_inner_loop_reaches_done_lifecycle(tmp_path, monkeypatch) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     _write_run_record(run_dir)
 
-    session_id = "123e4567-e89b-12d3-a456-426614174000"
     stub = tmp_path / "codex_stub.py"
-    _write_stub(stub, session_id=session_id, exit_code=0)
-
+    _write_codex_stub(stub)
+    counter_path = tmp_path / "counter.txt"
+    monkeypatch.setenv("STUB_COUNTER_PATH", str(counter_path))
     monkeypatch.setenv(
         "CODEX_CMD",
         f"{shlex.quote(sys.executable)} {shlex.quote(str(stub))}",
     )
 
-    run_inner_loop(run_dir)
+    poll_calls = {"count": 0}
 
-    record = read_run_record(run_dir / "run.json")
-    assert record.codex_session is not None
-    assert record.codex_session.id == session_id
+    def pr_status_fetcher(pr: RunPR) -> RunPR:
+        poll_calls["count"] += 1
+        if poll_calls["count"] == 1:
+            return RunPR(
+                url=pr.url,
+                number=pr.number,
+                repo=pr.repo,
+                review_status="approved",
+                merged_at=None,
+                last_checked_at="2026-02-09T00:00:01Z",
+            )
+        return RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="approved",
+            merged_at="2026-02-09T00:00:02Z",
+            last_checked_at="2026-02-09T00:00:02Z",
+        )
 
-    log_output = (run_dir / "run.log").read_text()
-    assert "stub output" in log_output
+    result = run_inner_loop(
+        run_dir,
+        pr_status_fetcher=pr_status_fetcher,
+        sleep_fn=lambda _seconds: None,
+        max_iterations=20,
+    )
+
+    assert result.last_state == "DONE"
+    assert result.pr is not None
+    assert result.pr.merged_at == "2026-02-09T00:00:02Z"
+    assert counter_path.read_text() == "2"  # RUNNING + PR_APPROVED cleanup
 
 
-def test_inner_loop_sets_needs_user_input_on_failure(tmp_path, monkeypatch) -> None:
+def test_inner_loop_consumes_signal_and_uses_user_response_in_prompt(
+    tmp_path, monkeypatch
+) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     _write_run_record(run_dir)
 
-    session_id = "123e4567-e89b-12d3-a456-426614174001"
-    stub = tmp_path / "codex_stub.py"
-    _write_stub(stub, session_id=session_id, exit_code=2)
+    enqueue_state_signal(
+        run_dir,
+        state="NEEDS_INPUT",
+        message="Need user decision",
+        context={"scope": "priority"},
+    )
 
+    stub = tmp_path / "codex_stub.py"
+    _write_codex_stub(stub)
+    counter_path = tmp_path / "counter.txt"
+    prompt_log_path = tmp_path / "prompts.log"
+    monkeypatch.setenv("STUB_COUNTER_PATH", str(counter_path))
+    monkeypatch.setenv("STUB_PROMPT_LOG", str(prompt_log_path))
     monkeypatch.setenv(
         "CODEX_CMD",
         f"{shlex.quote(sys.executable)} {shlex.quote(str(stub))}",
     )
 
-    run_inner_loop(run_dir)
+    def pr_status_fetcher(pr: RunPR) -> RunPR:
+        return RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="approved",
+            merged_at="2026-02-09T00:00:09Z",
+            last_checked_at="2026-02-09T00:00:09Z",
+        )
 
-    record = read_run_record(run_dir / "run.json")
-    assert record.needs_user_input is True
+    result = run_inner_loop(
+        run_dir,
+        pr_status_fetcher=pr_status_fetcher,
+        user_handoff_handler=lambda payload: f"ack: {payload['message']}",
+        sleep_fn=lambda _seconds: None,
+        max_iterations=20,
+    )
+
+    assert result.last_state == "DONE"
+    persisted = read_run_record(run_dir / "run.json")
+    assert persisted.needs_user_input is False
+    assert persisted.needs_user_input_payload is None
+
+    prompts = prompt_log_path.read_text()
+    assert (
+        'If needing input from user, use "$needs_input" skill to request user input.'
+        in prompts
+    )
+    assert "User input:\\nack: Need user decision" in prompts
 
 
-def test_inner_loop_clears_needs_user_input_on_success(tmp_path, monkeypatch) -> None:
+def test_inner_loop_resumes_from_waiting_on_review_without_codex(tmp_path, monkeypatch) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    _write_run_record(run_dir, needs_user_input=True)
-
-    session_id = "123e4567-e89b-12d3-a456-426614174002"
-    stub = tmp_path / "codex_stub.py"
-    _write_stub(stub, session_id=session_id, exit_code=0)
-
-    monkeypatch.setenv(
-        "CODEX_CMD",
-        f"{shlex.quote(sys.executable)} {shlex.quote(str(stub))}",
+    _write_run_record(
+        run_dir,
+        pr=RunPR(
+            url="https://github.com/acme/api/pull/42",
+            number=42,
+            repo="acme/api",
+            review_status="open",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:00Z",
+        ),
     )
 
-    run_inner_loop(run_dir)
+    # This command should never execute in this test path.
+    marker = tmp_path / "should_not_run.txt"
+    failing_stub = tmp_path / "failing_stub.py"
+    failing_stub.write_text(
+        "\n".join(
+            [
+                "import sys",
+                "from pathlib import Path",
+                f"Path({str(marker)!r}).write_text('ran')",
+                "sys.exit(1)",
+                "",
+            ]
+        )
+    )
+    monkeypatch.setenv(
+        "CODEX_CMD",
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(failing_stub))}",
+    )
 
-    record = read_run_record(run_dir / "run.json")
-    assert record.needs_user_input is False
+    def pr_status_fetcher(pr: RunPR) -> RunPR:
+        return RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="approved",
+            merged_at="2026-02-09T00:00:22Z",
+            last_checked_at="2026-02-09T00:00:22Z",
+        )
+
+    result = run_inner_loop(
+        run_dir,
+        pr_status_fetcher=pr_status_fetcher,
+        sleep_fn=lambda _seconds: None,
+        max_iterations=10,
+    )
+
+    assert result.last_state == "DONE"
+    assert not marker.exists()

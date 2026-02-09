@@ -72,6 +72,7 @@ def test_write_run_record_writes_required_keys(tmp_path) -> None:
             "pr",
             "codex_session",
             "needs_user_input",
+            "needs_user_input_payload",
             "last_state",
             "updated_at",
         ]
@@ -92,6 +93,44 @@ def test_read_run_record_rejects_non_bool_needs_user_input(tmp_path) -> None:
         "codex_session": None,
         "needs_user_input": "false",
         "last_state": "RUNNING",
+        "updated_at": "2026-02-03T00:00:00Z",
+    }
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps(payload))
+
+    with pytest.raises(TypeError):
+        read_run_record(path)
+
+
+def test_read_run_record_accepts_needs_user_input_payload(tmp_path) -> None:
+    payload = {
+        "task": _task().to_dict(),
+        "pr": None,
+        "codex_session": None,
+        "needs_user_input": True,
+        "needs_user_input_payload": {
+            "message": "Need decision",
+            "context": {"foo": "bar"},
+        },
+        "last_state": "NEEDS_INPUT",
+        "updated_at": "2026-02-03T00:00:00Z",
+    }
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps(payload))
+
+    record = read_run_record(path)
+    assert record.needs_user_input_payload is not None
+    assert record.needs_user_input_payload["message"] == "Need decision"
+
+
+def test_read_run_record_rejects_invalid_needs_user_input_payload(tmp_path) -> None:
+    payload = {
+        "task": _task().to_dict(),
+        "pr": None,
+        "codex_session": None,
+        "needs_user_input": True,
+        "needs_user_input_payload": {"context": {"foo": "bar"}},
+        "last_state": "NEEDS_INPUT",
         "updated_at": "2026-02-03T00:00:00Z",
     }
     path = tmp_path / "run.json"

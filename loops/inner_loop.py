@@ -3,20 +3,39 @@ from __future__ import annotations
 """Inner loop runner for executing Codex with the unified prompt."""
 
 import argparse
+from dataclasses import replace
 import json
 import os
 import re
 import shlex
 import subprocess
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional
 
-from loops.run_record import CodexSession, RunRecord, read_run_record, write_run_record
+from loops.run_record import (
+    CodexSession,
+    RunPR,
+    RunRecord,
+    derive_run_state,
+    read_run_record,
+    write_run_record,
+)
+from loops.state_signal import SIGNAL_QUEUE_FILE
 
 PROMPT_TEMPLATE = (
     "Use dev.do to implement the task, open a PR, wait for review, address feedback, "
     "and cleanup when approved.\n"
+    'If needing input from user, use "$needs_input" skill to request user input.\n'
     "Task: {task}\n"
+)
+SIGNAL_OFFSET_FILE = "state_signals.offset"
+DEFAULT_MAX_ITERATIONS = 200
+DEFAULT_REVIEW_POLL_SECONDS = 5.0
+DEFAULT_MAX_REVIEW_POLL_SECONDS = 60.0
+DEFAULT_MAX_IDLE_POLLS = 20
+GITHUB_PR_PATTERN = re.compile(
+    r"https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([0-9]+)"
 )
 
 SESSION_ID_PATTERN = re.compile(r"session[_\s-]*id\s*[:=]\s*([\w-]+)", re.IGNORECASE)
@@ -24,44 +43,229 @@ UUID_PATTERN = re.compile(
     r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
     re.IGNORECASE,
 )
+UserHandoffHandler = Callable[[dict[str, Any]], str]
+PRStatusFetcher = Callable[[RunPR], RunPR]
+SleepFn = Callable[[float], None]
 
 
-def run_inner_loop(run_dir: Path, *, prompt_file: Optional[Path] = None) -> RunRecord:
+def run_inner_loop(
+    run_dir: Path,
+    *,
+    prompt_file: Optional[Path] = None,
+    user_handoff_handler: Optional[UserHandoffHandler] = None,
+    pr_status_fetcher: Optional[PRStatusFetcher] = None,
+    sleep_fn: SleepFn = time.sleep,
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
+    initial_poll_seconds: float = DEFAULT_REVIEW_POLL_SECONDS,
+    max_poll_seconds: float = DEFAULT_MAX_REVIEW_POLL_SECONDS,
+    max_idle_polls: int = DEFAULT_MAX_IDLE_POLLS,
+) -> RunRecord:
     """Run the inner loop for a single task directory."""
 
+    if max_iterations <= 0:
+        raise ValueError("max_iterations must be positive")
+
     run_dir = run_dir.resolve()
+    run_json_path = run_dir / "run.json"
     run_log = run_dir / "run.log"
-    run_record = read_run_record(run_dir / "run.json")
     base_prompt = _load_prompt_file(prompt_file)
-    prompt = _build_prompt(run_record.task.url, base_prompt)
     command = _resolve_codex_command()
-    output, exit_code = _run_codex(command, prompt)
-    _append_log(run_log, output)
+    pr_status_fetcher = pr_status_fetcher or _fetch_pr_status_with_gh
+    user_handoff_handler = user_handoff_handler or _default_user_handoff_handler
+    backoff_seconds = initial_poll_seconds
+    idle_polls = 0
+    next_user_response: Optional[str] = None
+    cleanup_executed_for_pr: Optional[str] = None
 
-    session_id = _extract_session_id(output)
-    if session_id is None and exit_code == 0:
-        _append_log(run_log, "[loops] warning: no session id detected in codex output")
+    for _ in range(max_iterations):
+        run_record = read_run_record(run_json_path)
+        run_record = _apply_pending_signals(run_dir, run_record)
+        state = derive_run_state(run_record.pr, run_record.needs_user_input)
 
-    if exit_code != 0:
-        _append_log(run_log, f"[loops] codex exit code {exit_code}")
+        if state == "DONE":
+            _append_log(run_log, "[loops] run state DONE; exiting inner loop")
+            return run_record
 
-    needs_user_input = exit_code != 0
-    codex_session = run_record.codex_session
-    if session_id is not None:
-        codex_session = CodexSession(id=session_id, last_prompt=prompt)
+        if state == "NEEDS_INPUT":
+            response = _handle_needs_input(
+                run_record,
+                user_handoff_handler,
+                run_log,
+            )
+            if response is None:
+                sleep_fn(min(backoff_seconds, max_poll_seconds))
+                backoff_seconds = min(backoff_seconds * 2, max_poll_seconds)
+                continue
 
-    updated = write_run_record(
-        run_dir / "run.json",
-        RunRecord(
-            task=run_record.task,
-            pr=run_record.pr,
-            codex_session=codex_session,
-            needs_user_input=needs_user_input,
-            last_state=run_record.last_state,
-            updated_at=run_record.updated_at,
+            next_user_response = response
+            run_record = write_run_record(
+                run_json_path,
+                replace(
+                    run_record,
+                    needs_user_input=False,
+                    needs_user_input_payload=None,
+                ),
+            )
+            backoff_seconds = initial_poll_seconds
+            idle_polls = 0
+            continue
+
+        if state == "RUNNING":
+            prompt = _build_prompt(
+                run_record.task.url,
+                base_prompt,
+                user_response=next_user_response,
+            )
+            next_user_response = None
+            output, exit_code = _run_codex(command, prompt)
+            _append_log(run_log, output)
+
+            session_id = _extract_session_id(output)
+            codex_session = run_record.codex_session
+            if session_id is not None:
+                codex_session = CodexSession(id=session_id, last_prompt=prompt)
+            elif exit_code == 0:
+                _append_log(run_log, "[loops] warning: no session id detected in codex output")
+
+            discovered_pr = _extract_pr_from_output(output)
+            pr = _merge_pr_records(run_record.pr, discovered_pr)
+            needs_user_input = exit_code != 0
+            needs_user_input_payload = run_record.needs_user_input_payload
+            if exit_code != 0:
+                _append_log(run_log, f"[loops] codex exit code {exit_code}")
+                needs_user_input_payload = {
+                    "message": "Codex exited with a non-zero status. Provide guidance.",
+                    "context": {"exit_code": exit_code},
+                }
+            elif pr is None:
+                needs_user_input = True
+                needs_user_input_payload = {
+                    "message": (
+                        "Codex run completed without opening a PR or requesting input. "
+                        "What should Loops do next?"
+                    )
+                }
+                _append_log(
+                    run_log,
+                    "[loops] no PR detected after codex run; requesting user input",
+                )
+
+            run_record = write_run_record(
+                run_json_path,
+                replace(
+                    run_record,
+                    pr=pr,
+                    codex_session=codex_session,
+                    needs_user_input=needs_user_input,
+                    needs_user_input_payload=needs_user_input_payload,
+                ),
+            )
+            cleanup_executed_for_pr = None
+            backoff_seconds = initial_poll_seconds
+            idle_polls = 0
+            continue
+
+        if state == "WAITING_ON_REVIEW":
+            if run_record.pr is None:
+                run_record = _force_needs_input(
+                    run_json_path,
+                    run_record,
+                    message="Run is waiting on review but no PR metadata exists.",
+                )
+                continue
+            try:
+                updated_pr = pr_status_fetcher(run_record.pr)
+            except Exception as exc:
+                _append_log(run_log, f"[loops] failed to poll PR status: {exc}")
+                idle_polls += 1
+                if idle_polls >= max_idle_polls:
+                    run_record = _force_needs_input(
+                        run_json_path,
+                        run_record,
+                        message=(
+                            "PR polling has been idle for too long. "
+                            "Please check review status manually."
+                        ),
+                    )
+                    idle_polls = 0
+                sleep_fn(min(backoff_seconds, max_poll_seconds))
+                backoff_seconds = min(backoff_seconds * 2, max_poll_seconds)
+                continue
+
+            run_record = write_run_record(
+                run_json_path,
+                replace(run_record, pr=updated_pr),
+            )
+            next_state = derive_run_state(run_record.pr, run_record.needs_user_input)
+            if next_state == "WAITING_ON_REVIEW":
+                idle_polls += 1
+                if idle_polls >= max_idle_polls:
+                    run_record = _force_needs_input(
+                        run_json_path,
+                        run_record,
+                        message=(
+                            "PR has not changed after repeated polls. "
+                            "Please provide manual guidance."
+                        ),
+                    )
+                    idle_polls = 0
+            else:
+                idle_polls = 0
+                backoff_seconds = initial_poll_seconds
+            sleep_fn(min(backoff_seconds, max_poll_seconds))
+            backoff_seconds = min(backoff_seconds * 2, max_poll_seconds)
+            continue
+
+        if state == "PR_APPROVED":
+            if run_record.pr is None:
+                run_record = _force_needs_input(
+                    run_json_path,
+                    run_record,
+                    message="Run is PR_APPROVED but no PR metadata exists.",
+                )
+                continue
+
+            # Run cleanup once for a given PR URL, then only poll until merged.
+            if cleanup_executed_for_pr != run_record.pr.url:
+                cleanup_prompt = _build_cleanup_prompt(run_record.task.url, base_prompt)
+                output, exit_code = _run_codex(command, cleanup_prompt)
+                _append_log(run_log, output)
+                if exit_code != 0:
+                    run_record = _force_needs_input(
+                        run_json_path,
+                        run_record,
+                        message="Cleanup failed after PR approval. Please advise.",
+                        context={"exit_code": exit_code},
+                    )
+                    continue
+                cleanup_executed_for_pr = run_record.pr.url
+
+            try:
+                updated_pr = pr_status_fetcher(run_record.pr)
+            except Exception as exc:
+                _append_log(run_log, f"[loops] failed to poll merge status: {exc}")
+                sleep_fn(min(backoff_seconds, max_poll_seconds))
+                backoff_seconds = min(backoff_seconds * 2, max_poll_seconds)
+                continue
+
+            run_record = write_run_record(
+                run_json_path,
+                replace(run_record, pr=updated_pr),
+            )
+            sleep_fn(min(backoff_seconds, max_poll_seconds))
+            backoff_seconds = min(backoff_seconds * 2, max_poll_seconds)
+            continue
+
+    final_record = read_run_record(run_json_path)
+    final_record = _force_needs_input(
+        run_json_path,
+        final_record,
+        message=(
+            "Inner loop reached max iterations without DONE. "
+            "Please provide guidance."
         ),
     )
-    return updated
+    return final_record
 
 
 def _resolve_codex_command() -> list[str]:
@@ -86,11 +290,24 @@ def _load_prompt_file(prompt_file: Optional[Path]) -> Optional[str]:
     return prompt_file.read_text()
 
 
-def _build_prompt(task_url: str, base_prompt: Optional[str]) -> str:
+def _build_prompt(
+    task_url: str,
+    base_prompt: Optional[str],
+    *,
+    user_response: Optional[str] = None,
+) -> str:
     prompt = PROMPT_TEMPLATE.format(task=task_url)
+    if user_response is not None and user_response.strip():
+        prompt += f"\nUser input:\n{user_response.strip()}\n"
     if base_prompt:
         trimmed = base_prompt.rstrip()
         return f"{trimmed}\n\n{prompt}"
+    return prompt
+
+
+def _build_cleanup_prompt(task_url: str, base_prompt: Optional[str]) -> str:
+    prompt = _build_prompt(task_url, base_prompt)
+    prompt += "\nPR is approved. Run cleanup now and report completion.\n"
     return prompt
 
 
@@ -138,6 +355,230 @@ def _extract_session_id(output: str) -> Optional[str]:
     if match:
         return match.group(0)
     return None
+
+
+def _extract_pr_from_output(output: str) -> Optional[RunPR]:
+    for line in output.splitlines():
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            for key in ("pr_url", "pull_request_url", "url"):
+                value = payload.get(key)
+                if isinstance(value, str):
+                    pr = _run_pr_from_url(value)
+                    if pr is not None:
+                        return pr
+    match = GITHUB_PR_PATTERN.search(output)
+    if not match:
+        return None
+    return _run_pr_from_url(match.group(0))
+
+
+def _run_pr_from_url(url: str) -> Optional[RunPR]:
+    match = GITHUB_PR_PATTERN.search(url)
+    if not match:
+        return None
+    owner = match.group(1)
+    repo_name = match.group(2)
+    number = int(match.group(3))
+    return RunPR(
+        url=match.group(0),
+        number=number,
+        repo=f"{owner}/{repo_name}",
+        review_status="open",
+    )
+
+
+def _merge_pr_records(existing: Optional[RunPR], discovered: Optional[RunPR]) -> Optional[RunPR]:
+    if discovered is None:
+        return existing
+    if existing is None:
+        return discovered
+    if existing.url != discovered.url:
+        return discovered
+    return replace(
+        existing,
+        number=existing.number or discovered.number,
+        repo=existing.repo or discovered.repo,
+        review_status=existing.review_status or discovered.review_status,
+    )
+
+
+def _review_status_from_decision(decision: Any) -> str:
+    normalized = str(decision or "").upper()
+    if normalized == "APPROVED":
+        return "approved"
+    if normalized == "CHANGES_REQUESTED":
+        return "changes_requested"
+    return "open"
+
+
+def _fetch_pr_status_with_gh(pr: RunPR) -> RunPR:
+    result = subprocess.run(
+        [
+            "gh",
+            "pr",
+            "view",
+            pr.url,
+            "--json",
+            "reviewDecision,mergedAt,url,number,repository",
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        env=os.environ.copy(),
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip())
+    payload = json.loads(result.stdout)
+
+    repo = pr.repo
+    repository = payload.get("repository")
+    if isinstance(repository, dict):
+        owner = repository.get("owner")
+        owner_login = owner.get("login") if isinstance(owner, dict) else None
+        name = repository.get("name")
+        if isinstance(owner_login, str) and isinstance(name, str):
+            repo = f"{owner_login}/{name}"
+
+    number = payload.get("number")
+    parsed_number = number if isinstance(number, int) else pr.number
+    merged_at = payload.get("mergedAt")
+    merged_at_str = str(merged_at) if merged_at is not None else None
+    return RunPR(
+        url=str(payload.get("url") or pr.url),
+        number=parsed_number,
+        repo=repo,
+        review_status=_review_status_from_decision(payload.get("reviewDecision")),
+        merged_at=merged_at_str,
+        last_checked_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    )
+
+
+def _default_user_handoff_handler(payload: dict[str, Any]) -> str:
+    message = str(payload.get("message") or "Input required to continue:")
+    context = payload.get("context")
+    print(f"[loops] {message}")
+    if context:
+        print(f"[loops] context: {json.dumps(context, ensure_ascii=True, sort_keys=True)}")
+    print("[loops] response: ", end="", flush=True)
+    return input().strip()
+
+
+def _handle_needs_input(
+    run_record: RunRecord,
+    handler: UserHandoffHandler,
+    run_log: Path,
+) -> Optional[str]:
+    payload = run_record.needs_user_input_payload or {
+        "message": "Input required to continue.",
+    }
+    try:
+        response = handler(payload)
+    except EOFError:
+        _append_log(run_log, "[loops] unable to read user input from stdin")
+        return None
+    except Exception as exc:
+        _append_log(run_log, f"[loops] user handoff handler failed: {exc}")
+        return None
+    normalized = response.strip()
+    if not normalized:
+        _append_log(run_log, "[loops] empty user response received")
+        return None
+    _append_log(run_log, "[loops] user input received")
+    return normalized
+
+
+def _force_needs_input(
+    run_json_path: Path,
+    run_record: RunRecord,
+    *,
+    message: str,
+    context: Optional[dict[str, Any]] = None,
+) -> RunRecord:
+    payload: dict[str, Any] = {"message": message}
+    if context:
+        payload["context"] = context
+    return write_run_record(
+        run_json_path,
+        replace(
+            run_record,
+            needs_user_input=True,
+            needs_user_input_payload=payload,
+        ),
+    )
+
+
+def _read_signal_offset(offset_path: Path) -> int:
+    if not offset_path.exists():
+        return 0
+    raw = offset_path.read_text().strip()
+    if not raw:
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        return 0
+    return max(value, 0)
+
+
+def _read_pending_signals(run_dir: Path) -> list[dict[str, Any]]:
+    queue_path = run_dir / SIGNAL_QUEUE_FILE
+    offset_path = run_dir / SIGNAL_OFFSET_FILE
+    if not queue_path.exists():
+        return []
+
+    previous_offset = _read_signal_offset(offset_path)
+    file_size = queue_path.stat().st_size
+    if previous_offset > file_size:
+        previous_offset = 0
+    with queue_path.open("r", encoding="utf-8") as handle:
+        handle.seek(previous_offset)
+        chunk = handle.read()
+        new_offset = handle.tell()
+    offset_path.write_text(str(new_offset))
+
+    signals: list[dict[str, Any]] = []
+    for line in chunk.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            signals.append(payload)
+    return signals
+
+
+def _apply_pending_signals(run_dir: Path, run_record: RunRecord) -> RunRecord:
+    signals = _read_pending_signals(run_dir)
+    if not signals:
+        return run_record
+    run_log = run_dir / "run.log"
+    updated = run_record
+    for signal in signals:
+        state = str(signal.get("state") or "").upper()
+        if state != "NEEDS_INPUT":
+            _append_log(run_log, f"[loops] ignoring unsupported signal state: {state}")
+            continue
+        payload = signal.get("payload")
+        if not isinstance(payload, dict):
+            _append_log(run_log, "[loops] ignoring NEEDS_INPUT signal with invalid payload")
+            continue
+        _append_log(run_log, "[loops] signal applied: NEEDS_INPUT")
+        updated = replace(
+            updated,
+            needs_user_input=True,
+            needs_user_input_payload=payload,
+        )
+    if updated == run_record:
+        return run_record
+    return write_run_record(run_dir / "run.json", updated)
 
 
 def _resolve_run_dir(run_dir: Optional[str]) -> Path:
