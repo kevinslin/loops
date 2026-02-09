@@ -192,6 +192,16 @@ Task provider (GitHub Projects V2)
 
 `last_state` is derived from `pr.review_status` and `needs_user_input` and is stored as a cache for easy inspection.
 
+`outer_state.json` fields (minimal set):
+- `initialized`: boolean flag indicating whether the outer loop has completed at least one poll.
+- `tasks`: map keyed by `{provider_id}:{task_id}`.
+  - `task`: serialized `Task` snapshot for the most recent poll.
+  - `first_seen_at`: ISO timestamp of the first time the task was observed.
+  - `last_seen_at`: ISO timestamp of the most recent observation.
+- `updated_at`: ISO timestamp when the outer state was last persisted.
+
+The outer loop uses `outer_state.json` as a dedupe ledger to avoid re-processing tasks unless `force=true`.
+
 ## 5. Control flow
 
 ### Outer loop algorithm
