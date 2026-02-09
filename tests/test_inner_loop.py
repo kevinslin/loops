@@ -1,3 +1,4 @@
+import shlex
 import sys
 from pathlib import Path
 
@@ -32,13 +33,13 @@ def _write_stub(path: Path, *, session_id: str, exit_code: int) -> None:
     )
 
 
-def _write_run_record(run_dir: Path) -> None:
+def _write_run_record(run_dir: Path, *, needs_user_input: bool = False) -> None:
     record = RunRecord(
         task=_task(),
         pr=None,
         codex_session=None,
-        needs_user_input=False,
-        last_state="RUNNING",
+        needs_user_input=needs_user_input,
+        last_state="NEEDS_INPUT" if needs_user_input else "RUNNING",
         updated_at="",
     )
     write_run_record(run_dir / "run.json", record)
@@ -53,7 +54,10 @@ def test_inner_loop_records_session_id_and_logs(tmp_path, monkeypatch) -> None:
     stub = tmp_path / "codex_stub.py"
     _write_stub(stub, session_id=session_id, exit_code=0)
 
-    monkeypatch.setenv("CODEX_CMD", f"{sys.executable} {stub}")
+    monkeypatch.setenv(
+        "CODEX_CMD",
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(stub))}",
+    )
 
     run_inner_loop(run_dir)
 
@@ -74,9 +78,32 @@ def test_inner_loop_sets_needs_user_input_on_failure(tmp_path, monkeypatch) -> N
     stub = tmp_path / "codex_stub.py"
     _write_stub(stub, session_id=session_id, exit_code=2)
 
-    monkeypatch.setenv("CODEX_CMD", f"{sys.executable} {stub}")
+    monkeypatch.setenv(
+        "CODEX_CMD",
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(stub))}",
+    )
 
     run_inner_loop(run_dir)
 
     record = read_run_record(run_dir / "run.json")
     assert record.needs_user_input is True
+
+
+def test_inner_loop_clears_needs_user_input_on_success(tmp_path, monkeypatch) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(run_dir, needs_user_input=True)
+
+    session_id = "123e4567-e89b-12d3-a456-426614174002"
+    stub = tmp_path / "codex_stub.py"
+    _write_stub(stub, session_id=session_id, exit_code=0)
+
+    monkeypatch.setenv(
+        "CODEX_CMD",
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(stub))}",
+    )
+
+    run_inner_loop(run_dir)
+
+    record = read_run_record(run_dir / "run.json")
+    assert record.needs_user_input is False

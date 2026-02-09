@@ -45,7 +45,7 @@ def run_inner_loop(run_dir: Path, *, prompt_file: Optional[Path] = None) -> RunR
     if exit_code != 0:
         _append_log(run_log, f"[loops] codex exit code {exit_code}")
 
-    needs_user_input = run_record.needs_user_input or exit_code != 0
+    needs_user_input = exit_code != 0
     codex_session = run_record.codex_session
     if session_id is not None:
         codex_session = CodexSession(id=session_id, last_prompt=prompt)
