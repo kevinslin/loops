@@ -209,12 +209,19 @@ Task provider (GitHub Projects V2)
 #### Inner loop
 - Runs a small state model derived from PR status plus a single flag (`needs_user_input`).
 - Uses `codex exec` to execute the single prompt and records a session id for resuming.
-- Writes and updates `[INNER_LOOP_ROOT]/run.json`.
+- Is the single writer for `[INNER_LOOP_ROOT]/run.json`.
+- Consumes model-authored signals from a run-local queue and applies validated state changes to `run.json`.
 - Streams output to `[INNER_LOOP_ROOT]/run.log`.
 
 #### Task provider
 - Implements `TaskProvider.poll(limit)`.
 - MVP: GitHub Projects V2 via the GitHub API or `gh`.
+
+#### Signal CLI (state requests)
+- Purpose: allow the model to request a state transition (MVP: `NEEDS_INPUT`) without writing `run.json` directly.
+- Interface: append-only queue write to `[INNER_LOOP_ROOT]/state_signals.jsonl`.
+- Ownership: this CLI writes only the signal queue; it does not mutate `run.json`.
+- Current status: not implemented in code yet (`loops/state_signal.py` is planned).
 
 #### User handoff handler
 - Called when the agent needs input.
@@ -231,6 +238,7 @@ Task provider (GitHub Projects V2)
   2026-02-02-fix-cache-12345/
     run.json
     run.log
+    state_signals.jsonl
 ```
 
 `run.json` fields (minimal set):
@@ -239,10 +247,17 @@ Task provider (GitHub Projects V2)
 - `pr.merged_at`: optional ISO timestamp when the PR was merged.
 - `codex_session`: `{ id, last_prompt }`.
 - `needs_user_input`: boolean flag (readers must validate this is a boolean and reject malformed values).
+- `needs_user_input_payload`: optional JSON object used to carry handoff context (for example `{ "message": "...", "context": {...} }`).
 - `last_state`: cached derived state.
 - `updated_at`: ISO timestamp.
 
 `last_state` is derived from `pr.review_status` and `needs_user_input` and is stored as a cache for easy inspection.
+
+`state_signals.jsonl`:
+- Append-only queue of state intents written by model tooling.
+- MVP signal type: `NEEDS_INPUT` only.
+- Each line is a JSON object with at least `state` and `args`.
+- The inner loop validates and applies each queued signal; malformed entries are rejected and logged.
 
 `outer_state.json` fields (minimal set):
 - `initialized`: boolean flag indicating whether the outer loop has completed at least one poll.
@@ -276,11 +291,75 @@ Derived states:
 
 State derivation uses only PR status plus the single `needs_user_input` flag; `last_state` is cached in `run.json`.
 
+### State transitions (ASCII)
+
+```text
+                            (start)
+                               |
+                               v
+                        +--------------+
+                        |   RUNNING    |
+                        +--------------+
+                          |          |
+          pr exists + not approved   | pr.review_status == approved
+                          |          |
+                          v          v
+                 +-------------------+      pr.merged_at set
+                 | WAITING_ON_REVIEW |-----------------------------+
+                 +-------------------+                             |
+                          |                                        |
+                          | pr.review_status == approved           |
+                          v                                        |
+                    +---------------+                              |
+                    |  PR_APPROVED  |------------------------------+
+                    +---------------+                              |
+                          |                                        v
+                          +-------------------------------> +-------------+
+                                                         |    DONE      |
+                                                         +-------------+
+
+From any non-DONE state:
+  needs_user_input = true  ->  NEEDS_INPUT
+
+                    +---------------+
+                    |  NEEDS_INPUT  |
+                    +---------------+
+                          |
+                          | user handoff response persisted,
+                          | needs_user_input = false
+                          v
+     derive next state from PR fields:
+       - no PR -> RUNNING
+       - PR approved -> PR_APPROVED
+       - PR open/changes_requested -> WAITING_ON_REVIEW
+       - PR merged (and needs_user_input=false) -> DONE
+```
+
+Precedence rule for derived states:
+- `NEEDS_INPUT` has priority over `DONE`; if `needs_user_input=true`, state is `NEEDS_INPUT` even when `pr.merged_at` is set.
+
+### Signal handling
+
+- `run.json` is authoritative for lifecycle state.
+- Model output text is not authoritative for state transitions.
+- Model tools request state changes through the signal CLI, which appends to `state_signals.jsonl`.
+- Inner loop consumes queued signals in-order and is the only process that persists resulting state to `run.json`.
+- For `NEEDS_INPUT`, the inner loop sets `needs_user_input=true`, persists `needs_user_input_payload`, and blocks on user handoff until a response is available.
+- After handoff completes, inner loop clears `needs_user_input` and `needs_user_input_payload`, writes `run.json`, and resumes the state machine.
+
+### CLI callers
+
+- `python -m loops.cli` starts the outer loop runner.
+- `python -m loops.inner_loop` runs one inner-loop execution for a run directory.
+- No Loops component currently auto-invokes a state-signal CLI because it is not implemented yet.
+- Once implemented, the state-signal CLI caller is expected to be the model path (for example via the `$needs_input` skill), not the outer loop.
+
 ### Prompt
 Single prompt used for initial run and all resumes:
 
 ```
 Use dev.do to implement the task, open a PR, wait for review, address feedback, and cleanup when approved.
+If needing input from user, use "$needs_input" skill to request user input.
 Task: [task]
 ```
 
