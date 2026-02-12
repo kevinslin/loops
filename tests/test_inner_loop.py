@@ -279,6 +279,8 @@ def test_inner_loop_resumes_codex_when_review_changes_requested(
                 review_status="changes_requested",
                 merged_at=None,
                 last_checked_at="2026-02-09T00:00:01Z",
+                latest_review_submitted_at="2026-02-09T00:00:01Z",
+                review_addressed_at=pr.review_addressed_at,
             )
         return RunPR(
             url=pr.url,
@@ -298,6 +300,217 @@ def test_inner_loop_resumes_codex_when_review_changes_requested(
 
     assert result.last_state == "DONE"
     assert counter_path.read_text() == "1"  # resumed once to address feedback
+
+
+def test_inner_loop_does_not_reinvoke_codex_for_same_review(
+    tmp_path, monkeypatch
+) -> None:
+    """After Codex addresses a review, it must NOT be re-invoked if the
+    reviewer hasn't submitted a new review (same submittedAt timestamp)."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        pr=RunPR(
+            url="https://github.com/acme/api/pull/42",
+            number=42,
+            repo="acme/api",
+            review_status="open",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:00Z",
+        ),
+    )
+
+    stub = tmp_path / "codex_stub.py"
+    _write_codex_stub(stub)
+    counter_path = tmp_path / "counter.txt"
+    monkeypatch.setenv("STUB_COUNTER_PATH", str(counter_path))
+    monkeypatch.setenv(
+        "CODEX_CMD",
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(stub))}",
+    )
+
+    poll_calls = {"count": 0}
+    REVIEW_TIMESTAMP = "2026-02-09T00:00:01Z"
+
+    def pr_status_fetcher(pr: RunPR) -> RunPR:
+        poll_calls["count"] += 1
+        if poll_calls["count"] <= 5:
+            return RunPR(
+                url=pr.url,
+                number=pr.number,
+                repo=pr.repo,
+                review_status="changes_requested",
+                merged_at=None,
+                last_checked_at=f"2026-02-09T00:00:{poll_calls['count']:02d}Z",
+                latest_review_submitted_at=REVIEW_TIMESTAMP,
+                review_addressed_at=pr.review_addressed_at,
+            )
+        return RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="approved",
+            merged_at="2026-02-09T00:00:10Z",
+            last_checked_at="2026-02-09T00:00:10Z",
+        )
+
+    result = run_inner_loop(
+        run_dir,
+        pr_status_fetcher=pr_status_fetcher,
+        sleep_fn=lambda _seconds: None,
+        max_iterations=30,
+    )
+
+    assert result.last_state == "DONE"
+    assert counter_path.read_text() == "1"
+
+
+def test_inner_loop_handles_multiple_review_rounds(
+    tmp_path, monkeypatch
+) -> None:
+    """When a reviewer requests changes twice (two distinct review events),
+    Codex should be invoked exactly twice."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        pr=RunPR(
+            url="https://github.com/acme/api/pull/42",
+            number=42,
+            repo="acme/api",
+            review_status="open",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:00Z",
+        ),
+    )
+
+    stub = tmp_path / "codex_stub.py"
+    _write_codex_stub(stub)
+    counter_path = tmp_path / "counter.txt"
+    monkeypatch.setenv("STUB_COUNTER_PATH", str(counter_path))
+    monkeypatch.setenv(
+        "CODEX_CMD",
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(stub))}",
+    )
+
+    poll_calls = {"count": 0}
+
+    def pr_status_fetcher(pr: RunPR) -> RunPR:
+        poll_calls["count"] += 1
+        if poll_calls["count"] == 1:
+            # First review round
+            return RunPR(
+                url=pr.url,
+                number=pr.number,
+                repo=pr.repo,
+                review_status="changes_requested",
+                merged_at=None,
+                latest_review_submitted_at="2026-02-09T01:00:00Z",
+                review_addressed_at=pr.review_addressed_at,
+            )
+        if poll_calls["count"] <= 3:
+            # Same first review (reviewer hasn't re-reviewed)
+            return RunPR(
+                url=pr.url,
+                number=pr.number,
+                repo=pr.repo,
+                review_status="changes_requested",
+                merged_at=None,
+                latest_review_submitted_at="2026-02-09T01:00:00Z",
+                review_addressed_at=pr.review_addressed_at,
+            )
+        if poll_calls["count"] == 4:
+            # Second review round with NEW timestamp
+            return RunPR(
+                url=pr.url,
+                number=pr.number,
+                repo=pr.repo,
+                review_status="changes_requested",
+                merged_at=None,
+                latest_review_submitted_at="2026-02-09T02:00:00Z",
+                review_addressed_at=pr.review_addressed_at,
+            )
+        # Approved and merged
+        return RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="approved",
+            merged_at="2026-02-09T03:00:00Z",
+            last_checked_at="2026-02-09T03:00:00Z",
+        )
+
+    result = run_inner_loop(
+        run_dir,
+        pr_status_fetcher=pr_status_fetcher,
+        sleep_fn=lambda _seconds: None,
+        max_iterations=30,
+    )
+
+    assert result.last_state == "DONE"
+    assert counter_path.read_text() == "2"
+
+
+def test_inner_loop_backward_compat_no_review_timestamp(
+    tmp_path, monkeypatch
+) -> None:
+    """When pr_status_fetcher returns no latest_review_submitted_at
+    (backward compat), the loop should still invoke Codex on
+    changes_requested (conservative fallback)."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        pr=RunPR(
+            url="https://github.com/acme/api/pull/42",
+            number=42,
+            repo="acme/api",
+            review_status="open",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:00Z",
+        ),
+    )
+
+    stub = tmp_path / "codex_stub.py"
+    _write_codex_stub(stub)
+    counter_path = tmp_path / "counter.txt"
+    monkeypatch.setenv("STUB_COUNTER_PATH", str(counter_path))
+    monkeypatch.setenv(
+        "CODEX_CMD",
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(stub))}",
+    )
+
+    poll_calls = {"count": 0}
+
+    def pr_status_fetcher(pr: RunPR) -> RunPR:
+        poll_calls["count"] += 1
+        if poll_calls["count"] == 1:
+            return RunPR(
+                url=pr.url,
+                number=pr.number,
+                repo=pr.repo,
+                review_status="changes_requested",
+                merged_at=None,
+            )
+        return RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="approved",
+            merged_at="2026-02-09T00:00:05Z",
+            last_checked_at="2026-02-09T00:00:05Z",
+        )
+
+    result = run_inner_loop(
+        run_dir,
+        pr_status_fetcher=pr_status_fetcher,
+        sleep_fn=lambda _seconds: None,
+        max_iterations=20,
+    )
+
+    assert result.last_state == "DONE"
+    assert counter_path.read_text() == "1"
 
 
 def test_apply_pending_signals_does_not_advance_offset_on_write_failure(

@@ -76,8 +76,9 @@ The inner loop reads `run.json`, derives state, and dispatches to the matching h
 
 ##### If PR submitted → `WAIT_REVIEW`
 - Set **S:WAIT_REVIEW**.
-- Run poll script to check PR review status.
-- If reviewer requested changes: exec **trigger:fix-pr** (resume Codex to address feedback).
+- Run poll script to check PR review status (fetches `latestReviews` from GitHub to get `latest_review_submitted_at`).
+- If reviewer requested changes AND `latest_review_submitted_at > review_addressed_at` (new review event): exec **trigger:fix-pr** (resume Codex to address feedback), then record `review_addressed_at = latest_review_submitted_at`.
+- If reviewer requested changes but `latest_review_submitted_at <= review_addressed_at`: skip re-invocation, continue polling with backoff (already addressed this review round).
 - If reviewer approved: transition to `CLEANUP`.
 - **Retry** (crash while polling): Continue polling. State file already says `WAIT_REVIEW`.
 

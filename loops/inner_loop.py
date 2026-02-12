@@ -168,7 +168,11 @@ def run_inner_loop(
                 run_json_path,
                 replace(run_record, pr=updated_pr),
             )
-            if run_record.pr is not None and run_record.pr.review_status == "changes_requested":
+            if (
+                run_record.pr is not None
+                and run_record.pr.review_status == "changes_requested"
+                and _is_new_review(run_record.pr)
+            ):
                 _append_log(run_log, "[loops] review changes requested; resuming codex")
                 run_record = _run_codex_turn(
                     run_json_path=run_json_path,
@@ -408,8 +412,9 @@ def _run_codex_turn(
             "[loops] no PR detected after codex run; requesting user input",
         )
     elif review_feedback:
-        # After addressing feedback, wait for next review cycle.
-        pr = replace(pr, review_status="open")
+        # Record which review event we addressed so we don't re-invoke
+        # for the same review. Keep review_status as-is (GitHub is authoritative).
+        pr = replace(pr, review_addressed_at=pr.latest_review_submitted_at)
 
     return write_run_record(
         run_json_path,
@@ -469,7 +474,40 @@ def _merge_pr_records(existing: Optional[RunPR], discovered: Optional[RunPR]) ->
         number=existing.number or discovered.number,
         repo=existing.repo or discovered.repo,
         review_status=existing.review_status or discovered.review_status,
+        latest_review_submitted_at=existing.latest_review_submitted_at,
+        review_addressed_at=existing.review_addressed_at,
     )
+
+
+def _is_new_review(pr: RunPR) -> bool:
+    """Return True if the PR has a review event not yet addressed by Codex."""
+    if pr.latest_review_submitted_at is None:
+        return True
+    if pr.review_addressed_at is None:
+        return True
+    return pr.latest_review_submitted_at > pr.review_addressed_at
+
+
+def _extract_latest_review_submitted_at(
+    payload: dict[str, Any],
+    review_decision: str,
+) -> Optional[str]:
+    """Return submittedAt of the latest review matching the decision."""
+    latest_reviews = payload.get("latestReviews")
+    if not isinstance(latest_reviews, list) or not latest_reviews:
+        return None
+    target_state = review_decision.upper() if review_decision else ""
+    best_timestamp: Optional[str] = None
+    for review in latest_reviews:
+        if not isinstance(review, dict):
+            continue
+        if str(review.get("state", "")).upper() != target_state:
+            continue
+        submitted_at = review.get("submittedAt")
+        if isinstance(submitted_at, str):
+            if best_timestamp is None or submitted_at > best_timestamp:
+                best_timestamp = submitted_at
+    return best_timestamp
 
 
 def _review_status_from_decision(decision: Any) -> str:
@@ -489,7 +527,7 @@ def _fetch_pr_status_with_gh(pr: RunPR) -> RunPR:
             "view",
             pr.url,
             "--json",
-            "reviewDecision,mergedAt,url,number,repository",
+            "reviewDecision,mergedAt,url,number,repository,latestReviews",
         ],
         text=True,
         stdout=subprocess.PIPE,
@@ -514,13 +552,20 @@ def _fetch_pr_status_with_gh(pr: RunPR) -> RunPR:
     parsed_number = number if isinstance(number, int) else pr.number
     merged_at = payload.get("mergedAt")
     merged_at_str = str(merged_at) if merged_at is not None else None
+    review_decision_raw = payload.get("reviewDecision")
+    review_status = _review_status_from_decision(review_decision_raw)
+    latest_review_submitted_at = _extract_latest_review_submitted_at(
+        payload, str(review_decision_raw or "")
+    )
     return RunPR(
         url=str(payload.get("url") or pr.url),
         number=parsed_number,
         repo=repo,
-        review_status=_review_status_from_decision(payload.get("reviewDecision")),
+        review_status=review_status,
         merged_at=merged_at_str,
         last_checked_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        latest_review_submitted_at=latest_review_submitted_at,
+        review_addressed_at=pr.review_addressed_at,
     )
 
 

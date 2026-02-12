@@ -58,6 +58,8 @@ class RunPR:
     review_status: Optional[ReviewStatus] = None
     merged_at: Optional[str] = None
     last_checked_at: Optional[str] = None
+    latest_review_submitted_at: Optional[str] = None
+    review_addressed_at: Optional[str] = None
 
     @staticmethod
     def from_dict(data: Mapping[str, Any]) -> "RunPR":
@@ -68,6 +70,8 @@ class RunPR:
             review_status=data.get("review_status"),
             merged_at=data.get("merged_at"),
             last_checked_at=data.get("last_checked_at"),
+            latest_review_submitted_at=data.get("latest_review_submitted_at"),
+            review_addressed_at=data.get("review_addressed_at"),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -82,6 +86,10 @@ class RunPR:
             payload["merged_at"] = self.merged_at
         if self.last_checked_at is not None:
             payload["last_checked_at"] = self.last_checked_at
+        if self.latest_review_submitted_at is not None:
+            payload["latest_review_submitted_at"] = self.latest_review_submitted_at
+        if self.review_addressed_at is not None:
+            payload["review_addressed_at"] = self.review_addressed_at
         return payload
 
 

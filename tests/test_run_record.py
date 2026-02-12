@@ -123,6 +123,28 @@ def test_read_run_record_accepts_needs_user_input_payload(tmp_path) -> None:
     assert record.needs_user_input_payload["message"] == "Need decision"
 
 
+def test_run_pr_round_trips_review_timestamp_fields() -> None:
+    pr = RunPR(
+        url="https://example.com/pr/1",
+        review_status="changes_requested",
+        latest_review_submitted_at="2026-02-09T01:00:00Z",
+        review_addressed_at="2026-02-09T01:00:00Z",
+    )
+    d = pr.to_dict()
+    assert d["latest_review_submitted_at"] == "2026-02-09T01:00:00Z"
+    assert d["review_addressed_at"] == "2026-02-09T01:00:00Z"
+    restored = RunPR.from_dict(d)
+    assert restored.latest_review_submitted_at == "2026-02-09T01:00:00Z"
+    assert restored.review_addressed_at == "2026-02-09T01:00:00Z"
+
+
+def test_run_pr_from_dict_without_review_timestamp_fields() -> None:
+    d = {"url": "https://example.com/pr/1", "review_status": "open"}
+    pr = RunPR.from_dict(d)
+    assert pr.latest_review_submitted_at is None
+    assert pr.review_addressed_at is None
+
+
 def test_read_run_record_rejects_invalid_needs_user_input_payload(tmp_path) -> None:
     payload = {
         "task": _task().to_dict(),

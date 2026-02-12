@@ -86,6 +86,10 @@ type RunPR = {
     review_status?: "open" | "changes_requested" | "approved"
     merged_at?: string
     last_checked_at?: string
+    // timestamp of latest GitHub review event matching the current reviewDecision
+    latest_review_submitted_at?: string
+    // timestamp of the review event last addressed by trigger:fix-pr
+    review_addressed_at?: string
 }
 
 type CodexSession = {
@@ -317,7 +321,7 @@ Precedence rule: `NEEDS_INPUT` has priority over `DONE`; if `needs_user_input=tr
 **Loop** (read `run.json`, derive state, dispatch):
 
 - **If `NEEDS_INPUT`**: send signal S:NEEDS_INPUT, payload: `{ questions }`. Block until user responds. Clear flag, persist answer, resume LLM. Retry: still wait for input.
-- **If PR submitted → `WAIT_REVIEW`**: set S:WAIT_REVIEW. Run poll script. If changes requested, exec trigger:fix-pr. If approved, transition to CLEANUP. Retry: continue polling.
+- **If PR submitted → `WAIT_REVIEW`**: set S:WAIT_REVIEW. Run poll script. If changes requested AND `latest_review_submitted_at > review_addressed_at` (new review event), exec trigger:fix-pr and record `review_addressed_at`. If approved, transition to CLEANUP. Retry: continue polling.
 - **If PR approved → `CLEANUP`**: set S:CLEANUP. Run trigger:merge-pr. On success, derive DONE from `pr.merged_at`. Retry: re-run trigger (idempotent).
 
 ### State transitions (ASCII)
@@ -407,7 +411,7 @@ Task: [task]
 
 - When a PR is opened, the inner loop records it in `run.json`.
 - The inner loop polls PR status and updates `pr.review_status`.
-- If review comments appear, the same Codex session is resumed with the same prompt.
+- When a review requests changes, the inner loop records `latest_review_submitted_at` (the review's `submittedAt` timestamp from GitHub) and invokes Codex to address the feedback. After Codex runs, `review_addressed_at` is set to `latest_review_submitted_at`. On subsequent polls, the loop only re-invokes Codex if `latest_review_submitted_at > review_addressed_at`, indicating a genuinely new review event. This prevents duplicate fix attempts when the reviewer has not yet re-reviewed.
 - When approval is detected, the inner loop runs cleanup immediately; if cleanup fails it sets `needs_user_input=true`.
 
 ## 8. Error handling and recovery
