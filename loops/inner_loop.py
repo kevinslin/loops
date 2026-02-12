@@ -180,8 +180,10 @@ def run_inner_loop(
                     run_record=run_record,
                     command=command,
                     base_prompt=base_prompt,
+                    user_response=next_user_response,
                     review_feedback=True,
                 )
+                next_user_response = None
                 cleanup_executed_for_pr = None
                 backoff_seconds = initial_poll_seconds
                 idle_polls = 0
@@ -301,8 +303,14 @@ def _build_cleanup_prompt(task_url: str, base_prompt: Optional[str]) -> str:
     return prompt
 
 
-def _build_review_feedback_prompt(task_url: str, base_prompt: Optional[str], pr_url: str) -> str:
-    prompt = _build_prompt(task_url, base_prompt)
+def _build_review_feedback_prompt(
+    task_url: str,
+    base_prompt: Optional[str],
+    pr_url: str,
+    *,
+    user_response: Optional[str] = None,
+) -> str:
+    prompt = _build_prompt(task_url, base_prompt, user_response=user_response)
     prompt += (
         f"\nPR {pr_url} has changes requested. Address review feedback, update the PR, "
         "and summarize what changed.\n"
@@ -371,6 +379,7 @@ def _run_codex_turn(
             run_record.task.url,
             base_prompt,
             run_record.pr.url,
+            user_response=user_response,
         )
     else:
         prompt = _build_prompt(

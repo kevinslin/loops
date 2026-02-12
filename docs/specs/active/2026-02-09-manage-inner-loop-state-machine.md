@@ -20,6 +20,7 @@ The initial inner loop executed Codex once and only toggled `needs_user_input` o
 - `loops/run_record.py` now supports validated `needs_user_input_payload`.
 - `loops/state_signal.py` provides a validated signal queue entrypoint.
 - `loops/inner_loop.py` now runs a multi-state orchestrator until derived `DONE`.
+- Review-feedback Codex turns now include queued user handoff responses from `NEEDS_INPUT`.
 - Integration tests validate lifecycle transitions, handoff, and resume behavior.
 
 ### Constraints
@@ -226,7 +227,7 @@ From any non-DONE state:
 - `python -m pytest`
 
 Result:
-- 33 passed (full suite), 0 failed (pre-Phase 4).
+- 42 passed (full suite), 0 failed.
 
 ---
 

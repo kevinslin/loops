@@ -186,6 +186,81 @@ def test_inner_loop_consumes_signal_and_uses_user_response_in_prompt(
     assert "User input:\\nack: Need user decision" in prompts
 
 
+def test_inner_loop_uses_user_response_for_review_feedback_turn(
+    tmp_path, monkeypatch
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        pr=RunPR(
+            url="https://github.com/acme/api/pull/42",
+            number=42,
+            repo="acme/api",
+            review_status="open",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:00Z",
+        ),
+    )
+
+    enqueue_state_signal(
+        run_dir,
+        state="NEEDS_INPUT",
+        message="Need user decision",
+        context={"scope": "review"},
+    )
+
+    stub = tmp_path / "codex_stub.py"
+    _write_codex_stub(stub)
+    counter_path = tmp_path / "counter.txt"
+    prompt_log_path = tmp_path / "prompts.log"
+    monkeypatch.setenv("STUB_COUNTER_PATH", str(counter_path))
+    monkeypatch.setenv("STUB_PROMPT_LOG", str(prompt_log_path))
+    monkeypatch.setenv(
+        "CODEX_CMD",
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(stub))}",
+    )
+
+    poll_calls = {"count": 0}
+
+    def pr_status_fetcher(pr: RunPR) -> RunPR:
+        poll_calls["count"] += 1
+        if poll_calls["count"] == 1:
+            return RunPR(
+                url=pr.url,
+                number=pr.number,
+                repo=pr.repo,
+                review_status="changes_requested",
+                merged_at=None,
+                last_checked_at="2026-02-09T00:00:01Z",
+                latest_review_submitted_at="2026-02-09T00:00:01Z",
+                review_addressed_at=pr.review_addressed_at,
+            )
+        return RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="approved",
+            merged_at="2026-02-09T00:00:02Z",
+            last_checked_at="2026-02-09T00:00:02Z",
+            review_addressed_at=pr.review_addressed_at,
+        )
+
+    result = run_inner_loop(
+        run_dir,
+        pr_status_fetcher=pr_status_fetcher,
+        user_handoff_handler=lambda payload: f"ack: {payload['message']}",
+        sleep_fn=lambda _seconds: None,
+        max_iterations=30,
+    )
+
+    assert result.last_state == "DONE"
+    assert counter_path.read_text() == "1"
+    prompts = prompt_log_path.read_text()
+    assert "User input:\\nack: Need user decision" in prompts
+    assert "has changes requested. Address review feedback" in prompts
+
+
 def test_inner_loop_resumes_from_waiting_on_review_without_codex(tmp_path, monkeypatch) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
