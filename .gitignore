@@ -2,3 +2,5 @@
 *-learnings.md
 __pycache__/
 *.pyc
+.env
+.loops
