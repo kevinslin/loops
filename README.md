@@ -27,7 +27,7 @@ python -m pip install click
 python -m loops init
 ```
 
-This creates `.loops/`, `.loops/config.json`, `.loops/outer_state.json`, and `.loops/oloops.log`.
+This creates `.loops/`, `.loops/jobs/`, `.loops/config.json`, `.loops/outer_state.json`, and `.loops/oloops.log`.
 
 2. Provide GitHub auth for provider polling:
 
@@ -55,11 +55,12 @@ Loops writes runtime state under `.loops/`:
 .loops/
   oloops.log
   outer_state.json
-  YYYY-MM-DD-task-title-task-id/
-    run.json
-    run.log
-    state_signals.jsonl
-    state_signals.offset
+  jobs/
+    YYYY-MM-DD-task-title-task-id/
+      run.json
+      run.log
+      state_signals.jsonl
+      state_signals.offset
 ```
 
 ## Configuration reference
@@ -109,8 +110,8 @@ Examples:
 ```sh
 python -m loops init
 python -m loops run --run-once
-python -m loops inner-loop --run-dir .loops/2026-02-09-example-task-123
-python -m loops signal --run-dir .loops/2026-02-09-example-task-123 --message "Need approval"
+python -m loops inner-loop --run-dir .loops/jobs/2026-02-09-example-task-123
+python -m loops signal --run-dir .loops/jobs/2026-02-09-example-task-123 --message "Need approval"
 ```
 
 Legacy compatibility:
@@ -157,9 +158,9 @@ Options:
 Examples:
 
 ```sh
-python -m loops inner-loop --run-dir .loops/2026-02-09-example-task-123
-LOOPS_RUN_DIR=.loops/2026-02-09-example-task-123 python -m loops inner-loop
-LOOPS_RUN_DIR=.loops/2026-02-09-example-task-123 CODEX_CMD="codex exec --yolo" python -m loops inner-loop
+python -m loops inner-loop --run-dir .loops/jobs/2026-02-09-example-task-123
+LOOPS_RUN_DIR=.loops/jobs/2026-02-09-example-task-123 python -m loops inner-loop
+LOOPS_RUN_DIR=.loops/jobs/2026-02-09-example-task-123 CODEX_CMD="codex exec --yolo" python -m loops inner-loop
 ```
 
 Behavior summary:
@@ -186,7 +187,7 @@ Examples:
 
 ```sh
 python -m loops signal \
-  --run-dir .loops/2026-02-09-example-task-123 \
+  --run-dir .loops/jobs/2026-02-09-example-task-123 \
   --message "Need approval to continue" \
   --context '{"reason":"scope_change"}'
 ```

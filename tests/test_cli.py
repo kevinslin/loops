@@ -20,6 +20,7 @@ def test_init_creates_default_loops_structure(tmp_path: Path) -> None:
     assert (loops_root / "config.json").exists()
     assert (loops_root / "outer_state.json").exists()
     assert (loops_root / "oloops.log").exists()
+    assert (loops_root / "jobs").exists()
 
     config_payload = json.loads((loops_root / "config.json").read_text())
     assert config_payload["provider_id"] == "github_projects_v2"

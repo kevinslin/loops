@@ -4,6 +4,8 @@ import json
 import os
 import shlex
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -660,3 +662,53 @@ def test_inner_loop_exits_promptly_when_needs_input_and_non_interactive(
     assert sleep_calls == []
     log_output = (run_dir / "run.log").read_text()
     assert "non-interactive mode; exiting while waiting for user input" in log_output
+
+
+def test_run_codex_streams_output_to_log_while_running(tmp_path) -> None:
+    run_log = tmp_path / "run.log"
+    stub = tmp_path / "stream_stub.py"
+    stub.write_text(
+        "\n".join(
+            [
+                "import time",
+                "print('first line', flush=True)",
+                "time.sleep(0.3)",
+                "print('second line', flush=True)",
+            ]
+        )
+    )
+
+    command = [sys.executable, str(stub)]
+    result: dict[str, tuple[str, int]] = {}
+
+    def invoke() -> None:
+        result["value"] = inner_loop_module._run_codex(command, "prompt", run_log)
+
+    worker = threading.Thread(target=invoke)
+    worker.start()
+
+    saw_first_line_while_running = False
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        if run_log.exists():
+            content = run_log.read_text()
+            if "first line" in content:
+                saw_first_line_while_running = worker.is_alive()
+                if saw_first_line_while_running:
+                    break
+        if not worker.is_alive():
+            break
+        time.sleep(0.02)
+
+    worker.join(timeout=2.0)
+    assert not worker.is_alive()
+    assert saw_first_line_while_running
+
+    output, exit_code = result["value"]
+    assert exit_code == 0
+    assert "first line" in output
+    assert "second line" in output
+
+    log_output = run_log.read_text()
+    assert "first line" in log_output
+    assert "second line" in log_output

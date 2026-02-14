@@ -220,8 +220,7 @@ def run_inner_loop(
             # Run cleanup once for a given PR URL, then only poll until merged.
             if cleanup_executed_for_pr != run_record.pr.url:
                 cleanup_prompt = _build_cleanup_prompt(run_record.task.url, base_prompt)
-                output, exit_code = _run_codex(command, cleanup_prompt)
-                _append_log(run_log, output)
+                output, exit_code = _run_codex(command, cleanup_prompt, run_log)
                 if exit_code != 0:
                     run_record = _force_needs_input(
                         run_json_path,
@@ -318,20 +317,37 @@ def _build_review_feedback_prompt(
     return prompt
 
 
-def _run_codex(command: list[str], prompt: str) -> tuple[str, int]:
+def _run_codex(command: list[str], prompt: str, run_log: Path) -> tuple[str, int]:
+    run_log.parent.mkdir(parents=True, exist_ok=True)
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             command,
-            input=prompt,
+            stdin=subprocess.PIPE,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             env=os.environ.copy(),
-            check=False,
+            bufsize=1,
         )
-        return result.stdout or "", result.returncode
+        if process.stdin is not None:
+            process.stdin.write(prompt)
+            process.stdin.close()
+
+        lines: list[str] = []
+        with run_log.open("a", encoding="utf-8") as handle:
+            if process.stdout is not None:
+                for line in process.stdout:
+                    lines.append(line)
+                    handle.write(line)
+                    handle.flush()
+
+        exit_code = process.wait()
+        output = "".join(lines)
+        return output, exit_code
     except Exception as exc:  # pragma: no cover - defensive logging
-        return f"[loops] codex invocation failed: {exc}", 1
+        message = f"[loops] codex invocation failed: {exc}"
+        _append_log(run_log, message)
+        return message, 1
 
 
 def _append_log(path: Path, content: str) -> None:
@@ -388,8 +404,7 @@ def _run_codex_turn(
             user_response=user_response,
         )
 
-    output, exit_code = _run_codex(command, prompt)
-    _append_log(run_log, output)
+    output, exit_code = _run_codex(command, prompt, run_log)
 
     session_id = _extract_session_id(output)
     codex_session = run_record.codex_session

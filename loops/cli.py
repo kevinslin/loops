@@ -15,6 +15,7 @@ import click
 from loops.inner_loop import run_inner_loop
 from loops.outer_loop import (
     InnerLoopCommandConfig,
+    INNER_LOOP_RUNS_DIR_NAME,
     OuterLoopConfig,
     OuterLoopRunner,
     OuterLoopState,
@@ -174,6 +175,7 @@ def init_command(loops_root: Path, force: bool) -> None:
     if not state_path.exists():
         write_outer_state(state_path, OuterLoopState.empty())
     (loops_root / "oloops.log").touch(exist_ok=True)
+    (loops_root / INNER_LOOP_RUNS_DIR_NAME).mkdir(parents=True, exist_ok=True)
 
     config_path.write_text(
         json.dumps(_build_default_config(), indent=2, sort_keys=True) + "\n"

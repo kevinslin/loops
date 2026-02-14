@@ -28,7 +28,8 @@ Close the loop on building a coding agent harness that can pick up tasks, execut
 
 ### Constants
 - `LOOPS_ROOT = [REPO_ROOT]/.loops/`
-- `INNER_LOOP_ROOT = [REPO_ROOT]/.loops/[yyyy-mm-dd]-[task_title_kebab_case]-[task_id]`
+- `INNER_LOOP_RUNS_ROOT = [REPO_ROOT]/.loops/jobs/`
+- `INNER_LOOP_ROOT = [REPO_ROOT]/.loops/jobs/[yyyy-mm-dd]-[task_title_kebab_case]-[task_id]`
 - `RUN_FILE = [INNER_LOOP_ROOT]/run.json`
 - `RUN_LOG = [INNER_LOOP_ROOT]/run.log`
 
@@ -239,10 +240,11 @@ Task provider (GitHub Projects V2)
 .loops/
   oloops.log
   outer_state.json
-  2026-02-02-fix-cache-12345/
-    run.json
-    run.log
-    state_signals.jsonl
+  jobs/
+    2026-02-02-fix-cache-12345/
+      run.json
+      run.log
+      state_signals.jsonl
 ```
 
 `run.json` fields (minimal set):
@@ -395,7 +397,7 @@ From any non-DONE state:
 ### CLI callers
 
 - `python -m loops` is the top-level wrapper CLI.
-- `python -m loops init` initializes `.loops/` scaffolding and default config.
+- `python -m loops init` initializes `.loops/` scaffolding (`jobs/`, logs, state, default config).
 - `python -m loops run` starts the outer loop runner.
 - `python -m loops inner-loop` runs one inner-loop execution for a run directory.
 - `python -m loops signal` enqueues a run-local signal (MVP: `NEEDS_INPUT`).

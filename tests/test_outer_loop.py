@@ -33,9 +33,10 @@ def make_task(task_id: str, title: str, status: str = "Ready") -> Task:
 
 
 def list_run_dirs(loops_root: Path) -> list[Path]:
-    if not loops_root.exists():
+    runs_root = loops_root / "jobs"
+    if not runs_root.exists():
         return []
-    return sorted([path for path in loops_root.iterdir() if path.is_dir()])
+    return sorted([path for path in runs_root.iterdir() if path.is_dir()])
 
 
 def test_run_once_creates_run_records(tmp_path: Path) -> None:

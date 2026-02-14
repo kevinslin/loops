@@ -25,6 +25,7 @@ from loops.task_provider import TaskProvider
 DEFAULT_POLL_INTERVAL_SECONDS = 30
 DEFAULT_PARALLEL_TASKS_LIMIT = 5
 DEFAULT_TASK_READY_STATUS = "Ready"
+INNER_LOOP_RUNS_DIR_NAME = "jobs"
 
 
 @dataclass(frozen=True)
@@ -157,6 +158,7 @@ class OuterLoopRunner:
         """Run a single poll cycle and return created run directories."""
 
         self.loops_root.mkdir(parents=True, exist_ok=True)
+        _inner_loop_runs_root(self.loops_root).mkdir(parents=True, exist_ok=True)
         state = read_outer_state(self.state_path)
         ready_tasks = [
             task for task in self.provider.poll(limit) if _is_ready(task, self.config)
@@ -346,21 +348,29 @@ def write_outer_state(path: str | Path, state: OuterLoopState) -> None:
 def create_run_dir(task: Task, loops_root: Path) -> Path:
     """Create a run directory for a task and return its path."""
 
+    runs_root = _inner_loop_runs_root(loops_root)
+    runs_root.mkdir(parents=True, exist_ok=True)
     date_prefix = datetime.now(timezone.utc).date().isoformat()
     title_slug = _slugify(task.title) or "task"
     id_slug = _slugify(task.id) or "id"
     base_name = f"{date_prefix}-{title_slug}-{id_slug}"
-    candidate = loops_root / base_name
+    candidate = runs_root / base_name
     if not candidate.exists():
         candidate.mkdir(parents=True, exist_ok=True)
         return candidate
     suffix = 1
     while True:
-        contender = loops_root / f"{base_name}-{suffix}"
+        contender = runs_root / f"{base_name}-{suffix}"
         if not contender.exists():
             contender.mkdir(parents=True, exist_ok=True)
             return contender
         suffix += 1
+
+
+def _inner_loop_runs_root(loops_root: Path) -> Path:
+    """Return the directory containing per-task inner-loop run directories."""
+
+    return loops_root / INNER_LOOP_RUNS_DIR_NAME
 
 
 def _load_outer_loop_config(payload: Any) -> OuterLoopConfig:
