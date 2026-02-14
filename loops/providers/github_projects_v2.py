@@ -240,7 +240,19 @@ def _run_gh_graphql(
     for key, value in variables.items():
         if value is None:
             continue
-        args.extend(["-f", f"{key}={value}"])
+        if isinstance(value, bool):
+            encoded = "true" if value else "false"
+            args.extend(["-F", f"{key}={encoded}"])
+            continue
+        if isinstance(value, int) and not isinstance(value, bool):
+            args.extend(["-F", f"{key}={value}"])
+            continue
+        if isinstance(value, str):
+            args.extend(["-f", f"{key}={value}"])
+            continue
+        raise TypeError(
+            f"Unsupported GraphQL variable type for '{key}': {type(value).__name__}"
+        )
     try:
         result = subprocess.run(
             args,

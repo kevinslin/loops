@@ -1,24 +1,38 @@
 from __future__ import annotations
 
-"""Command-line interface for the Loops outer loop runner."""
+"""Top-level command-line interface for Loops."""
 
 from dataclasses import replace
+import json
+import os
 import sys
 from pathlib import Path
+from typing import Any
 from typing import Optional
 
 import click
 
+from loops.inner_loop import run_inner_loop
 from loops.outer_loop import (
     InnerLoopCommandConfig,
+    OuterLoopConfig,
     OuterLoopRunner,
+    OuterLoopState,
     build_inner_loop_launcher,
     build_provider,
     load_config,
+    write_outer_state,
 )
+from loops.providers.github_projects_v2 import GITHUB_PROJECTS_V2_PROVIDER_ID
+from loops.state_signal import enqueue_state_signal
 
 
-@click.command(context_settings={"help_option_names": ["-h", "--help"]})
+@click.group(context_settings={"help_option_names": ["-h", "--help"]})
+def main() -> None:
+    """Loops CLI wrapper for setup, outer loop, inner loop, and signals."""
+
+
+@main.command("run")
 @click.option(
     "--config",
     "config_path",
@@ -43,13 +57,139 @@ from loops.outer_loop import (
     default=None,
     help="Override the force flag in config.",
 )
-def main(
+def run_command(
     config_path: Path,
     run_once: bool,
     limit: Optional[int],
     force: Optional[bool],
 ) -> None:
     """Run the outer loop runner using the provided config."""
+
+    _run_outer_loop(
+        config_path=config_path,
+        run_once=run_once,
+        limit=limit,
+        force=force,
+    )
+
+
+@main.command("inner-loop")
+@click.option(
+    "--run-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Path to the run directory (defaults to LOOPS_RUN_DIR).",
+)
+@click.option(
+    "--prompt-file",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Optional path to a base prompt file.",
+)
+def inner_loop_command(run_dir: Optional[Path], prompt_file: Optional[Path]) -> None:
+    """Run the inner loop for a specific run directory."""
+
+    resolved_run_dir = _resolve_run_dir_option(run_dir)
+    try:
+        run_inner_loop(resolved_run_dir, prompt_file=prompt_file)
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@main.command("signal")
+@click.option(
+    "--run-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Path to run directory (defaults to LOOPS_RUN_DIR).",
+)
+@click.option(
+    "--state",
+    type=str,
+    default="NEEDS_INPUT",
+    show_default=True,
+    help="Signal state to enqueue.",
+)
+@click.option(
+    "--message",
+    type=str,
+    required=True,
+    help="Prompt message to show when user input is required.",
+)
+@click.option(
+    "--context",
+    type=str,
+    default="",
+    help="Optional JSON object context for the signal payload.",
+)
+def signal_command(
+    run_dir: Optional[Path],
+    state: str,
+    message: str,
+    context: str,
+) -> None:
+    """Enqueue a state signal for an existing run directory."""
+
+    resolved_run_dir = _resolve_run_dir_option(run_dir)
+    parsed_context = _parse_context_option(context)
+    try:
+        signal = enqueue_state_signal(
+            resolved_run_dir,
+            state=state,
+            message=message,
+            context=parsed_context,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps({"accepted": True, "signal": signal}, ensure_ascii=True))
+
+
+@main.command("init")
+@click.option(
+    "--loops-root",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=Path(".loops"),
+    show_default=True,
+    help="Directory where Loops runtime state and config are stored.",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Overwrite an existing config.json file.",
+)
+def init_command(loops_root: Path, force: bool) -> None:
+    """Initialize the default .loops directory structure and config."""
+
+    loops_root = loops_root.resolve()
+    loops_root.mkdir(parents=True, exist_ok=True)
+
+    config_path = loops_root / "config.json"
+    if config_path.exists() and not force:
+        raise click.ClickException(
+            f"Config already exists: {config_path} (re-run with --force to overwrite)"
+        )
+
+    state_path = loops_root / "outer_state.json"
+    if not state_path.exists():
+        write_outer_state(state_path, OuterLoopState.empty())
+    (loops_root / "oloops.log").touch(exist_ok=True)
+
+    config_path.write_text(
+        json.dumps(_build_default_config(), indent=2, sort_keys=True) + "\n"
+    )
+    click.echo(f"Initialized Loops in {loops_root}")
+    click.echo(f"Config: {config_path}")
+
+
+def _run_outer_loop(
+    *,
+    config_path: Path,
+    run_once: bool,
+    limit: Optional[int],
+    force: Optional[bool],
+) -> None:
+    """Run the configured outer loop."""
 
     config = load_config(config_path)
     loop_config = config.loop_config
@@ -78,8 +218,55 @@ def main(
         runner.run_forever(limit=limit)
 
 
-if __name__ == "__main__":
-    main()
+def _resolve_run_dir_option(run_dir: Optional[Path]) -> Path:
+    """Resolve --run-dir with LOOPS_RUN_DIR fallback."""
+
+    if run_dir is not None:
+        return run_dir
+    env_run_dir = os.environ.get("LOOPS_RUN_DIR")
+    if env_run_dir:
+        return Path(env_run_dir)
+    raise click.ClickException("LOOPS_RUN_DIR is required (or pass --run-dir)")
+
+
+def _parse_context_option(raw_context: str) -> dict[str, Any]:
+    """Parse --context JSON into an object."""
+
+    if not raw_context.strip():
+        return {}
+    try:
+        parsed = json.loads(raw_context)
+    except json.JSONDecodeError as exc:
+        raise click.ClickException("--context must be valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise click.ClickException("--context JSON must be an object")
+    return parsed
+
+
+def _build_default_config() -> dict[str, Any]:
+    """Build a default Loops config payload for `loops init`."""
+
+    defaults = OuterLoopConfig()
+    return {
+        "provider_id": GITHUB_PROJECTS_V2_PROVIDER_ID,
+        "provider_config": {
+            "url": "https://github.com/orgs/YOUR_ORG/projects/1",
+            "status_field": "Status",
+            "page_size": 50,
+        },
+        "loop_config": {
+            "poll_interval_seconds": defaults.poll_interval_seconds,
+            "parallel_tasks": defaults.parallel_tasks,
+            "parallel_tasks_limit": defaults.parallel_tasks_limit,
+            "emit_on_first_run": defaults.emit_on_first_run,
+            "force": defaults.force,
+            "task_ready_status": defaults.task_ready_status,
+        },
+        "inner_loop": {
+            "command": [sys.executable, "-m", "loops.inner_loop"],
+            "append_task_url": False,
+        },
+    }
 
 
 def _resolve_loops_root(config_path: Path) -> Path:
@@ -89,3 +276,7 @@ def _resolve_loops_root(config_path: Path) -> Path:
     if resolved.parent.name == ".loops":
         return resolved.parent
     return resolved.parent / ".loops"
+
+
+if __name__ == "__main__":
+    main(prog_name="loops")

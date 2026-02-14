@@ -394,9 +394,12 @@ From any non-DONE state:
 
 ### CLI callers
 
-- `python -m loops.cli` starts the outer loop runner.
-- `python -m loops.inner_loop` runs one inner-loop execution for a run directory.
-- The signals skill (`$needs_input`) enqueues signals; it does not write `run.json` directly.
+- `python -m loops` is the top-level wrapper CLI.
+- `python -m loops init` initializes `.loops/` scaffolding and default config.
+- `python -m loops run` starts the outer loop runner.
+- `python -m loops inner-loop` runs one inner-loop execution for a run directory.
+- `python -m loops signal` enqueues a run-local signal (MVP: `NEEDS_INPUT`).
+- Direct module callers still work (`python -m loops.inner_loop`, `python -m loops.state_signal`).
 
 ### Prompt
 Single prompt used for initial run and all resumes:
