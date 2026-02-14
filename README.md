@@ -59,6 +59,7 @@ Loops writes runtime state under `.loops/`:
     YYYY-MM-DD-task-title-task-id/
       run.json
       run.log
+      agent.log
       state_signals.jsonl
       state_signals.offset
 ```
@@ -166,7 +167,8 @@ LOOPS_RUN_DIR=.loops/jobs/2026-02-09-example-task-123 CODEX_CMD="codex exec --yo
 Behavior summary:
 
 - Reads and writes `run.json` as the authoritative state file.
-- Appends logs to `run.log`.
+- Writes inner-loop orchestration logs to `run.log`.
+- Streams Codex/agent output to `agent.log`.
 - Uses `CODEX_CMD` if set; default command is `codex exec --yolo`.
 - Polls PR state with `gh pr view` when a PR is present.
 - Applies pending signals from `state_signals.jsonl`.

@@ -32,6 +32,7 @@ Close the loop on building a coding agent harness that can pick up tasks, execut
 - `INNER_LOOP_ROOT = [REPO_ROOT]/.loops/jobs/[yyyy-mm-dd]-[task_title_kebab_case]-[task_id]`
 - `RUN_FILE = [INNER_LOOP_ROOT]/run.json`
 - `RUN_LOG = [INNER_LOOP_ROOT]/run.log`
+- `AGENT_LOG = [INNER_LOOP_ROOT]/agent.log`
 
 ### Types
 ```ts
@@ -216,7 +217,8 @@ Task provider (GitHub Projects V2)
 - Uses `codex exec` to execute the single prompt and records a session id for resuming.
 - Is the single writer for `[INNER_LOOP_ROOT]/run.json`.
 - Consumes model-authored signals from a run-local queue and applies validated state changes to `run.json`.
-- Streams output to `[INNER_LOOP_ROOT]/run.log`.
+- Writes inner-loop orchestration logs to `[INNER_LOOP_ROOT]/run.log`.
+- Streams Codex/agent output to `[INNER_LOOP_ROOT]/agent.log`.
 
 #### Task provider
 - Implements `TaskProvider.poll(limit)`.
@@ -244,6 +246,7 @@ Task provider (GitHub Projects V2)
     2026-02-02-fix-cache-12345/
       run.json
       run.log
+      agent.log
       state_signals.jsonl
 ```
 
@@ -429,7 +432,8 @@ Task: [task]
 
 ### Logging
 - Outer loop logs: `[LOOPS_ROOT]/oloops.log`.
-- Inner loop logs: `[INNER_LOOP_ROOT]/run.log`.
+- Inner loop orchestration logs: `[INNER_LOOP_ROOT]/run.log`.
+- Agent/Codex logs: `[INNER_LOOP_ROOT]/agent.log`.
 
 ### Metrics (optional)
 - Task pickup latency, time-to-PR, time-in-review, retries.

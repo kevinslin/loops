@@ -192,6 +192,7 @@ class OuterLoopRunner:
             )
             write_run_record(run_dir / "run.json", record)
             _touch(run_dir / "run.log")
+            _touch(run_dir / "agent.log")
             to_launch.append((run_dir, task))
 
         try:

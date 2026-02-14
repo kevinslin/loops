@@ -69,6 +69,7 @@ def run_inner_loop(
     run_dir = run_dir.resolve()
     run_json_path = run_dir / "run.json"
     run_log = run_dir / "run.log"
+    agent_log = run_dir / "agent.log"
     base_prompt = _load_prompt_file(prompt_file)
     command = _resolve_codex_command()
     pr_status_fetcher = pr_status_fetcher or _fetch_pr_status_with_gh
@@ -125,6 +126,7 @@ def run_inner_loop(
             run_record = _run_codex_turn(
                 run_json_path=run_json_path,
                 run_log=run_log,
+                agent_log=agent_log,
                 run_record=run_record,
                 command=command,
                 base_prompt=base_prompt,
@@ -177,6 +179,7 @@ def run_inner_loop(
                 run_record = _run_codex_turn(
                     run_json_path=run_json_path,
                     run_log=run_log,
+                    agent_log=agent_log,
                     run_record=run_record,
                     command=command,
                     base_prompt=base_prompt,
@@ -220,7 +223,7 @@ def run_inner_loop(
             # Run cleanup once for a given PR URL, then only poll until merged.
             if cleanup_executed_for_pr != run_record.pr.url:
                 cleanup_prompt = _build_cleanup_prompt(run_record.task.url, base_prompt)
-                output, exit_code = _run_codex(command, cleanup_prompt, run_log)
+                output, exit_code = _run_codex(command, cleanup_prompt, agent_log)
                 if exit_code != 0:
                     run_record = _force_needs_input(
                         run_json_path,
@@ -317,8 +320,8 @@ def _build_review_feedback_prompt(
     return prompt
 
 
-def _run_codex(command: list[str], prompt: str, run_log: Path) -> tuple[str, int]:
-    run_log.parent.mkdir(parents=True, exist_ok=True)
+def _run_codex(command: list[str], prompt: str, agent_log: Path) -> tuple[str, int]:
+    agent_log.parent.mkdir(parents=True, exist_ok=True)
     try:
         process = subprocess.Popen(
             command,
@@ -334,7 +337,7 @@ def _run_codex(command: list[str], prompt: str, run_log: Path) -> tuple[str, int
             process.stdin.close()
 
         lines: list[str] = []
-        with run_log.open("a", encoding="utf-8") as handle:
+        with agent_log.open("a", encoding="utf-8") as handle:
             if process.stdout is not None:
                 for line in process.stdout:
                     lines.append(line)
@@ -346,7 +349,6 @@ def _run_codex(command: list[str], prompt: str, run_log: Path) -> tuple[str, int
         return output, exit_code
     except Exception as exc:  # pragma: no cover - defensive logging
         message = f"[loops] codex invocation failed: {exc}"
-        _append_log(run_log, message)
         return message, 1
 
 
@@ -384,6 +386,7 @@ def _run_codex_turn(
     *,
     run_json_path: Path,
     run_log: Path,
+    agent_log: Path,
     run_record: RunRecord,
     command: list[str],
     base_prompt: Optional[str],
@@ -404,7 +407,7 @@ def _run_codex_turn(
             user_response=user_response,
         )
 
-    output, exit_code = _run_codex(command, prompt, run_log)
+    output, exit_code = _run_codex(command, prompt, agent_log)
 
     session_id = _extract_session_id(output)
     codex_session = run_record.codex_session
@@ -418,6 +421,8 @@ def _run_codex_turn(
     needs_user_input = exit_code != 0
     needs_user_input_payload = run_record.needs_user_input_payload
     if exit_code != 0:
+        if output.startswith("[loops] codex invocation failed:"):
+            _append_log(run_log, output)
         _append_log(run_log, f"[loops] codex exit code {exit_code}")
         needs_user_input_payload = {
             "message": "Codex exited with a non-zero status. Provide guidance.",

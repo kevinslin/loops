@@ -664,8 +664,8 @@ def test_inner_loop_exits_promptly_when_needs_input_and_non_interactive(
     assert "non-interactive mode; exiting while waiting for user input" in log_output
 
 
-def test_run_codex_streams_output_to_log_while_running(tmp_path) -> None:
-    run_log = tmp_path / "run.log"
+def test_run_codex_streams_output_to_agent_log_while_running(tmp_path) -> None:
+    agent_log = tmp_path / "agent.log"
     stub = tmp_path / "stream_stub.py"
     stub.write_text(
         "\n".join(
@@ -682,7 +682,7 @@ def test_run_codex_streams_output_to_log_while_running(tmp_path) -> None:
     result: dict[str, tuple[str, int]] = {}
 
     def invoke() -> None:
-        result["value"] = inner_loop_module._run_codex(command, "prompt", run_log)
+        result["value"] = inner_loop_module._run_codex(command, "prompt", agent_log)
 
     worker = threading.Thread(target=invoke)
     worker.start()
@@ -690,8 +690,8 @@ def test_run_codex_streams_output_to_log_while_running(tmp_path) -> None:
     saw_first_line_while_running = False
     deadline = time.time() + 2.0
     while time.time() < deadline:
-        if run_log.exists():
-            content = run_log.read_text()
+        if agent_log.exists():
+            content = agent_log.read_text()
             if "first line" in content:
                 saw_first_line_while_running = worker.is_alive()
                 if saw_first_line_while_running:
@@ -709,6 +709,6 @@ def test_run_codex_streams_output_to_log_while_running(tmp_path) -> None:
     assert "first line" in output
     assert "second line" in output
 
-    log_output = run_log.read_text()
+    log_output = agent_log.read_text()
     assert "first line" in log_output
     assert "second line" in log_output

@@ -59,6 +59,7 @@ def test_run_once_creates_run_records(tmp_path: Path) -> None:
     assert len(run_dirs) == 2
     titles = {read_run_record(run_dir / "run.json").task.title for run_dir in run_dirs}
     assert titles == {"Ship it", "Next"}
+    assert all((run_dir / "agent.log").exists() for run_dir in run_dirs)
     assert len(launched) == 2
 
     state = read_outer_state(loops_root / "outer_state.json")
