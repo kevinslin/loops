@@ -2,11 +2,20 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from loops.outer_loop import OuterLoopConfig, OuterLoopRunner, load_config, read_outer_state
+from loops.outer_loop import (
+    InnerLoopCommandConfig,
+    LoopsConfig,
+    OuterLoopConfig,
+    OuterLoopRunner,
+    build_inner_loop_launcher,
+    load_config,
+    read_outer_state,
+)
 from loops.run_record import Task, read_run_record
 
 
@@ -161,6 +170,23 @@ def test_load_config_resolves_working_dir(tmp_path: Path) -> None:
     assert config.inner_loop.working_dir == str((tmp_path / "inner").resolve())
 
 
+def test_load_config_reads_sync_mode(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    payload = {
+        "provider_id": "github_projects_v2",
+        "provider_config": {},
+        "loop_config": {"sync_mode": True},
+        "inner_loop": {
+            "command": ["echo", "hello"],
+            "append_task_url": False,
+        },
+    }
+    config_path.write_text(json.dumps(payload))
+
+    config = load_config(config_path)
+    assert config.loop_config.sync_mode is True
+
+
 def test_load_config_rejects_bool_ints(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     payload = {
@@ -193,3 +219,46 @@ def test_run_once_persists_state_on_launch_error(tmp_path: Path) -> None:
     state = read_outer_state(loops_root / "outer_state.json")
     assert state.initialized is True
     assert len(state.tasks) == 1
+
+
+def test_build_inner_loop_launcher_sync_mode_uses_subprocess_run(
+    tmp_path: Path, monkeypatch
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    task = make_task("1", "Ship it")
+
+    config = LoopsConfig(
+        provider_id="github_projects_v2",
+        provider_config={"url": "https://github.com/orgs/acme/projects/1"},
+        loop_config=OuterLoopConfig(sync_mode=True),
+        inner_loop=InnerLoopCommandConfig(
+            command=["echo", "hello"],
+            append_task_url=False,
+        ),
+    )
+    launcher = build_inner_loop_launcher(config)
+
+    captured: dict[str, object] = {}
+
+    def fake_run(command, *, cwd, env, check):
+        captured["command"] = command
+        captured["cwd"] = cwd
+        captured["env"] = env
+        captured["check"] = check
+        return subprocess.CompletedProcess(command, 0)
+
+    def fail_popen(*_args, **_kwargs):
+        raise AssertionError("subprocess.Popen should not be used in sync_mode")
+
+    monkeypatch.setattr("loops.outer_loop.subprocess.run", fake_run)
+    monkeypatch.setattr("loops.outer_loop.subprocess.Popen", fail_popen)
+
+    launcher(run_dir, task)
+
+    assert captured["command"] == ["echo", "hello"]
+    assert captured["check"] is False
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["LOOPS_RUN_DIR"] == str(run_dir)
+    assert env["LOOPS_TASK_ID"] == task.id

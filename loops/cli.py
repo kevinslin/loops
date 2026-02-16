@@ -260,6 +260,7 @@ def _build_default_config() -> dict[str, Any]:
             "poll_interval_seconds": defaults.poll_interval_seconds,
             "parallel_tasks": defaults.parallel_tasks,
             "parallel_tasks_limit": defaults.parallel_tasks_limit,
+            "sync_mode": defaults.sync_mode,
             "emit_on_first_run": defaults.emit_on_first_run,
             "force": defaults.force,
             "task_ready_status": defaults.task_ready_status,

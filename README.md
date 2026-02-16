@@ -78,6 +78,7 @@ Top-level config file: `.loops/config.json`
 - `loop_config.poll_interval_seconds` (integer, default `30`)
 - `loop_config.parallel_tasks` (boolean, default `false`)
 - `loop_config.parallel_tasks_limit` (integer, default `5`)
+- `loop_config.sync_mode` (boolean, default `false`): run inner loop in foreground (interactive handoff enabled) instead of detached child.
 - `loop_config.emit_on_first_run` (boolean, default `false`)
 - `loop_config.force` (boolean, default `false`)
 - `loop_config.task_ready_status` (string, default `"Ready"`)
@@ -143,6 +144,7 @@ python -m loops run
 Notes:
 
 - Outer loop filters tasks by `loop_config.task_ready_status`.
+- With `loop_config.sync_mode=true`, inner loop runs in the foreground and can prompt for user input in the same terminal.
 - With `emit_on_first_run=false`, first run initializes dedupe state but does not launch tasks.
 - `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`, and `LOOPS_RUN_DIR` are injected into each launched inner-loop process.
 
@@ -159,7 +161,7 @@ Options:
 Examples:
 
 ```sh
-python -m loops inner-loop --run-dir .loops/jobs/2026-02-09-example-task-123
+python -m loops inner-loop --run-dir .loops/jobs/2026-02-14-test-issue-i-kwdoqyyzws7nwoys
 LOOPS_RUN_DIR=.loops/jobs/2026-02-09-example-task-123 python -m loops inner-loop
 LOOPS_RUN_DIR=.loops/jobs/2026-02-09-example-task-123 CODEX_CMD="codex exec --yolo" python -m loops inner-loop
 ```

@@ -43,6 +43,8 @@ type OuterLoopConfig = {
     parallel_tasks: boolean
     // default 5
     parallel_tasks_limit: number
+    // default false. run inner loop in foreground (interactive).
+    sync_mode: boolean
     // should count tasks initially or wait
     emit_on_first_run: boolean
     // ignore state transitions. imply emit_on_first_run=true
@@ -154,6 +156,7 @@ type OuterLoopConfig = {
     poll_interval_seconds?: number
     parallel_tasks?: boolean
     parallel_tasks_limit?: number
+    sync_mode?: boolean
     emit_on_first_run?: boolean
     force?: boolean
     task_ready_status?: string
@@ -209,7 +212,7 @@ Task provider (GitHub Projects V2)
 - Initializes a single `TaskProvider` (MVP: GitHub Projects V2).
 - Polls according to `poll_interval_seconds`.
 - Filters tasks by `task_ready_status` and ignores tasks already started unless `force=true`.
-- Starts an inner loop per task (serially or in parallel based on config).
+- Starts an inner loop per task (detached by default; foreground when `sync_mode=true`).
 - Persists a minimal outer loop ledger to avoid re-processing completed tasks.
 
 #### Inner loop

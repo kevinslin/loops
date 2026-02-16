@@ -35,6 +35,7 @@ class OuterLoopConfig:
     poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS
     parallel_tasks: bool = False
     parallel_tasks_limit: int = DEFAULT_PARALLEL_TASKS_LIMIT
+    sync_mode: bool = False
     emit_on_first_run: bool = False
     force: bool = False
     task_ready_status: str = DEFAULT_TASK_READY_STATUS
@@ -218,6 +219,12 @@ class OuterLoopRunner:
         launcher = self.inner_loop_launcher
         if launcher is None:
             raise RuntimeError("inner_loop_launcher is required to launch tasks")
+        if self.config.sync_mode:
+            # Foreground mode is explicitly interactive; launch serially so stdin/stdout
+            # are unambiguous and user handoff prompts are readable.
+            for run_dir, task in tasks:
+                launcher(run_dir, task)
+            return
         if not self.config.parallel_tasks or len(tasks) <= 1:
             for run_dir, task in tasks:
                 launcher(run_dir, task)
@@ -281,6 +288,7 @@ def build_inner_loop_launcher(
     if config.inner_loop is None:
         raise ValueError("inner_loop.command is required to launch tasks")
     inner_loop = config.inner_loop
+    sync_mode = config.loop_config.sync_mode
 
     def launcher(run_dir: Path, task: Task) -> None:
         """Launch a single inner loop invocation."""
@@ -298,8 +306,17 @@ def build_inner_loop_launcher(
         command = list(inner_loop.command)
         if inner_loop.append_task_url:
             command.append(task.url)
-        
-        log_fd = os.open(str(run_log), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)   
+
+        if sync_mode:
+            subprocess.run(
+                command,
+                cwd=inner_loop.working_dir,
+                env=env,
+                check=False,
+            )
+            return
+
+        log_fd = os.open(str(run_log), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
         try:
             subprocess.Popen(
                 command,
@@ -391,6 +408,7 @@ def _load_outer_loop_config(payload: Any) -> OuterLoopConfig:
         poll_interval_seconds=poll_interval,
         parallel_tasks=_load_bool(payload, "parallel_tasks", False),
         parallel_tasks_limit=parallel_limit,
+        sync_mode=_load_bool(payload, "sync_mode", False),
         emit_on_first_run=_load_bool(payload, "emit_on_first_run", False),
         force=_load_bool(payload, "force", False),
         task_ready_status=_load_str(payload, "task_ready_status", DEFAULT_TASK_READY_STATUS),
