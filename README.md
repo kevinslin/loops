@@ -156,12 +156,14 @@ Options:
 
 - `--run-dir PATH`: Run directory path. If omitted, uses `LOOPS_RUN_DIR`.
 - `--prompt-file PATH`: Optional base prompt file. If omitted, inner loop checks `LOOPS_PROMPT_FILE`, then `CODEX_PROMPT_FILE`.
+- `--reset`: Reset `run.json` orchestration/session/input state and exit.
 - `-h, --help`: Show help.
 
 Examples:
 
 ```sh
 python -m loops inner-loop --run-dir .loops/jobs/2026-02-14-test-issue-i-kwdoqyyzws7nwoys
+python -m loops inner-loop --run-dir .loops/jobs/2026-02-14-test-issue-i-kwdoqyyzws7nwoys --reset
 LOOPS_RUN_DIR=.loops/jobs/2026-02-09-example-task-123 python -m loops inner-loop
 LOOPS_RUN_DIR=.loops/jobs/2026-02-09-example-task-123 CODEX_CMD="codex exec --yolo" python -m loops inner-loop
 ```
@@ -174,6 +176,8 @@ Behavior summary:
 - Uses `CODEX_CMD` if set; default command is `codex exec --yolo`.
 - Polls PR state with `gh pr view` when a PR is present.
 - Applies pending signals from `state_signals.jsonl`.
+- `--reset` keeps task metadata and preserves an existing PR link (`pr.url`/`number`/`repo`) when present; non-link PR status fields are cleared.
+- If `run.json` is missing, task fields fall back to `LOOPS_TASK_*` env vars (or defaults).
 
 ### `python -m loops signal`
 

@@ -12,7 +12,7 @@ from typing import Optional
 
 import click
 
-from loops.inner_loop import run_inner_loop
+from loops.inner_loop import reset_run_record, run_inner_loop
 from loops.outer_loop import (
     InnerLoopCommandConfig,
     INNER_LOOP_RUNS_DIR_NAME,
@@ -87,11 +87,25 @@ def run_command(
     default=None,
     help="Optional path to a base prompt file.",
 )
-def inner_loop_command(run_dir: Optional[Path], prompt_file: Optional[Path]) -> None:
+@click.option(
+    "--reset",
+    is_flag=True,
+    default=False,
+    help="Reset run.json to initial state and exit.",
+)
+def inner_loop_command(
+    run_dir: Optional[Path],
+    prompt_file: Optional[Path],
+    reset: bool,
+) -> None:
     """Run the inner loop for a specific run directory."""
 
     resolved_run_dir = _resolve_run_dir_option(run_dir)
     try:
+        if reset:
+            reset_run_record(resolved_run_dir)
+            click.echo(f"Reset run state: {resolved_run_dir / 'run.json'}")
+            return
         run_inner_loop(resolved_run_dir, prompt_file=prompt_file)
     except FileNotFoundError as exc:
         raise click.ClickException(str(exc)) from exc

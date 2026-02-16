@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
+from datetime import datetime, timezone
 import json
 import os
 import re
@@ -18,6 +19,7 @@ from loops.run_record import (
     CodexSession,
     RunPR,
     RunRecord,
+    Task,
     derive_run_state,
     read_run_record,
     write_run_record,
@@ -47,6 +49,49 @@ UUID_PATTERN = re.compile(
 UserHandoffHandler = Callable[[dict[str, Any]], str]
 PRStatusFetcher = Callable[[RunPR], RunPR]
 SleepFn = Callable[[float], None]
+
+
+def reset_run_record(run_dir: Path) -> RunRecord:
+    """Reset run.json orchestration state while preserving durable identifiers."""
+
+    resolved_run_dir = run_dir.resolve()
+    run_json_path = resolved_run_dir / "run.json"
+    run_log = resolved_run_dir / "run.log"
+
+    existing_record: Optional[RunRecord] = None
+    task: Optional[Task] = None
+    if run_json_path.exists():
+        try:
+            existing_record = read_run_record(run_json_path)
+            task = existing_record.task
+        except Exception as exc:
+            _append_log(
+                run_log,
+                f"[loops] warning: failed to read existing run.json during reset: {exc}",
+            )
+
+    if task is None:
+        task = _build_reset_task_from_env(resolved_run_dir)
+
+    reset_record = RunRecord(
+        task=task,
+        pr=_build_reset_pr(existing_record.pr if existing_record is not None else None),
+        codex_session=None,
+        needs_user_input=False,
+        needs_user_input_payload=None,
+        last_state="RUNNING",
+        updated_at="",
+    )
+    written = write_run_record(run_json_path, reset_record)
+    _append_log(
+        run_log,
+        (
+            "[loops] run.json reset to initial state "
+            f"(task_id={written.task.id}, task_url={written.task.url}, "
+            f"pr_url={written.pr.url if written.pr is not None else 'none'})"
+        ),
+    )
+    return written
 
 
 def run_inner_loop(
@@ -83,13 +128,30 @@ def run_inner_loop(
     next_user_response: Optional[str] = None
     cleanup_executed_for_pr: Optional[str] = None
 
-    for _ in range(max_iterations):
+    for iteration in range(1, max_iterations + 1):
         run_record = read_run_record(run_json_path)
         run_record = _apply_pending_signals(run_dir, run_record)
         state = derive_run_state(run_record.pr, run_record.needs_user_input)
+        _log_iteration_enter(
+            run_log,
+            iteration=iteration,
+            state=state,
+            run_record=run_record,
+            backoff_seconds=backoff_seconds,
+            idle_polls=idle_polls,
+        )
 
         if state == "DONE":
             _append_log(run_log, "[loops] run state DONE; exiting inner loop")
+            _log_iteration_exit(
+                run_log,
+                iteration=iteration,
+                next_state=state,
+                run_record=run_record,
+                action="done_exit",
+                backoff_seconds=backoff_seconds,
+                idle_polls=idle_polls,
+            )
             return run_record
 
         if state == "NEEDS_INPUT":
@@ -104,9 +166,34 @@ def run_inner_loop(
                         run_log,
                         "[loops] non-interactive mode; exiting while waiting for user input",
                     )
-                    return read_run_record(run_json_path)
+                    terminal_record = read_run_record(run_json_path)
+                    _log_iteration_exit(
+                        run_log,
+                        iteration=iteration,
+                        next_state=derive_run_state(
+                            terminal_record.pr,
+                            terminal_record.needs_user_input,
+                        ),
+                        run_record=terminal_record,
+                        action="needs_input_non_interactive_exit",
+                        backoff_seconds=backoff_seconds,
+                        idle_polls=idle_polls,
+                    )
+                    return terminal_record
                 sleep_fn(min(backoff_seconds, max_poll_seconds))
                 backoff_seconds = min(backoff_seconds * 2, max_poll_seconds)
+                _log_iteration_exit(
+                    run_log,
+                    iteration=iteration,
+                    next_state=derive_run_state(
+                        run_record.pr,
+                        run_record.needs_user_input,
+                    ),
+                    run_record=run_record,
+                    action="needs_input_waiting",
+                    backoff_seconds=backoff_seconds,
+                    idle_polls=idle_polls,
+                )
                 continue
 
             next_user_response = response
@@ -120,6 +207,18 @@ def run_inner_loop(
             )
             backoff_seconds = initial_poll_seconds
             idle_polls = 0
+            _log_iteration_exit(
+                run_log,
+                iteration=iteration,
+                next_state=derive_run_state(
+                    run_record.pr,
+                    run_record.needs_user_input,
+                ),
+                run_record=run_record,
+                action="needs_input_cleared",
+                backoff_seconds=backoff_seconds,
+                idle_polls=idle_polls,
+            )
             continue
 
         if state == "RUNNING":
@@ -137,6 +236,18 @@ def run_inner_loop(
             cleanup_executed_for_pr = None
             backoff_seconds = initial_poll_seconds
             idle_polls = 0
+            _log_iteration_exit(
+                run_log,
+                iteration=iteration,
+                next_state=derive_run_state(
+                    run_record.pr,
+                    run_record.needs_user_input,
+                ),
+                run_record=run_record,
+                action="codex_turn",
+                backoff_seconds=backoff_seconds,
+                idle_polls=idle_polls,
+            )
             continue
 
         if state == "WAITING_ON_REVIEW":
@@ -145,6 +256,18 @@ def run_inner_loop(
                     run_json_path,
                     run_record,
                     message="Run is waiting on review but no PR metadata exists.",
+                )
+                _log_iteration_exit(
+                    run_log,
+                    iteration=iteration,
+                    next_state=derive_run_state(
+                        run_record.pr,
+                        run_record.needs_user_input,
+                    ),
+                    run_record=run_record,
+                    action="review_missing_pr",
+                    backoff_seconds=backoff_seconds,
+                    idle_polls=idle_polls,
                 )
                 continue
             try:
@@ -164,6 +287,18 @@ def run_inner_loop(
                     idle_polls = 0
                 sleep_fn(min(backoff_seconds, max_poll_seconds))
                 backoff_seconds = min(backoff_seconds * 2, max_poll_seconds)
+                _log_iteration_exit(
+                    run_log,
+                    iteration=iteration,
+                    next_state=derive_run_state(
+                        run_record.pr,
+                        run_record.needs_user_input,
+                    ),
+                    run_record=run_record,
+                    action="review_poll_error",
+                    backoff_seconds=backoff_seconds,
+                    idle_polls=idle_polls,
+                )
                 continue
 
             run_record = write_run_record(
@@ -190,6 +325,18 @@ def run_inner_loop(
                 cleanup_executed_for_pr = None
                 backoff_seconds = initial_poll_seconds
                 idle_polls = 0
+                _log_iteration_exit(
+                    run_log,
+                    iteration=iteration,
+                    next_state=derive_run_state(
+                        run_record.pr,
+                        run_record.needs_user_input,
+                    ),
+                    run_record=run_record,
+                    action="review_feedback_codex_turn",
+                    backoff_seconds=backoff_seconds,
+                    idle_polls=idle_polls,
+                )
                 continue
             next_state = derive_run_state(run_record.pr, run_record.needs_user_input)
             if next_state == "WAITING_ON_REVIEW":
@@ -209,6 +356,15 @@ def run_inner_loop(
                 backoff_seconds = initial_poll_seconds
             sleep_fn(min(backoff_seconds, max_poll_seconds))
             backoff_seconds = min(backoff_seconds * 2, max_poll_seconds)
+            _log_iteration_exit(
+                run_log,
+                iteration=iteration,
+                next_state=next_state,
+                run_record=run_record,
+                action="review_poll",
+                backoff_seconds=backoff_seconds,
+                idle_polls=idle_polls,
+            )
             continue
 
         if state == "PR_APPROVED":
@@ -217,6 +373,18 @@ def run_inner_loop(
                     run_json_path,
                     run_record,
                     message="Run is PR_APPROVED but no PR metadata exists.",
+                )
+                _log_iteration_exit(
+                    run_log,
+                    iteration=iteration,
+                    next_state=derive_run_state(
+                        run_record.pr,
+                        run_record.needs_user_input,
+                    ),
+                    run_record=run_record,
+                    action="approved_missing_pr",
+                    backoff_seconds=backoff_seconds,
+                    idle_polls=idle_polls,
                 )
                 continue
 
@@ -231,6 +399,18 @@ def run_inner_loop(
                         message="Cleanup failed after PR approval. Please advise.",
                         context={"exit_code": exit_code},
                     )
+                    _log_iteration_exit(
+                        run_log,
+                        iteration=iteration,
+                        next_state=derive_run_state(
+                            run_record.pr,
+                            run_record.needs_user_input,
+                        ),
+                        run_record=run_record,
+                        action="cleanup_failed",
+                        backoff_seconds=backoff_seconds,
+                        idle_polls=idle_polls,
+                    )
                     continue
                 cleanup_executed_for_pr = run_record.pr.url
 
@@ -240,6 +420,18 @@ def run_inner_loop(
                 _append_log(run_log, f"[loops] failed to poll merge status: {exc}")
                 sleep_fn(min(backoff_seconds, max_poll_seconds))
                 backoff_seconds = min(backoff_seconds * 2, max_poll_seconds)
+                _log_iteration_exit(
+                    run_log,
+                    iteration=iteration,
+                    next_state=derive_run_state(
+                        run_record.pr,
+                        run_record.needs_user_input,
+                    ),
+                    run_record=run_record,
+                    action="merge_poll_error",
+                    backoff_seconds=backoff_seconds,
+                    idle_polls=idle_polls,
+                )
                 continue
 
             run_record = write_run_record(
@@ -248,6 +440,15 @@ def run_inner_loop(
             )
             sleep_fn(min(backoff_seconds, max_poll_seconds))
             backoff_seconds = min(backoff_seconds * 2, max_poll_seconds)
+            _log_iteration_exit(
+                run_log,
+                iteration=iteration,
+                next_state=derive_run_state(run_record.pr, run_record.needs_user_input),
+                run_record=run_record,
+                action="approved_poll",
+                backoff_seconds=backoff_seconds,
+                idle_polls=idle_polls,
+            )
             continue
 
     final_record = read_run_record(run_json_path)
@@ -259,7 +460,97 @@ def run_inner_loop(
             "Please provide guidance."
         ),
     )
+    _append_log(
+        run_log,
+        (
+            "[loops] iteration limit reached; forcing NEEDS_INPUT "
+            f"(max_iterations={max_iterations})"
+        ),
+    )
     return final_record
+
+
+def _build_reset_task_from_env(run_dir: Path) -> Task:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    default_label = run_dir.name or "unknown-task"
+    return Task(
+        provider_id=os.environ.get("LOOPS_TASK_PROVIDER", "unknown"),
+        id=os.environ.get("LOOPS_TASK_ID", default_label),
+        title=os.environ.get("LOOPS_TASK_TITLE", default_label),
+        status="ready",
+        url=os.environ.get("LOOPS_TASK_URL", "unknown"),
+        created_at=now_iso,
+        updated_at=now_iso,
+        repo=None,
+    )
+
+
+def _build_reset_pr(existing_pr: Optional[RunPR]) -> Optional[RunPR]:
+    if existing_pr is None:
+        return None
+    return RunPR(
+        url=existing_pr.url,
+        number=existing_pr.number,
+        repo=existing_pr.repo,
+        review_status="open",
+        merged_at=None,
+        last_checked_at=None,
+        latest_review_submitted_at=None,
+        review_addressed_at=None,
+    )
+
+
+def _log_iteration_enter(
+    run_log: Path,
+    *,
+    iteration: int,
+    state: str,
+    run_record: RunRecord,
+    backoff_seconds: float,
+    idle_polls: int,
+) -> None:
+    _append_log(
+        run_log,
+        (
+            f"[loops] iteration {iteration} enter: state={state} "
+            f"{_format_run_record_log_details(run_record)} "
+            f"backoff_seconds={backoff_seconds:.1f} idle_polls={idle_polls}"
+        ),
+    )
+
+
+def _log_iteration_exit(
+    run_log: Path,
+    *,
+    iteration: int,
+    next_state: str,
+    run_record: RunRecord,
+    action: str,
+    backoff_seconds: float,
+    idle_polls: int,
+) -> None:
+    _append_log(
+        run_log,
+        (
+            f"[loops] iteration {iteration} exit: next_state={next_state} action={action} "
+            f"{_format_run_record_log_details(run_record)} "
+            f"backoff_seconds={backoff_seconds:.1f} idle_polls={idle_polls}"
+        ),
+    )
+
+
+def _format_run_record_log_details(run_record: RunRecord) -> str:
+    pr = run_record.pr
+    if pr is None:
+        pr_summary = "pr_status=none pr_number=- pr_merged=no"
+    else:
+        review_status = pr.review_status or "unknown"
+        pr_number = pr.number if pr.number is not None else "-"
+        pr_merged = "yes" if pr.merged_at else "no"
+        pr_summary = (
+            f"pr_status={review_status} pr_number={pr_number} pr_merged={pr_merged}"
+        )
+    return f"needs_user_input={run_record.needs_user_input} {pr_summary}"
 
 
 def _resolve_codex_command() -> list[str]:
@@ -777,9 +1068,17 @@ def main() -> None:
         default=None,
         help="Optional path to a base prompt file.",
     )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Reset run.json to initial state and exit.",
+    )
     args = parser.parse_args()
     run_dir = _resolve_run_dir(args.run_dir)
     prompt_file = Path(args.prompt_file) if args.prompt_file else None
+    if args.reset:
+        reset_run_record(run_dir)
+        return
     run_inner_loop(run_dir, prompt_file=prompt_file)
 
 

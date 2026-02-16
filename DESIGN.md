@@ -222,6 +222,7 @@ Task provider (GitHub Projects V2)
 - Consumes model-authored signals from a run-local queue and applies validated state changes to `run.json`.
 - Writes inner-loop orchestration logs to `[INNER_LOOP_ROOT]/run.log`.
 - Streams Codex/agent output to `[INNER_LOOP_ROOT]/agent.log`.
+- Supports a manual `--reset` operation to clear orchestration/session/input fields in `run.json` while preserving task metadata and existing PR link identity.
 
 #### Task provider
 - Implements `TaskProvider.poll(limit)`.

@@ -130,6 +130,9 @@ def test_inner_loop_reaches_done_lifecycle(tmp_path, monkeypatch) -> None:
     assert result.pr is not None
     assert result.pr.merged_at == "2026-02-09T00:00:02Z"
     assert counter_path.read_text() == "2"  # RUNNING + PR_APPROVED cleanup
+    run_log = (run_dir / "run.log").read_text()
+    assert "iteration 1 enter: state=RUNNING" in run_log
+    assert "exit: next_state=DONE action=done_exit" in run_log
 
 
 def test_inner_loop_consumes_signal_and_uses_user_response_in_prompt(
