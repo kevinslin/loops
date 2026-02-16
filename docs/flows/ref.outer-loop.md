@@ -72,111 +72,119 @@ None identified.
 
 - `loops/cli.py:187` + `loops/outer_loop.py:158`
 ```ts
-function runOuterLoop(configPath: Path, runOnce: boolean, limit?: number, forceOverride?: boolean): void {
-  config = loadConfig(configPath)
+function _run_outer_loop(config_path, run_once, limit, force, task_url=None)
+  config := load_config(config_path)
+  effective_loop_config := config.loop_config with CLI overrides from force and task_url
+  config := replace(config, loop_config=effective_loop_config)
 
-  loopConfig = config.loopConfig
-  if (forceOverride is boolean) {
-    loopConfig = { ...loopConfig, force: forceOverride }
-  }
+  if config.inner_loop is None
+    config := replace(
+      config,
+      inner_loop=InnerLoopCommandConfig(
+        command=[sys.executable, "-m", "loops.inner_loop"],
+        append_task_url=False,
+      ),
+    )
 
-  if (config.innerLoop is null) {
-    config.innerLoop = {
-      command: [python, "-m", "loops.inner_loop"],
-      appendTaskUrl: false,
-    }
-  }
+  runner := OuterLoopRunner(
+    :=config,
+    loops_root=_resolve_loops_root(config_path),
+  )
 
-  provider = buildProvider(config)
-  launcher = buildInnerLoopLauncher(config)
-  loopsRoot = resolveLoopsRoot(configPath)
-  runner = new OuterLoopRunner(provider, loopConfig, loopsRoot, launcher)
-
-  if (runOnce) {
-    runner.runOnce(limit)
-  } else {
-    runner.runForever(limit)
-  }
-}
-
-class OuterLoopRunner {
-  runOnce(limit?: number): Path[] {
-    ensureLoopsRootAndJobsDir()
-
-    state = readOuterState(outerStatePath)
-    readyTasks = provider.poll(limit).filter(task => isReady(task, config.taskReadyStatus))
-
-    nowIso = now()
-    firstRun = !state.initialized
-    shouldEmit = config.emitOnFirstRun || config.force || !firstRun
-
-    emitTasks = []
-    for (task of readyTasks) {
-      alreadySeen = state.hasTask(task)
-      state.recordTask(task, nowIso)
-
-      if (!shouldEmit) continue
-      if (alreadySeen && !config.force) continue
-      emitTasks.push(task)
+  effective_run_once := run_once or task_url is not None
+  if effective_run_once
+    runner.run_once(limit=limit, forced_task_url=task_url)
+  else
+    runner.run_forever(limit=limit) {
+      while True
+        self.run_once(limit=limit)
+        time.sleep(self.config.poll_interval_seconds)
     }
 
-    if (emitTasks.length > 0 && launcher missing) {
-      throw Error("inner_loop_launcher is required to launch tasks")
-    }
+class OuterLoopRunner
+  function run_once(limit=None, forced_task_url=None)
+    self.loops_root.mkdir(parents=True, exist_ok=True)
+    (self.loops_root / INNER_LOOP_RUNS_DIR_NAME).mkdir(parents=True, exist_ok=True)
 
-    toLaunch = []
-    for (task of emitTasks) {
-      runDir = createRunDir(task, loopsRoot)
-      writeRunRecord(runDir/run.json, {
-        task,
-        pr: null,
-        codexSession: null,
-        needsUserInput: false,
-        lastState: "RUNNING",
-        updatedAt: nowIso,
-      })
-      touch(runDir/run.log)
-      touch(runDir/agent.log)
-      toLaunch.push([runDir, task])
-    }
+    state := read_outer_state(self.state_path)
+    poll_limit := None if forced_task_url is not None else limit
+    polled_tasks := self.provider.poll(poll_limit)
 
-    try {
-      if (toLaunch.length > 0) {
-        launchTasks(toLaunch, config)
-      }
-    } finally {
-      state.initialized = true
-      state.updatedAt = nowIso
-      writeOuterState(outerStatePath, state)
-      appendOuterLog(`ready=${readyTasks.length} processed=${toLaunch.length}`)
-    }
+    if forced_task_url is not None
+      ready_tasks := [_select_task_by_url(polled_tasks, forced_task_url)]
+    else
+      ready_tasks := [
+        task
+        for task in polled_tasks
+        if task.status.casefold() == self.config.task_ready_status.casefold()
+      ]
 
-    return toLaunch.map(([runDir]) => runDir)
-  }
+    now_iso := _now_iso()
+    emit_tasks := []
+    first_run := not state.initialized
+    should_emit := self.config.emit_on_first_run or self.config.force or not first_run
 
-  runForever(limit?: number): void {
-    while (true) {
-      runOnce(limit)
-      sleep(config.pollIntervalSeconds)
-    }
-  }
+    for task in ready_tasks
+      already_seen := state.has_task(task)
+      state.record_task(task, now_iso)
 
-  launchTasks(tasks): void {
-    if (config.syncMode) {
-      // serial foreground launch
-      for each task -> launcher(runDir, task)
+      if not should_emit
+        continue
+      if already_seen and not self.config.force
+        continue
+      emit_tasks.append(task)
+
+    if emit_tasks and self.inner_loop_launcher is None
+      raise RuntimeError("inner_loop_launcher is required to launch tasks")
+
+    to_launch := []
+    for task in emit_tasks
+      run_dir := create_run_dir(task, self.loops_root)
+      write_run_record(
+        run_dir / "run.json",
+        RunRecord(
+          task=task,
+          pr=None,
+          codex_session=None,
+          needs_user_input=False,
+          last_state="RUNNING",
+          updated_at=now_iso,
+        ),
+      )
+      to_launch.append((run_dir, task))
+
+    try
+      if to_launch
+        self._launch_tasks(to_launch)
+    finally
+      state.initialized = True
+      state.updated_at = now_iso
+      write_outer_state(self.state_path, state)
+      _log(self.log_path, f"ready={len(ready_tasks)} processed={len(to_launch)}")
+
+    return [run_dir for run_dir, _ in to_launch]
+
+  function _launch_tasks(tasks)
+    launcher := self.inner_loop_launcher
+    if launcher is None
+      raise RuntimeError("inner_loop_launcher is required to launch tasks")
+
+    if self.config.sync_mode
+      for run_dir, task in tasks
+        launcher(run_dir, task)
       return
-    }
 
-    if (!config.parallelTasks || tasks.length <= 1) {
-      for each task -> launcher(runDir, task)
+    if not self.config.parallel_tasks or len(tasks) <= 1
+      for run_dir, task in tasks
+        launcher(run_dir, task)
       return
-    }
 
-    // bounded thread pool for concurrent launches
-    run launch tasks with maxWorkers = min(config.parallelTasksLimit, tasks.length)
-  }
-}
+    with ThreadPoolExecutor(
+      max_workers=min(self.config.parallel_tasks_limit, len(tasks))
+    ) as executor
+      futures := [executor.submit(launcher, run_dir, task) for run_dir, task in tasks]
+      for future in futures
+        future.result()
 ```
 
 ### Child-launch behavior and handoff contract
@@ -289,3 +297,6 @@ A: If config is inside `.loops/`, that directory is used; otherwise `.loops/` is
 
 ## Changelog
 - 2026-02-16: Created outer-loop flow doc covering poll, dedupe, run materialization, and launch semantics. (019c6863-d581-7f83-9809-fabbefa042e8)
+- 2026-02-16: Revised outer-loop pseudocode to use grepable runtime names and focus on main execution flow over plumbing details. (019c6863-d581-7f83-9809-fabbefa042e8)
+- 2026-02-16: Inlined short helper references in pseudocode to make the outer-loop flow readable in a single linear pass. (019c6863-d581-7f83-9809-fabbefa042e8)
+- 2026-02-16: Switched run-forever pseudocode to keep the function call and inline its body at the call site. (019c6863-d581-7f83-9809-fabbefa042e8)
