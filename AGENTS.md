@@ -14,3 +14,7 @@ Document expectations and configuration for coding agents working in this repo.
 - `CODEX_CMD`: command used to invoke Codex (default: `codex exec --yolo`).
 - `LOOPS_PROMPT_FILE` / `CODEX_PROMPT_FILE`: optional base prompt file path.
 - `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`: task metadata injected by the outer loop launcher.
+
+## Additional Notes
+- this project does not use statsig. ignore all statsig related directives
+- when making changes, use $dev.research to understand flow docs and search over all related flow docs. if the current change has changed the design of a flow doc - trigger:update-flow-doc to update it
