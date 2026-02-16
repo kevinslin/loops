@@ -75,7 +75,9 @@ Top-level config file: `.loops/config.json`
 - `provider_config.url` (string, required): GitHub Projects V2 URL, for example `https://github.com/orgs/acme/projects/7`.
 - `provider_config.status_field` (string, optional, default `"Status"`): Project field name to map task status.
 - `provider_config.page_size` (integer, optional, default `50`): GraphQL page size.
-- `provider_config.github_token` (string, optional): Overrides `GITHUB_TOKEN`/`GH_TOKEN`.
+- `provider_config.github_token` (string, optional): Overrides token used by the provider once launched.
+- `provider_config` is validated by the provider's typed Pydantic model (unknown keys and invalid types fail fast).
+- Required provider secrets are declared by provider metadata and validated from env before provider construction.
 - `loop_config` (object, optional):
 - `loop_config.poll_interval_seconds` (integer, default `30`)
 - `loop_config.parallel_tasks` (boolean, default `false`)
@@ -223,7 +225,7 @@ Output on success:
 
 ## Environment variables
 
-- `GITHUB_TOKEN` or `GH_TOKEN`: required for GitHub Projects polling unless `provider_config.github_token` is set.
+- `GITHUB_TOKEN` or `GH_TOKEN`: required for GitHub Projects provider startup checks (`GH_TOKEN` is accepted as alias fallback).
 - `CODEX_CMD`: command used for Codex execution in inner loop. Default: `codex exec --yolo`.
 - `LOOPS_RUN_DIR`: run directory for `loops.inner_loop` and `loops.state_signal` when `--run-dir` is not passed.
 - `LOOPS_PROMPT_FILE` / `CODEX_PROMPT_FILE`: optional base prompt file for inner loop.

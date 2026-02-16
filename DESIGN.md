@@ -125,6 +125,26 @@ type GithubProjectsV2TaskProviderConfig = {
     url: string
     status_field: "Status"
 }
+
+type SecretRequirement = {
+    // environment variable name expected by Loops preflight checks
+    name: string
+    // optional alias env var names accepted as fallback
+    alias?: string[]
+    // short explanation shown when the variable is missing
+    description: string
+}
+
+type LoopsProviderConfig = {
+    // unique provider id (must match provider_id in .loops/config.json)
+    id: string
+    // optional display name; defaults to id when absent
+    name?: string
+    // required env vars for provider operation (validation only in MVP)
+    required_secrets: SecretRequirement[]
+    // provider-owned pydantic model for validating provider_config payload
+    provider_config_model: "pydantic model"
+}
 ```
 
 
@@ -179,6 +199,8 @@ type GithubProjectsV2TaskProviderConfig = {
 
 Notes:
 - `provider_id` currently supports only `"github_projects_v2"`.
+- `provider_config` is validated by the provider's Pydantic model.
+- Required provider secrets are validated from environment variables before provider construction.
 - `loop_config` is optional; omitted keys fall back to defaults.
 - `inner_loop` is optional when running via the CLI; if omitted, the CLI uses
   `python -m loops.inner_loop` with `append_task_url=false`.
@@ -186,6 +208,7 @@ Notes:
 - Installed package entrypoint `loops` is equivalent to `python -m loops` and uses the same argv normalization.
 
 ### Environment variables
+- `GITHUB_TOKEN` or `GH_TOKEN`: required for GitHub provider startup checks (`GH_TOKEN` is supported as alias fallback).
 - `LOOPS_RUN_DIR`: required path to the inner loop run directory.
 - `CODEX_CMD`: command used to invoke Codex (default: `codex exec --yolo`).
 - `LOOPS_PROMPT_FILE` / `CODEX_PROMPT_FILE`: optional base prompt file path.
@@ -229,6 +252,7 @@ Task provider (GitHub Projects V2)
 #### Task provider
 - Implements `TaskProvider.poll(limit)`.
 - MVP: GitHub Projects V2 via the GitHub API or `gh`.
+- Each provider declares `LoopsProviderConfig` metadata for identity, required env secrets, and typed `provider_config` validation via a provider-owned Pydantic model.
 
 #### Signal CLI (state requests)
 - Purpose: allow the model to request a state transition (MVP: `NEEDS_INPUT`) without writing `run.json` directly.

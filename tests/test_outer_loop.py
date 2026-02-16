@@ -12,10 +12,12 @@ from loops.outer_loop import (
     LoopsConfig,
     OuterLoopConfig,
     OuterLoopRunner,
+    build_provider,
     build_inner_loop_launcher,
     load_config,
     read_outer_state,
 )
+from loops.providers.github_projects_v2 import GithubProjectsV2TaskProvider
 from loops.run_record import Task, read_run_record
 
 
@@ -292,6 +294,51 @@ def test_load_config_rejects_bool_ints(tmp_path: Path) -> None:
 
     with pytest.raises(TypeError, match="poll_interval_seconds"):
         load_config(config_path)
+
+
+def test_build_provider_accepts_alias_secret_env_var(monkeypatch) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("GH_TOKEN", "token-from-alias")
+    config = LoopsConfig(
+        provider_id="github_projects_v2",
+        provider_config={"url": "https://github.com/orgs/acme/projects/1"},
+        loop_config=OuterLoopConfig(),
+        inner_loop=None,
+    )
+
+    provider = build_provider(config)
+
+    assert isinstance(provider, GithubProjectsV2TaskProvider)
+
+
+def test_build_provider_rejects_missing_required_secret(monkeypatch) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    config = LoopsConfig(
+        provider_id="github_projects_v2",
+        provider_config={"url": "https://github.com/orgs/acme/projects/1"},
+        loop_config=OuterLoopConfig(),
+        inner_loop=None,
+    )
+
+    with pytest.raises(ValueError, match=r"GITHUB_TOKEN, GH_TOKEN"):
+        build_provider(config)
+
+
+def test_build_provider_validates_provider_config(monkeypatch) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    config = LoopsConfig(
+        provider_id="github_projects_v2",
+        provider_config={
+            "url": "https://github.com/orgs/acme/projects/1",
+            "unsupported": "value",
+        },
+        loop_config=OuterLoopConfig(),
+        inner_loop=None,
+    )
+
+    with pytest.raises(ValueError, match="provider_config is invalid"):
+        build_provider(config)
 
 
 def test_run_once_persists_state_on_launch_error(tmp_path: Path) -> None:

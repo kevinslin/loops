@@ -12,14 +12,13 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Mapping, Optional
 from urllib.parse import urlsplit, urlunsplit
 
-from loops.providers.github_projects_v2 import (
-    GITHUB_PROJECTS_V2_PROVIDER_ID,
-    GithubProjectsV2TaskProvider,
-    GithubProjectsV2TaskProviderConfig,
-)
+from pydantic import ValidationError
+
+from loops.provider_types import LoopsProviderConfig, SecretRequirement
+from loops.providers.registry import get_provider_definition
 from loops.run_record import RunRecord, Task, write_run_record
 from loops.task_provider import TaskProvider
 
@@ -283,10 +282,17 @@ def load_config(path: str | Path) -> LoopsConfig:
 def build_provider(config: LoopsConfig) -> TaskProvider:
     """Construct the task provider for the configured provider id."""
 
-    if config.provider_id != GITHUB_PROJECTS_V2_PROVIDER_ID:
-        raise ValueError(f"Unsupported provider_id: {config.provider_id}")
-    provider_kwargs = _filter_provider_config(config.provider_config)
-    return GithubProjectsV2TaskProvider(GithubProjectsV2TaskProviderConfig(**provider_kwargs))
+    definition = get_provider_definition(config.provider_id)
+    _validate_required_secrets(definition.metadata, environ=os.environ)
+    try:
+        provider_config = definition.metadata.provider_config_model.model_validate(
+            config.provider_config
+        )
+    except ValidationError as exc:
+        raise ValueError(
+            f"provider_config is invalid for provider '{definition.metadata.id}': {exc}"
+        ) from exc
+    return definition.build(provider_config)
 
 
 def build_inner_loop_launcher(
@@ -424,15 +430,42 @@ def _load_outer_loop_config(payload: Any) -> OuterLoopConfig:
     )
 
 
-def _filter_provider_config(payload: dict[str, Any]) -> dict[str, Any]:
-    """Filter provider config and reject unknown keys."""
+def _validate_required_secrets(
+    provider: LoopsProviderConfig,
+    *,
+    environ: Mapping[str, str],
+) -> None:
+    """Validate that provider-declared env secrets are present."""
 
-    allowed_keys = {"url", "status_field", "page_size", "github_token"}
-    unknown_keys = set(payload.keys()) - allowed_keys
-    if unknown_keys:
-        formatted = ", ".join(sorted(unknown_keys))
-        raise ValueError(f"provider_config contains unsupported keys: {formatted}")
-    return dict(payload)
+    missing: list[SecretRequirement] = []
+    for requirement in provider.required_secrets:
+        if _resolve_secret_env_name(requirement, environ=environ) is None:
+            missing.append(requirement)
+    if not missing:
+        return
+
+    lines = [
+        f"Missing required secret environment variables for provider "
+        f"'{provider.display_name()}' ({provider.id}):"
+    ]
+    for requirement in missing:
+        env_names = ", ".join(requirement.env_names()) or requirement.name
+        lines.append(f"- {env_names}: {requirement.description}")
+    raise ValueError("\n".join(lines))
+
+
+def _resolve_secret_env_name(
+    requirement: SecretRequirement,
+    *,
+    environ: Mapping[str, str],
+) -> str | None:
+    """Resolve the first non-empty env var that satisfies a secret requirement."""
+
+    for env_name in requirement.env_names():
+        value = environ.get(env_name)
+        if value is not None and value.strip():
+            return env_name
+    return None
 
 
 def _load_bool(payload: dict[str, Any], key: str, default: bool) -> bool:
