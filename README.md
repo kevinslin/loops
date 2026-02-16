@@ -11,12 +11,12 @@ It has two runtime layers:
 - Python 3.10+
 - `gh` CLI in `PATH`
 - Codex CLI in `PATH` (or set `CODEX_CMD`)
-- Python package: `click`
+- Python package installer (`pip`)
 
-Install Python dependency:
+Install Loops (editable) to get the `loops` command on your `PATH`:
 
 ```sh
-python -m pip install click
+python -m pip install -e .
 ```
 
 ## Quickstart
@@ -24,7 +24,7 @@ python -m pip install click
 1. Initialize Loops:
 
 ```sh
-python -m loops init
+loops init
 ```
 
 This creates `.loops/`, `.loops/jobs/`, `.loops/config.json`, `.loops/outer_state.json`, and `.loops/oloops.log`.
@@ -38,14 +38,16 @@ export GITHUB_TOKEN=YOUR_TOKEN
 3. Run one poll cycle:
 
 ```sh
-python -m loops run --run-once
+loops run --run-once
 ```
 
 4. For continuous polling:
 
 ```sh
-python -m loops run
+loops run
 ```
+
+`python -m loops ...` remains supported as an equivalent invocation.
 
 ## Runtime layout
 
@@ -96,7 +98,7 @@ If `inner_loop` is omitted and you run via `python -m loops`, the CLI injects:
 
 All CLI interfaces in this repo are listed below.
 
-### `python -m loops`
+### `loops`
 
 Wrapper CLI for all Loops interfaces.
 
@@ -110,17 +112,18 @@ Subcommands:
 Examples:
 
 ```sh
-python -m loops init
-python -m loops run --run-once
-python -m loops inner-loop --run-dir .loops/jobs/2026-02-09-example-task-123
-python -m loops signal --run-dir .loops/jobs/2026-02-09-example-task-123 --message "Need approval"
+loops init
+loops run --run-once
+loops inner-loop --run-dir .loops/jobs/2026-02-09-example-task-123
+loops signal --run-dir .loops/jobs/2026-02-09-example-task-123 --message "Need approval"
 ```
 
 Legacy compatibility:
 
-- `python -m loops --run-once` is still accepted and is routed to `python -m loops run --run-once`.
+- `loops --run-once` is accepted and routed to `loops run --run-once`.
+- `python -m loops --run-once` is accepted and routed to `python -m loops run --run-once`.
 
-### `python -m loops run`
+### `loops run`
 
 Runs the outer loop runner.
 
@@ -136,11 +139,11 @@ Options:
 Examples:
 
 ```sh
-python -m loops run --run-once
-python -m loops run --run-once --limit 3
-python -m loops run --config /path/to/config.json --force
-python -m loops run --task-url https://github.com/acme/api/issues/123
-python -m loops run
+loops run --run-once
+loops run --run-once --limit 3
+loops run --config /path/to/config.json --force
+loops run --task-url https://github.com/acme/api/issues/123
+loops run
 ```
 
 Notes:
@@ -154,7 +157,7 @@ Notes:
 - `--task-url` bypasses ready-status filtering for the selected task and raises an error when the URL is missing or ambiguous in poll results.
 - `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`, and `LOOPS_RUN_DIR` are injected into each launched inner-loop process.
 
-### `python -m loops inner-loop`
+### `loops inner-loop`
 
 Runs the inner loop for a single run directory.
 
@@ -168,10 +171,10 @@ Options:
 Examples:
 
 ```sh
-python -m loops inner-loop --run-dir .loops/jobs/2026-02-14-test-issue-i-kwdoqyyzws7nwoys
-python -m loops inner-loop --run-dir .loops/jobs/2026-02-14-test-issue-i-kwdoqyyzws7nwoys --reset
-LOOPS_RUN_DIR=.loops/jobs/2026-02-09-example-task-123 python -m loops inner-loop
-LOOPS_RUN_DIR=.loops/jobs/2026-02-09-example-task-123 CODEX_CMD="codex exec --yolo" python -m loops inner-loop
+loops inner-loop --run-dir .loops/jobs/2026-02-14-test-issue-i-kwdoqyyzws7nwoys
+loops inner-loop --run-dir .loops/jobs/2026-02-14-test-issue-i-kwdoqyyzws7nwoys --reset
+LOOPS_RUN_DIR=.loops/jobs/2026-02-09-example-task-123 loops inner-loop
+LOOPS_RUN_DIR=.loops/jobs/2026-02-09-example-task-123 CODEX_CMD="codex exec --yolo" loops inner-loop
 ```
 
 Behavior summary:
@@ -185,7 +188,7 @@ Behavior summary:
 - `--reset` keeps task metadata and preserves an existing PR link (`pr.url`/`number`/`repo`) when present; non-link PR status fields are cleared.
 - If `run.json` is missing, task fields fall back to `LOOPS_TASK_*` env vars (or defaults).
 
-### `python -m loops signal`
+### `loops signal`
 
 Enqueues state signals for an existing run directory. Current supported state: `NEEDS_INPUT`.
 
@@ -200,7 +203,7 @@ Options:
 Examples:
 
 ```sh
-python -m loops signal \
+loops signal \
   --run-dir .loops/jobs/2026-02-09-example-task-123 \
   --message "Need approval to continue" \
   --context '{"reason":"scope_change"}'
@@ -208,6 +211,7 @@ python -m loops signal \
 
 Direct module equivalents still exist:
 
+- `python -m loops`
 - `python -m loops.inner_loop`
 - `python -m loops.state_signal`
 

@@ -183,6 +183,7 @@ Notes:
 - `inner_loop` is optional when running via the CLI; if omitted, the CLI uses
   `python -m loops.inner_loop` with `append_task_url=false`.
 - `python -m loops run --task-url <task-url>` targets exactly one task from the provider poll, implies `run-once`, `force=true`, and `sync_mode=true`, and does not mutate `provider_config.url`.
+- Installed package entrypoint `loops` is equivalent to `python -m loops` and uses the same argv normalization.
 
 ### Environment variables
 - `LOOPS_RUN_DIR`: required path to the inner loop run directory.

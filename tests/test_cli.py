@@ -7,7 +7,7 @@ from pathlib import Path
 from click.testing import CliRunner
 import loops.cli as cli_module
 
-from loops.__main__ import _normalize_argv
+from loops.__main__ import _normalize_argv, entrypoint
 from loops.cli import main
 from loops.outer_loop import LoopsConfig, OuterLoopConfig
 from loops.run_record import RunPR, RunRecord, Task, read_run_record, write_run_record
@@ -77,6 +77,21 @@ def test_normalize_argv_routes_legacy_flags_to_run() -> None:
 def test_normalize_argv_defaults_to_run_when_no_args() -> None:
     argv = ["python"]
     assert _normalize_argv(argv) == ["python", "run"]
+
+
+def test_entrypoint_normalizes_argv_before_invoking_click(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_main(*, prog_name: str) -> None:
+        captured["prog_name"] = prog_name
+        captured["argv"] = list(sys.argv)
+
+    monkeypatch.setattr("loops.__main__.main", fake_main)
+
+    entrypoint(["loops", "--run-once"])
+
+    assert captured["prog_name"] == "loops"
+    assert captured["argv"] == ["loops", "run", "--run-once"]
 
 
 def test_inner_loop_reset_creates_initial_run_record_when_missing(

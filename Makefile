@@ -1,6 +1,9 @@
 PYTHON ?= python
 
-.PHONY: test
+.PHONY: test install
 
 test:
 	$(PYTHON) -m pytest
+
+install:
+	$(PYTHON) -m pip install -e .

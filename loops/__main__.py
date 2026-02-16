@@ -19,6 +19,13 @@ def _normalize_argv(argv: list[str]) -> list[str]:
     return [argv[0], "run", *argv[1:]]
 
 
-if __name__ == "__main__":
-    sys.argv = _normalize_argv(sys.argv)
+def entrypoint(argv: list[str] | None = None) -> None:
+    """Run the Loops CLI with legacy argv normalization."""
+
+    raw_argv = sys.argv if argv is None else argv
+    sys.argv = _normalize_argv(raw_argv)
     main(prog_name="loops")
+
+
+if __name__ == "__main__":
+    entrypoint()

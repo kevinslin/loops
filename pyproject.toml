@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "loops"
+version = "0.1.0"
+description = "Lightweight task runner for outer/inner coding loops"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "click>=8.0",
+]
+
+[project.scripts]
+loops = "loops.__main__:entrypoint"
+
+[tool.setuptools.packages.find]
+include = ["loops*"]
