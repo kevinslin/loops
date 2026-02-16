@@ -63,7 +63,7 @@ def main() -> None:
     "task_url",
     type=str,
     default=None,
-    help="Force processing a specific task URL from provider results (implies --run-once and --force).",
+    help="Force processing a specific task URL from provider results (implies --run-once, --force, and sync_mode=true).",
 )
 def run_command(
     config_path: Path,
@@ -218,14 +218,16 @@ def _run_outer_loop(
     """Run the configured outer loop."""
 
     config = load_config(config_path)
-    loop_config = config.loop_config
+    effective_loop_config = config.loop_config
     force_override: Optional[bool]
     if task_url is not None:
         force_override = True
+        effective_loop_config = replace(effective_loop_config, sync_mode=True)
     else:
         force_override = force
     if force_override is not None:
-        loop_config = replace(loop_config, force=force_override)
+        effective_loop_config = replace(effective_loop_config, force=force_override)
+    config = replace(config, loop_config=effective_loop_config)
     if config.inner_loop is None:
         config = replace(
             config,
@@ -239,7 +241,7 @@ def _run_outer_loop(
     loops_root = _resolve_loops_root(config_path)
     runner = OuterLoopRunner(
         provider,
-        loop_config,
+        config.loop_config,
         loops_root=loops_root,
         inner_loop_launcher=launcher,
     )

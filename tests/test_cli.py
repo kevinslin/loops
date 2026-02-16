@@ -310,9 +310,13 @@ def test_run_outer_loop_task_url_implies_run_once_and_force(
         )
         return provider
 
+    def fake_build_inner_loop_launcher(config: LoopsConfig) -> object:
+        captured["launcher_sync_mode"] = config.loop_config.sync_mode
+        return launcher
+
     monkeypatch.setattr(cli_module, "load_config", lambda _path: loaded)
     monkeypatch.setattr(cli_module, "build_provider", fake_build_provider)
-    monkeypatch.setattr(cli_module, "build_inner_loop_launcher", lambda _config: launcher)
+    monkeypatch.setattr(cli_module, "build_inner_loop_launcher", fake_build_inner_loop_launcher)
     monkeypatch.setattr(cli_module, "OuterLoopRunner", FakeRunner)
 
     cli_module._run_outer_loop(
@@ -331,6 +335,8 @@ def test_run_outer_loop_task_url_implies_run_once_and_force(
     loop_config = captured["config_arg"]
     assert isinstance(loop_config, OuterLoopConfig)
     assert loop_config.force is True
+    assert loop_config.sync_mode is True
+    assert captured["launcher_sync_mode"] is True
     assert captured["provider_arg"] is provider
     assert captured["inner_loop_launcher"] is launcher
     assert captured["run_once_limit"] == 7

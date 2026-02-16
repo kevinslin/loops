@@ -130,7 +130,7 @@ Options:
 - `--run-once / --run-forever`: Run one cycle then exit, or keep polling forever. Default: `--run-forever`.
 - `--limit INTEGER`: Optional provider poll limit.
 - `--force / --no-force`: Override `loop_config.force` from config.
-- `--task-url TEXT`: Force processing a specific task URL from provider results. This implies `--run-once` and `--force`.
+- `--task-url TEXT`: Force processing a specific task URL from provider results. This implies `--run-once`, `--force`, and `sync_mode=true`.
 - `-h, --help`: Show help.
 
 Examples:
@@ -149,6 +149,7 @@ Notes:
 - With `loop_config.sync_mode=true`, inner loop runs in the foreground and can prompt for user input in the same terminal.
 - With `emit_on_first_run=false`, first run initializes dedupe state but does not launch tasks.
 - `--task-url` does not change `provider_config.url`; it selects one task after polling by URL match and runs only that task.
+- `--task-url` forces foreground execution for that run (`sync_mode=true`) so targeted runs are interactive and deterministic.
 - URL matching for `--task-url` compares normalized URLs (scheme/host case-insensitive, query/fragment removed, trailing slash ignored).
 - `--task-url` bypasses ready-status filtering for the selected task and raises an error when the URL is missing or ambiguous in poll results.
 - `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`, and `LOOPS_RUN_DIR` are injected into each launched inner-loop process.
