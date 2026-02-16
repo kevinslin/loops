@@ -9,6 +9,7 @@ import loops.cli as cli_module
 
 from loops.__main__ import _normalize_argv
 from loops.cli import main
+from loops.outer_loop import LoopsConfig, OuterLoopConfig
 from loops.run_record import RunPR, RunRecord, Task, read_run_record, write_run_record
 
 
@@ -211,3 +212,127 @@ def test_inner_loop_reset_preserves_existing_pr_link(tmp_path: Path, monkeypatch
     assert record.pr.latest_review_submitted_at is None
     assert record.pr.review_addressed_at is None
     assert record.last_state == "WAITING_ON_REVIEW"
+
+
+def test_run_command_passes_task_url_to_outer_loop(tmp_path: Path, monkeypatch) -> None:
+    runner = CliRunner()
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}")
+    captured: dict[str, object] = {}
+
+    def fake_run_outer_loop(
+        *,
+        config_path: Path,
+        run_once: bool,
+        limit: int | None,
+        force: bool | None,
+        task_url: str | None,
+    ) -> None:
+        captured["config_path"] = config_path
+        captured["run_once"] = run_once
+        captured["limit"] = limit
+        captured["force"] = force
+        captured["task_url"] = task_url
+
+    monkeypatch.setattr(cli_module, "_run_outer_loop", fake_run_outer_loop)
+
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            "--config",
+            str(config_path),
+            "--run-once",
+            "--limit",
+            "3",
+            "--task-url",
+            "https://github.com/acme/api/issues/42",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["config_path"] == config_path
+    assert captured["run_once"] is True
+    assert captured["limit"] == 3
+    assert captured["force"] is None
+    assert captured["task_url"] == "https://github.com/acme/api/issues/42"
+
+
+def test_run_outer_loop_task_url_implies_run_once_and_force(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}")
+    loaded = LoopsConfig(
+        provider_id="github_projects_v2",
+        provider_config={
+            "url": "https://github.com/orgs/default/projects/1",
+            "status_field": "Status",
+        },
+        loop_config=OuterLoopConfig(force=False),
+        inner_loop=None,
+    )
+    captured: dict[str, object] = {}
+    provider = object()
+    launcher = object()
+
+    class FakeRunner:
+        def __init__(
+            self,
+            provider_arg: object,
+            config_arg: OuterLoopConfig,
+            *,
+            loops_root: Path,
+            inner_loop_launcher: object,
+        ) -> None:
+            captured["provider_arg"] = provider_arg
+            captured["config_arg"] = config_arg
+            captured["loops_root"] = loops_root
+            captured["inner_loop_launcher"] = inner_loop_launcher
+
+        def run_once(
+            self,
+            *,
+            limit: int | None = None,
+            forced_task_url: str | None = None,
+        ) -> None:
+            captured["run_once_limit"] = limit
+            captured["run_once_task_url"] = forced_task_url
+
+        def run_forever(self, *, limit: int | None = None) -> None:
+            captured["run_forever_limit"] = limit
+
+    def fake_build_provider(config: LoopsConfig) -> object:
+        captured["provider_config"] = dict(config.provider_config)
+        captured["inner_loop_command"] = (
+            list(config.inner_loop.command) if config.inner_loop is not None else None
+        )
+        return provider
+
+    monkeypatch.setattr(cli_module, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(cli_module, "build_provider", fake_build_provider)
+    monkeypatch.setattr(cli_module, "build_inner_loop_launcher", lambda _config: launcher)
+    monkeypatch.setattr(cli_module, "OuterLoopRunner", FakeRunner)
+
+    cli_module._run_outer_loop(
+        config_path=config_path,
+        run_once=False,
+        limit=7,
+        force=False,
+        task_url="https://github.com/acme/api/issues/9",
+    )
+
+    assert captured["provider_config"] == {
+        "url": "https://github.com/orgs/default/projects/1",
+        "status_field": "Status",
+    }
+    assert captured["inner_loop_command"] == [sys.executable, "-m", "loops.inner_loop"]
+    loop_config = captured["config_arg"]
+    assert isinstance(loop_config, OuterLoopConfig)
+    assert loop_config.force is True
+    assert captured["provider_arg"] is provider
+    assert captured["inner_loop_launcher"] is launcher
+    assert captured["run_once_limit"] == 7
+    assert captured["run_once_task_url"] == "https://github.com/acme/api/issues/9"
+    assert "run_forever_limit" not in captured

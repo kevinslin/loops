@@ -29,6 +29,16 @@ class StubProvider:
         return list(self._tasks)[:limit]
 
 
+class RecordingProvider(StubProvider):
+    def __init__(self, tasks: list[Task]) -> None:
+        super().__init__(tasks)
+        self.poll_limits: list[int | None] = []
+
+    def poll(self, limit: int | None = None) -> list[Task]:
+        self.poll_limits.append(limit)
+        return super().poll(limit)
+
+
 def make_task(task_id: str, title: str, status: str = "Ready") -> Task:
     return Task(
         provider_id="stub",
@@ -124,6 +134,90 @@ def test_force_reprocesses_tasks(tmp_path: Path) -> None:
     run_dirs = list_run_dirs(loops_root)
     assert len(run_dirs) == 4
     assert len(launched) == 4
+
+
+def test_run_once_forced_task_url_selects_task_and_ignores_ready_filter(
+    tmp_path: Path,
+) -> None:
+    tasks = [
+        make_task("1", "Ship it", status="Backlog"),
+        make_task("2", "Next", status="In Progress"),
+    ]
+    provider = RecordingProvider(tasks)
+    loops_root = tmp_path / ".loops"
+    launched: list[Path] = []
+
+    def launcher(run_dir: Path, _task: Task) -> None:
+        launched.append(run_dir)
+
+    config = OuterLoopConfig(
+        task_ready_status="Ready",
+        emit_on_first_run=False,
+        force=True,
+    )
+    runner = OuterLoopRunner(
+        provider, config, loops_root=loops_root, inner_loop_launcher=launcher
+    )
+
+    runner.run_once(limit=1, forced_task_url="https://example.com/2/?utm=1#frag")
+
+    run_dirs = list_run_dirs(loops_root)
+    assert len(run_dirs) == 1
+    run_record = read_run_record(run_dirs[0] / "run.json")
+    assert run_record.task.id == "2"
+    assert len(launched) == 1
+    assert provider.poll_limits == [None]
+    state = read_outer_state(loops_root / "outer_state.json")
+    assert list(state.tasks.keys()) == ["stub:2"]
+
+
+def test_run_once_forced_task_url_raises_when_missing(tmp_path: Path) -> None:
+    tasks = [make_task("1", "Ship it"), make_task("2", "Next")]
+    provider = StubProvider(tasks)
+    loops_root = tmp_path / ".loops"
+    config = OuterLoopConfig(
+        task_ready_status="Ready",
+        emit_on_first_run=False,
+        force=True,
+    )
+    runner = OuterLoopRunner(provider, config, loops_root=loops_root)
+
+    with pytest.raises(ValueError, match="not found"):
+        runner.run_once(forced_task_url="https://example.com/missing")
+
+
+def test_run_once_forced_task_url_raises_on_ambiguous_match(tmp_path: Path) -> None:
+    tasks = [
+        Task(
+            provider_id="stub",
+            id="1",
+            title="First",
+            status="Ready",
+            url="https://example.com/shared",
+            created_at="2026-02-05T00:00:00Z",
+            updated_at="2026-02-05T00:00:00Z",
+        ),
+        Task(
+            provider_id="stub",
+            id="2",
+            title="Second",
+            status="Ready",
+            url="https://example.com/shared",
+            created_at="2026-02-05T00:00:00Z",
+            updated_at="2026-02-05T00:00:00Z",
+        ),
+    ]
+    provider = StubProvider(tasks)
+    loops_root = tmp_path / ".loops"
+    config = OuterLoopConfig(
+        task_ready_status="Ready",
+        emit_on_first_run=False,
+        force=True,
+    )
+    runner = OuterLoopRunner(provider, config, loops_root=loops_root)
+
+    with pytest.raises(ValueError, match="matched multiple tasks"):
+        runner.run_once(forced_task_url="https://example.com/shared")
 
 
 def test_emit_on_first_run_skips_launch(tmp_path: Path) -> None:

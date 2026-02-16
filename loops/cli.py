@@ -58,11 +58,19 @@ def main() -> None:
     default=None,
     help="Override the force flag in config.",
 )
+@click.option(
+    "--task-url",
+    "task_url",
+    type=str,
+    default=None,
+    help="Force processing a specific task URL from provider results (implies --run-once and --force).",
+)
 def run_command(
     config_path: Path,
     run_once: bool,
     limit: Optional[int],
     force: Optional[bool],
+    task_url: Optional[str],
 ) -> None:
     """Run the outer loop runner using the provided config."""
 
@@ -71,6 +79,7 @@ def run_command(
         run_once=run_once,
         limit=limit,
         force=force,
+        task_url=task_url,
     )
 
 
@@ -204,13 +213,19 @@ def _run_outer_loop(
     run_once: bool,
     limit: Optional[int],
     force: Optional[bool],
+    task_url: Optional[str] = None,
 ) -> None:
     """Run the configured outer loop."""
 
     config = load_config(config_path)
     loop_config = config.loop_config
-    if force is not None:
-        loop_config = replace(loop_config, force=force)
+    force_override: Optional[bool]
+    if task_url is not None:
+        force_override = True
+    else:
+        force_override = force
+    if force_override is not None:
+        loop_config = replace(loop_config, force=force_override)
     if config.inner_loop is None:
         config = replace(
             config,
@@ -228,8 +243,9 @@ def _run_outer_loop(
         loops_root=loops_root,
         inner_loop_launcher=launcher,
     )
-    if run_once:
-        runner.run_once(limit=limit)
+    effective_run_once = run_once or task_url is not None
+    if effective_run_once:
+        runner.run_once(limit=limit, forced_task_url=task_url)
     else:
         runner.run_forever(limit=limit)
 

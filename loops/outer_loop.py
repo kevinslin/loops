@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 from loops.providers.github_projects_v2 import (
     GITHUB_PROJECTS_V2_PROVIDER_ID,
@@ -155,15 +156,23 @@ class OuterLoopRunner:
         self.state_path = self.loops_root / "outer_state.json"
         self.log_path = self.loops_root / "oloops.log"
 
-    def run_once(self, limit: int | None = None) -> list[Path]:
+    def run_once(
+        self,
+        limit: int | None = None,
+        *,
+        forced_task_url: str | None = None,
+    ) -> list[Path]:
         """Run a single poll cycle and return created run directories."""
 
         self.loops_root.mkdir(parents=True, exist_ok=True)
         _inner_loop_runs_root(self.loops_root).mkdir(parents=True, exist_ok=True)
         state = read_outer_state(self.state_path)
-        ready_tasks = [
-            task for task in self.provider.poll(limit) if _is_ready(task, self.config)
-        ]
+        poll_limit = None if forced_task_url is not None else limit
+        polled_tasks = self.provider.poll(poll_limit)
+        if forced_task_url is not None:
+            ready_tasks = [_select_task_by_url(polled_tasks, forced_task_url)]
+        else:
+            ready_tasks = [task for task in polled_tasks if _is_ready(task, self.config)]
         now_iso = _now_iso()
         emit_tasks: list[Task] = []
         first_run = not state.initialized
@@ -457,6 +466,58 @@ def _is_ready(task: Task, config: OuterLoopConfig) -> bool:
     """Return True if a task matches the configured ready status."""
 
     return task.status.casefold() == config.task_ready_status.casefold()
+
+
+def _select_task_by_url(tasks: list[Task], task_url: str) -> Task:
+    """Select a single task by URL after normalizing common URL variants."""
+
+    normalized_target = _normalize_task_url(task_url)
+    matches: list[Task] = []
+    seen_keys: set[str] = set()
+    for task in tasks:
+        try:
+            normalized_task_url = _normalize_task_url(task.url)
+        except ValueError:
+            continue
+        if normalized_task_url != normalized_target:
+            continue
+        key = _task_key(task)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        matches.append(task)
+
+    if not matches:
+        raise ValueError(
+            f"--task-url was not found in provider results: {task_url}"
+        )
+    if len(matches) > 1:
+        candidates = ", ".join(
+            f"{task.id} ({task.url})" for task in matches[:5]
+        )
+        raise ValueError(
+            f"--task-url matched multiple tasks: {task_url}. Candidates: {candidates}"
+        )
+    return matches[0]
+
+
+def _normalize_task_url(url: str) -> str:
+    raw_url = url.strip()
+    if not raw_url:
+        raise ValueError("task URL cannot be empty")
+    parts = urlsplit(raw_url)
+    if not parts.scheme or not parts.netloc:
+        raise ValueError(f"task URL must be absolute: {url}")
+    normalized_path = parts.path.rstrip("/") or "/"
+    return urlunsplit(
+        (
+            parts.scheme.casefold(),
+            parts.netloc.casefold(),
+            normalized_path,
+            "",
+            "",
+        )
+    )
 
 
 def _task_key(task: Task) -> str:

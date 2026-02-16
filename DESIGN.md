@@ -182,6 +182,7 @@ Notes:
 - `loop_config` is optional; omitted keys fall back to defaults.
 - `inner_loop` is optional when running via the CLI; if omitted, the CLI uses
   `python -m loops.inner_loop` with `append_task_url=false`.
+- `python -m loops run --task-url <task-url>` targets exactly one task from the provider poll, implies `run-once` and `force=true`, and does not mutate `provider_config.url`.
 
 ### Environment variables
 - `LOOPS_RUN_DIR`: required path to the inner loop run directory.
