@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from loops.logging_utils import append_log
 from loops.run_record import (
     CodexSession,
     RunPR,
@@ -65,7 +66,7 @@ def reset_run_record(run_dir: Path) -> RunRecord:
             existing_record = read_run_record(run_json_path)
             task = existing_record.task
         except Exception as exc:
-            _append_log(
+            append_log(
                 run_log,
                 f"[loops] warning: failed to read existing run.json during reset: {exc}",
             )
@@ -83,7 +84,7 @@ def reset_run_record(run_dir: Path) -> RunRecord:
         updated_at="",
     )
     written = write_run_record(run_json_path, reset_record)
-    _append_log(
+    append_log(
         run_log,
         (
             "[loops] run.json reset to initial state "
@@ -142,7 +143,7 @@ def run_inner_loop(
         )
 
         if state == "DONE":
-            _append_log(run_log, "[loops] run state DONE; exiting inner loop")
+            append_log(run_log, "[loops] run state DONE; exiting inner loop")
             _log_iteration_exit(
                 run_log,
                 iteration=iteration,
@@ -162,7 +163,7 @@ def run_inner_loop(
             )
             if response is None:
                 if non_interactive_default_handoff:
-                    _append_log(
+                    append_log(
                         run_log,
                         "[loops] non-interactive mode; exiting while waiting for user input",
                     )
@@ -273,7 +274,7 @@ def run_inner_loop(
             try:
                 updated_pr = pr_status_fetcher(run_record.pr)
             except Exception as exc:
-                _append_log(run_log, f"[loops] failed to poll PR status: {exc}")
+                append_log(run_log, f"[loops] failed to poll PR status: {exc}")
                 idle_polls += 1
                 if idle_polls >= max_idle_polls:
                     run_record = _force_needs_input(
@@ -310,7 +311,7 @@ def run_inner_loop(
                 and run_record.pr.review_status == "changes_requested"
                 and _is_new_review(run_record.pr)
             ):
-                _append_log(run_log, "[loops] review changes requested; resuming codex")
+                append_log(run_log, "[loops] review changes requested; resuming codex")
                 run_record = _run_codex_turn(
                     run_json_path=run_json_path,
                     run_log=run_log,
@@ -417,7 +418,7 @@ def run_inner_loop(
             try:
                 updated_pr = pr_status_fetcher(run_record.pr)
             except Exception as exc:
-                _append_log(run_log, f"[loops] failed to poll merge status: {exc}")
+                append_log(run_log, f"[loops] failed to poll merge status: {exc}")
                 sleep_fn(min(backoff_seconds, max_poll_seconds))
                 backoff_seconds = min(backoff_seconds * 2, max_poll_seconds)
                 _log_iteration_exit(
@@ -460,7 +461,7 @@ def run_inner_loop(
             "Please provide guidance."
         ),
     )
-    _append_log(
+    append_log(
         run_log,
         (
             "[loops] iteration limit reached; forcing NEEDS_INPUT "
@@ -509,7 +510,7 @@ def _log_iteration_enter(
     backoff_seconds: float,
     idle_polls: int,
 ) -> None:
-    _append_log(
+    append_log(
         run_log,
         (
             f"[loops] iteration {iteration} enter: state={state} "
@@ -529,7 +530,7 @@ def _log_iteration_exit(
     backoff_seconds: float,
     idle_polls: int,
 ) -> None:
-    _append_log(
+    append_log(
         run_log,
         (
             f"[loops] iteration {iteration} exit: next_state={next_state} action={action} "
@@ -643,16 +644,6 @@ def _run_codex(command: list[str], prompt: str, agent_log: Path) -> tuple[str, i
         return message, 1
 
 
-def _append_log(path: Path, content: str) -> None:
-    if not content:
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(content)
-        if not content.endswith("\n"):
-            handle.write("\n")
-
-
 def _extract_session_id(output: str) -> Optional[str]:
     for line in output.splitlines():
         try:
@@ -705,7 +696,7 @@ def _run_codex_turn(
     if session_id is not None:
         codex_session = CodexSession(id=session_id, last_prompt=prompt)
     elif exit_code == 0:
-        _append_log(run_log, "[loops] warning: no session id detected in codex output")
+        append_log(run_log, "[loops] warning: no session id detected in codex output")
 
     discovered_pr = _extract_pr_from_output(output)
     pr = _merge_pr_records(run_record.pr, discovered_pr)
@@ -713,8 +704,8 @@ def _run_codex_turn(
     needs_user_input_payload = run_record.needs_user_input_payload
     if exit_code != 0:
         if output.startswith("[loops] codex invocation failed:"):
-            _append_log(run_log, output)
-        _append_log(run_log, f"[loops] codex exit code {exit_code}")
+            append_log(run_log, output)
+        append_log(run_log, f"[loops] codex exit code {exit_code}")
         needs_user_input_payload = {
             "message": "Codex exited with a non-zero status. Provide guidance.",
             "context": {"exit_code": exit_code},
@@ -727,7 +718,7 @@ def _run_codex_turn(
                 "What should Loops do next?"
             )
         }
-        _append_log(
+        append_log(
             run_log,
             "[loops] no PR detected after codex run; requesting user input",
         )
@@ -917,16 +908,16 @@ def _handle_needs_input(
     try:
         response = handler(payload)
     except EOFError:
-        _append_log(run_log, "[loops] unable to read user input from stdin")
+        append_log(run_log, "[loops] unable to read user input from stdin")
         return None
     except Exception as exc:
-        _append_log(run_log, f"[loops] user handoff handler failed: {exc}")
+        append_log(run_log, f"[loops] user handoff handler failed: {exc}")
         return None
     normalized = response.strip()
     if not normalized:
-        _append_log(run_log, "[loops] empty user response received")
+        append_log(run_log, "[loops] empty user response received")
         return None
-    _append_log(run_log, "[loops] user input received")
+    append_log(run_log, "[loops] user input received")
     return normalized
 
 
@@ -1025,13 +1016,13 @@ def _apply_pending_signals(run_dir: Path, run_record: RunRecord) -> RunRecord:
     for signal in signals:
         state = str(signal.get("state") or "").upper()
         if state != "NEEDS_INPUT":
-            _append_log(run_log, f"[loops] ignoring unsupported signal state: {state}")
+            append_log(run_log, f"[loops] ignoring unsupported signal state: {state}")
             continue
         payload = _normalize_signal_payload(signal)
         if payload is None:
-            _append_log(run_log, "[loops] ignoring NEEDS_INPUT signal with invalid payload")
+            append_log(run_log, "[loops] ignoring NEEDS_INPUT signal with invalid payload")
             continue
-        _append_log(run_log, "[loops] signal applied: NEEDS_INPUT")
+        append_log(run_log, "[loops] signal applied: NEEDS_INPUT")
         updated = replace(
             updated,
             needs_user_input=True,

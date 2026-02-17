@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import sys
 import threading
@@ -131,6 +132,11 @@ def test_inner_loop_reaches_done_lifecycle(tmp_path, monkeypatch) -> None:
     assert result.pr.merged_at == "2026-02-09T00:00:02Z"
     assert counter_path.read_text() == "2"  # RUNNING + PR_APPROVED cleanup
     run_log = (run_dir / "run.log").read_text()
+    assert re.search(
+        r"^\d{4}-\d{2}-\d{2}T[0-9:.+-]+ \[loops\] iteration 1 enter: state=RUNNING",
+        run_log,
+        re.MULTILINE,
+    )
     assert "iteration 1 enter: state=RUNNING" in run_log
     assert "exit: next_state=DONE action=done_exit" in run_log
 

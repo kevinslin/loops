@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -28,6 +29,11 @@ def test_enqueue_state_signal_writes_queue_and_log(tmp_path) -> None:
     assert queued["payload"]["message"] == "Need approval"
 
     log_output = (run_dir / "run.log").read_text()
+    first_line = log_output.splitlines()[0]
+    assert re.match(
+        r"^\d{4}-\d{2}-\d{2}T[0-9:.+-]+ \[loops\] signal accepted: NEEDS_INPUT$",
+        first_line,
+    )
     assert "signal accepted: NEEDS_INPUT" in log_output
 
 

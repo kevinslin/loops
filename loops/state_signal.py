@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from loops.logging_utils import append_log
+
 SUPPORTED_SIGNAL_STATES = {"NEEDS_INPUT"}
 SIGNAL_QUEUE_FILE = "state_signals.jsonl"
 
@@ -24,14 +26,6 @@ def _resolve_run_dir(run_dir: str | None) -> Path:
     if env_run_dir:
         return Path(env_run_dir)
     raise SystemExit("LOOPS_RUN_DIR is required (or pass --run-dir)")
-
-
-def _append_log(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(content)
-        if not content.endswith("\n"):
-            handle.write("\n")
 
 
 def _parse_context(raw_context: str) -> dict[str, Any]:
@@ -72,7 +66,7 @@ def enqueue_state_signal(
         handle.write(json.dumps(signal, ensure_ascii=True, sort_keys=True))
         handle.write("\n")
 
-    _append_log(run_dir / "run.log", f"[loops] signal accepted: {state}")
+    append_log(run_dir / "run.log", f"[loops] signal accepted: {state}")
     return signal
 
 
