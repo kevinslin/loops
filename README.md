@@ -86,6 +86,8 @@ Top-level config file: `.loops/config.json`
 - `loop_config.emit_on_first_run` (boolean, default `false`)
 - `loop_config.force` (boolean, default `false`)
 - `loop_config.task_ready_status` (string, default `"Ready"`)
+- `loop_config.approval_comment_usernames` (string[], default `[]`): allowlisted GitHub usernames whose approval comments can mark a PR as approved.
+- `loop_config.approval_comment_pattern` (string, default `^\s*/approve\b`): regex used to match approval comments from allowlisted usernames.
 - `inner_loop` (object, optional when using outer CLI):
 - `inner_loop.command` (string or string[], required when `inner_loop` is provided)
 - `inner_loop.working_dir` (string, optional): relative paths are resolved from config directory.
@@ -158,6 +160,7 @@ Notes:
 - URL matching for `--task-url` compares normalized URLs (scheme/host case-insensitive, query/fragment removed, trailing slash ignored).
 - `--task-url` bypasses ready-status filtering for the selected task and raises an error when the URL is missing or ambiguous in poll results.
 - `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`, and `LOOPS_RUN_DIR` are injected into each launched inner-loop process.
+- PR approval is detected from GitHub review decision or from allowlisted approval comments configured in `loop_config`.
 
 ### `loops inner-loop`
 
@@ -186,6 +189,7 @@ Behavior summary:
 - Streams Codex/agent output to `agent.log`.
 - Uses `CODEX_CMD` if set; default command is `codex exec --yolo`.
 - Polls PR state with `gh pr view` when a PR is present.
+- In review polling, Loops treats a PR as approved if `reviewDecision=APPROVED` or if a matching approval comment from `loop_config.approval_comment_usernames` is newer than the latest `CHANGES_REQUESTED` review.
 - Applies pending signals from `state_signals.jsonl`.
 - `--reset` keeps task metadata and preserves an existing PR link (`pr.url`/`number`/`repo`) when present; non-link PR status fields are cleared.
 - If `run.json` is missing, task fields fall back to `LOOPS_TASK_*` env vars (or defaults).

@@ -3,7 +3,7 @@ from __future__ import annotations
 """Inner loop runner for executing Codex with the unified prompt."""
 
 import argparse
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import json
 import os
@@ -15,6 +15,11 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from loops.approval_config import (
+    DEFAULT_APPROVAL_COMMENT_PATTERN,
+    InnerLoopApprovalConfig,
+    read_inner_loop_approval_config,
+)
 from loops.logging_utils import append_log
 from loops.run_record import (
     CodexSession,
@@ -50,6 +55,19 @@ UUID_PATTERN = re.compile(
 UserHandoffHandler = Callable[[dict[str, Any]], str]
 PRStatusFetcher = Callable[[RunPR], RunPR]
 SleepFn = Callable[[float], None]
+
+
+@dataclass(frozen=True)
+class CommentApprovalSettings:
+    allowed_usernames: tuple[str, ...]
+    pattern_text: str
+    approval_regex: re.Pattern[str]
+    used_default_pattern: bool = False
+    config_load_error: str | None = None
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.allowed_usernames)
 
 
 def reset_run_record(run_dir: Path) -> RunRecord:
@@ -118,7 +136,40 @@ def run_inner_loop(
     agent_log = run_dir / "agent.log"
     base_prompt = _load_prompt_file(prompt_file)
     command = _resolve_codex_command()
-    pr_status_fetcher = pr_status_fetcher or _fetch_pr_status_with_gh
+    comment_approval = _load_comment_approval_settings(run_dir)
+    if comment_approval.config_load_error is not None:
+        append_log(
+            run_log,
+            (
+                "[loops] failed to load run approval config; using defaults: "
+                f"{comment_approval.config_load_error}"
+            ),
+        )
+    if comment_approval.used_default_pattern:
+        append_log(
+            run_log,
+            (
+                "[loops] invalid approval comment pattern in run approval config; "
+                "falling back to default"
+            ),
+        )
+    if pr_status_fetcher is None:
+        def _default_pr_status_fetcher(pr: RunPR) -> RunPR:
+            updated_pr, approved_by_comment, approved_by = _fetch_pr_status_with_gh_with_context(
+                pr,
+                comment_approval=comment_approval,
+            )
+            if approved_by_comment:
+                append_log(
+                    run_log,
+                    (
+                        "[loops] treating PR as approved via allowlisted approval "
+                        f"comment by {approved_by}"
+                    ),
+                )
+            return updated_pr
+
+        pr_status_fetcher = _default_pr_status_fetcher
     using_default_handoff_handler = user_handoff_handler is None
     user_handoff_handler = user_handoff_handler or _default_user_handoff_handler
     non_interactive_default_handoff = (
@@ -830,7 +881,74 @@ def _review_status_from_decision(decision: Any) -> str:
     return "open"
 
 
-def _fetch_pr_status_with_gh(pr: RunPR) -> RunPR:
+def _load_comment_approval_settings(run_dir: Path) -> CommentApprovalSettings:
+    config_load_error: str | None = None
+    try:
+        config = read_inner_loop_approval_config(run_dir)
+    except Exception as exc:
+        config_load_error = str(exc)
+        config = InnerLoopApprovalConfig()
+    allowed_usernames = config.approval_comment_usernames
+    pattern_text = config.approval_comment_pattern or DEFAULT_APPROVAL_COMMENT_PATTERN
+    used_default_pattern = False
+    try:
+        approval_regex = re.compile(pattern_text, re.IGNORECASE)
+    except re.error:
+        approval_regex = re.compile(DEFAULT_APPROVAL_COMMENT_PATTERN, re.IGNORECASE)
+        pattern_text = DEFAULT_APPROVAL_COMMENT_PATTERN
+        used_default_pattern = True
+    return CommentApprovalSettings(
+        allowed_usernames=allowed_usernames,
+        pattern_text=pattern_text,
+        approval_regex=approval_regex,
+        used_default_pattern=used_default_pattern,
+        config_load_error=config_load_error,
+    )
+
+
+def _extract_latest_allowlisted_approval_comment(
+    payload: dict[str, Any],
+    comment_approval: CommentApprovalSettings,
+) -> tuple[str, str] | None:
+    if not comment_approval.enabled:
+        return None
+    comments = payload.get("comments")
+    if not isinstance(comments, list) or not comments:
+        return None
+    latest: tuple[str, str] | None = None
+    for comment in comments:
+        if not isinstance(comment, dict):
+            continue
+        author_payload = comment.get("author")
+        author_login = (
+            author_payload.get("login")
+            if isinstance(author_payload, dict)
+            else None
+        )
+        if not isinstance(author_login, str):
+            continue
+        if author_login.casefold() not in comment_approval.allowed_usernames:
+            continue
+        body = comment.get("body")
+        if not isinstance(body, str):
+            continue
+        if comment_approval.approval_regex.search(body) is None:
+            continue
+        created_at = comment.get("createdAt")
+        updated_at = comment.get("updatedAt")
+        comment_timestamp = updated_at if isinstance(updated_at, str) else created_at
+        if not isinstance(comment_timestamp, str):
+            continue
+        if latest is None or comment_timestamp > latest[0]:
+            latest = (comment_timestamp, author_login)
+    return latest
+
+
+def _fetch_pr_status_with_gh_with_context(
+    pr: RunPR,
+    *,
+    comment_approval: CommentApprovalSettings,
+) -> tuple[RunPR, bool, str]:
     result = subprocess.run(
         [
             "gh",
@@ -838,7 +956,7 @@ def _fetch_pr_status_with_gh(pr: RunPR) -> RunPR:
             "view",
             pr.url,
             "--json",
-            "reviewDecision,mergedAt,url,number,repository,latestReviews",
+            "reviewDecision,mergedAt,url,number,repository,latestReviews,comments",
         ],
         text=True,
         stdout=subprocess.PIPE,
@@ -868,7 +986,29 @@ def _fetch_pr_status_with_gh(pr: RunPR) -> RunPR:
     latest_review_submitted_at = _extract_latest_review_submitted_at(
         payload, str(review_decision_raw or "")
     )
-    return RunPR(
+    approved_by_comment = False
+    approved_by = ""
+    if review_status != "approved":
+        latest_changes_requested_at = _extract_latest_review_submitted_at(
+            payload,
+            "CHANGES_REQUESTED",
+        )
+        latest_approval_comment = _extract_latest_allowlisted_approval_comment(
+            payload,
+            comment_approval,
+        )
+        if latest_approval_comment is not None:
+            comment_timestamp, approval_author = latest_approval_comment
+            if (
+                latest_changes_requested_at is None
+                or comment_timestamp > latest_changes_requested_at
+            ):
+                review_status = "approved"
+                approved_by_comment = True
+                approved_by = approval_author
+                latest_review_submitted_at = comment_timestamp
+
+    updated_pr = RunPR(
         url=str(payload.get("url") or pr.url),
         number=parsed_number,
         repo=repo,
@@ -878,6 +1018,7 @@ def _fetch_pr_status_with_gh(pr: RunPR) -> RunPR:
         latest_review_submitted_at=latest_review_submitted_at,
         review_addressed_at=pr.review_addressed_at,
     )
+    return updated_pr, approved_by_comment, approved_by
 
 
 def _default_user_handoff_handler(payload: dict[str, Any]) -> str:

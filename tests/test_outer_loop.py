@@ -7,6 +7,10 @@ from pathlib import Path
 
 import pytest
 
+from loops.approval_config import (
+    DEFAULT_APPROVAL_COMMENT_PATTERN,
+    INNER_LOOP_APPROVAL_CONFIG_FILE,
+)
 from loops.outer_loop import (
     InnerLoopCommandConfig,
     LoopsConfig,
@@ -81,6 +85,7 @@ def test_run_once_creates_run_records(tmp_path: Path) -> None:
     titles = {read_run_record(run_dir / "run.json").task.title for run_dir in run_dirs}
     assert titles == {"Ship it", "Next"}
     assert all((run_dir / "agent.log").exists() for run_dir in run_dirs)
+    assert all((run_dir / INNER_LOOP_APPROVAL_CONFIG_FILE).exists() for run_dir in run_dirs)
     assert len(launched) == 2
 
     state = read_outer_state(loops_root / "outer_state.json")
@@ -283,6 +288,39 @@ def test_load_config_reads_sync_mode(tmp_path: Path) -> None:
     assert config.loop_config.sync_mode is True
 
 
+def test_load_config_reads_comment_approval_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    payload = {
+        "provider_id": "github_projects_v2",
+        "provider_config": {},
+        "loop_config": {
+            "approval_comment_usernames": ["Maintainer", "review-bot", "maintainer"],
+            "approval_comment_pattern": r"^\s*/shipit\b",
+        },
+    }
+    config_path.write_text(json.dumps(payload))
+
+    config = load_config(config_path)
+    assert config.loop_config.approval_comment_usernames == (
+        "maintainer",
+        "review-bot",
+    )
+    assert config.loop_config.approval_comment_pattern == r"^\s*/shipit\b"
+
+
+def test_load_config_rejects_invalid_comment_approval_usernames(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    payload = {
+        "provider_id": "github_projects_v2",
+        "provider_config": {},
+        "loop_config": {"approval_comment_usernames": "maintainer"},
+    }
+    config_path.write_text(json.dumps(payload))
+
+    with pytest.raises(TypeError, match="approval_comment_usernames"):
+        load_config(config_path)
+
+
 def test_load_config_rejects_bool_ints(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     payload = {
@@ -372,7 +410,11 @@ def test_build_inner_loop_launcher_sync_mode_uses_subprocess_run(
     config = LoopsConfig(
         provider_id="github_projects_v2",
         provider_config={"url": "https://github.com/orgs/acme/projects/1"},
-        loop_config=OuterLoopConfig(sync_mode=True),
+        loop_config=OuterLoopConfig(
+            sync_mode=True,
+            approval_comment_usernames=("maintainer", "review-bot"),
+            approval_comment_pattern=r"^\s*/shipit\b",
+        ),
         inner_loop=InnerLoopCommandConfig(
             command=["echo", "hello"],
             append_task_url=False,
@@ -394,6 +436,8 @@ def test_build_inner_loop_launcher_sync_mode_uses_subprocess_run(
 
     monkeypatch.setattr("loops.outer_loop.subprocess.run", fake_run)
     monkeypatch.setattr("loops.outer_loop.subprocess.Popen", fail_popen)
+    monkeypatch.delenv("LOOPS_APPROVAL_COMMENT_USERNAMES", raising=False)
+    monkeypatch.delenv("LOOPS_APPROVAL_COMMENT_PATTERN", raising=False)
 
     launcher(run_dir, task)
 
@@ -403,3 +447,52 @@ def test_build_inner_loop_launcher_sync_mode_uses_subprocess_run(
     assert isinstance(env, dict)
     assert env["LOOPS_RUN_DIR"] == str(run_dir)
     assert env["LOOPS_TASK_ID"] == task.id
+    assert "LOOPS_APPROVAL_COMMENT_USERNAMES" not in env
+    assert "LOOPS_APPROVAL_COMMENT_PATTERN" not in env
+
+
+def test_run_once_writes_custom_comment_approval_config(tmp_path: Path) -> None:
+    task = make_task("1", "Ship it")
+    provider = StubProvider([task])
+    loops_root = tmp_path / ".loops"
+
+    config = OuterLoopConfig(
+        task_ready_status="Ready",
+        emit_on_first_run=True,
+        approval_comment_usernames=("maintainer", "review-bot"),
+        approval_comment_pattern=r"^\s*/shipit\b",
+    )
+    runner = OuterLoopRunner(
+        provider,
+        config,
+        loops_root=loops_root,
+        inner_loop_launcher=lambda _run_dir, _task: None,
+    )
+
+    run_dirs = runner.run_once()
+    assert len(run_dirs) == 1
+    payload = json.loads((run_dirs[0] / INNER_LOOP_APPROVAL_CONFIG_FILE).read_text())
+    assert payload == {
+        "approval_comment_pattern": r"^\s*/shipit\b",
+        "approval_comment_usernames": ["maintainer", "review-bot"],
+    }
+
+
+def test_run_once_writes_default_comment_approval_config(tmp_path: Path) -> None:
+    task = make_task("1", "Ship it")
+    provider = StubProvider([task])
+    loops_root = tmp_path / ".loops"
+    runner = OuterLoopRunner(
+        provider,
+        OuterLoopConfig(task_ready_status="Ready", emit_on_first_run=True),
+        loops_root=loops_root,
+        inner_loop_launcher=lambda _run_dir, _task: None,
+    )
+
+    run_dirs = runner.run_once()
+    assert len(run_dirs) == 1
+    payload = json.loads((run_dirs[0] / INNER_LOOP_APPROVAL_CONFIG_FILE).read_text())
+    assert payload == {
+        "approval_comment_pattern": DEFAULT_APPROVAL_COMMENT_PATTERN,
+        "approval_comment_usernames": [],
+    }

@@ -1,6 +1,6 @@
 # Outer Loop Flow
 
-Last updated: 2026-02-16
+Last updated: 2026-02-17
 
 ## Overview
 
@@ -45,7 +45,7 @@ None identified.
 | `--limit` | CLI option | `loops/cli.py:51`, forwarded to provider poll | Caps tasks returned/considered in a cycle. |
 | `--force` | CLI option | `loops/cli.py:57`, override at `loops/cli.py:198` | Reprocesses tasks even if previously seen in outer state. |
 | `provider_id` / `provider_config.*` | Config file fields | `loops/outer_loop.py:243`, `loops/outer_loop.py:274` | Chooses task provider and provider-specific polling behavior. |
-| `loop_config.*` | Config file fields | `loops/outer_loop.py:394` | Controls poll interval, ready filter, sync mode, emit-on-first-run, force, and parallel launch behavior. |
+| `loop_config.*` | Config file fields | `loops/outer_loop.py:394` | Controls poll interval, ready filter, sync mode, emit-on-first-run, force, parallel launch behavior, and comment-approval settings propagated to inner loop. |
 | `inner_loop.*` | Config file fields | `loops/outer_loop.py:44`, `loops/outer_loop.py:283` | Defines launch command, cwd, env injection, and URL appending for child processes. |
 
 ## Flow
@@ -66,6 +66,7 @@ None identified.
 | `ready_tasks` | Created from provider poll filtered by `_is_ready` (`loops/outer_loop.py:164`) | Snapshot per cycle in memory | Used to build emit set and log counts (`loops/outer_loop.py:172`, `loops/outer_loop.py:206`) | Yes |
 | `emit_tasks` | Built in cycle loop (`loops/outer_loop.py:168`, `loops/outer_loop.py:179`) | Snapshot before launch (`loops/outer_loop.py:183`) | Drives run-dir creation + launcher dispatch (`loops/outer_loop.py:184`, `loops/outer_loop.py:199`) | Yes |
 | `run.json` initial state | Written by `write_run_record` (`loops/outer_loop.py:194`) | Materialized before launcher call | Consumed by inner loop as authoritative starting state | Yes |
+| `inner_loop_approval_config.json` | Written in run dir from `loop_config.approval_comment_*` before launch | Materialized before launcher call | Consumed by inner loop PR poller config loader | Yes |
 | `oloops.log` cycle summary | Appended in finally block (`loops/outer_loop.py:206`, formatter at `loops/outer_loop.py:493`) | N/A | Used for operational summaries (`ready`/`processed`) | Yes |
 
 ### Outer-loop runtime invocation
@@ -194,6 +195,7 @@ class OuterLoopRunner
   - Merges configured `inner_loop.env` (`loops/outer_loop.py:304`).
   - Appends task URL to command when configured (`loops/outer_loop.py:307`).
   - Uses `subprocess.run` in `sync_mode=true` (`loops/outer_loop.py:310`) or detached `subprocess.Popen` writing to `run.log` (`loops/outer_loop.py:319`).
+- Approval-comment settings are persisted per run as `inner_loop_approval_config.json`, not injected via env.
 
 ### Provider polling behavior (GitHub Projects V2)
 
@@ -291,6 +293,9 @@ A: State write happens in `finally`, so initialization and task ledger updates p
 Q: How is `loops_root` chosen?
 A: If config is inside `.loops/`, that directory is used; otherwise `.loops/` is created adjacent to config (`loops/cli.py:275`).
 
+Q: How do comment-approval settings reach inner loop?
+A: They are configured in `loop_config` and written into each run directory as `inner_loop_approval_config.json`, which inner loop reads at startup.
+
 ## Manual Notes 
 
 [keep this for the user to add notes. do not change between edits]
@@ -300,3 +305,4 @@ A: If config is inside `.loops/`, that directory is used; otherwise `.loops/` is
 - 2026-02-16: Revised outer-loop pseudocode to use grepable runtime names and focus on main execution flow over plumbing details. (019c6863-d581-7f83-9809-fabbefa042e8)
 - 2026-02-16: Inlined short helper references in pseudocode to make the outer-loop flow readable in a single linear pass. (019c6863-d581-7f83-9809-fabbefa042e8)
 - 2026-02-16: Switched run-forever pseudocode to keep the function call and inline its body at the call site. (019c6863-d581-7f83-9809-fabbefa042e8)
+- 2026-02-17: Documented OuterLoopConfig comment-approval fields and run-scoped approval-config file handoff to inner loop. (019c68ed-a6c5-78e0-891a-6b70a1a1450c)

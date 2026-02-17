@@ -296,6 +296,8 @@ def _build_default_config() -> dict[str, Any]:
             "emit_on_first_run": defaults.emit_on_first_run,
             "force": defaults.force,
             "task_ready_status": defaults.task_ready_status,
+            "approval_comment_usernames": list(defaults.approval_comment_usernames),
+            "approval_comment_pattern": defaults.approval_comment_pattern,
         },
         "inner_loop": {
             "command": [sys.executable, "-m", "loops.inner_loop"],

@@ -51,6 +51,10 @@ type OuterLoopConfig = {
     force: boolean
     // status of the task that is ready to be processed
     task_ready_status: string
+    // allowlisted usernames whose approval comments can mark PR approved
+    approval_comment_usernames: string[]
+    // regex pattern for approval comments from allowlisted usernames
+    approval_comment_pattern: string
 }
 
 /**
@@ -180,6 +184,8 @@ type OuterLoopConfig = {
     emit_on_first_run?: boolean
     force?: boolean
     task_ready_status?: string
+    approval_comment_usernames?: string[]
+    approval_comment_pattern?: string
 }
 
 type InnerLoopCommandConfig = {
@@ -202,6 +208,8 @@ Notes:
 - `provider_config` is validated by the provider's Pydantic model.
 - Required provider secrets are validated from environment variables before provider construction.
 - `loop_config` is optional; omitted keys fall back to defaults.
+- `loop_config.approval_comment_usernames` allows comment-based PR approval overrides from specific usernames.
+- `loop_config.approval_comment_pattern` controls which comment bodies count as approval signals.
 - `inner_loop` is optional when running via the CLI; if omitted, the CLI uses
   `python -m loops.inner_loop` with `append_task_url=false`.
 - `python -m loops run --task-url <task-url>` targets exactly one task from the provider poll, implies `run-once`, `force=true`, and `sync_mode=true`, and does not mutate `provider_config.url`.
@@ -450,7 +458,7 @@ Task: [task]
 - When a PR is opened, the inner loop records it in `run.json`.
 - The inner loop polls PR status and updates `pr.review_status`.
 - When a review requests changes, the inner loop records `latest_review_submitted_at` (the review's `submittedAt` timestamp from GitHub) and invokes Codex to address the feedback. After Codex runs, `review_addressed_at` is set to `latest_review_submitted_at`. On subsequent polls, the loop only re-invokes Codex if `latest_review_submitted_at > review_addressed_at`, indicating a genuinely new review event. This prevents duplicate fix attempts when the reviewer has not yet re-reviewed.
-- When approval is detected, the inner loop runs cleanup immediately; if cleanup fails it sets `needs_user_input=true`.
+- When approval is detected (GitHub review decision or allowlisted approval comment newer than latest `CHANGES_REQUESTED` review), the inner loop runs cleanup immediately; if cleanup fails it sets `needs_user_input=true`.
 
 ## 8. Error handling and recovery
 

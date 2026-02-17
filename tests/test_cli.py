@@ -28,6 +28,8 @@ def test_init_creates_default_loops_structure(tmp_path: Path) -> None:
     config_payload = json.loads((loops_root / "config.json").read_text())
     assert config_payload["provider_id"] == "github_projects_v2"
     assert config_payload["loop_config"]["sync_mode"] is False
+    assert config_payload["loop_config"]["approval_comment_usernames"] == []
+    assert config_payload["loop_config"]["approval_comment_pattern"] == r"^\s*/approve\b"
     assert config_payload["inner_loop"]["append_task_url"] is False
     assert config_payload["inner_loop"]["command"] == [
         sys.executable,

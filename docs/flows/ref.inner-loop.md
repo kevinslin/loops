@@ -1,6 +1,6 @@
 # Inner Loop Flow
 
-Last updated: 2026-02-16
+Last updated: 2026-02-17
 
 ## Overview
 
@@ -44,6 +44,7 @@ None identified.
 |---|---|---|---|
 | `--run-dir` | CLI option | `loops/cli.py:77`, `loops/inner_loop.py:982` | Overrides `LOOPS_RUN_DIR` for the target run. |
 | `--prompt-file` | CLI option | `loops/cli.py:84`, `loops/inner_loop.py:489` | Overrides prompt-file env fallbacks and changes all Codex prompts for the run. |
+| `loop_config.approval_comment_usernames` / `loop_config.approval_comment_pattern` | Config file fields (outer loop) | `loops/outer_loop.py` -> written to `inner_loop_approval_config.json` | Controls comment-based approval override behavior in review polling. |
 | Signal payload (`--message`, `--context`) | Signal queue input | `loops/state_signal.py:49`, consumed by `loops/inner_loop.py:941` | Causes state transition to `NEEDS_INPUT` with structured handoff payload. |
 | `run.json` content (`pr`, `needs_user_input`, `needs_user_input_payload`) | Persisted state | `loops/run_record.py:183`, `loops/run_record.py:139` | Determines the branch selected by each loop iteration. |
 | `run_inner_loop(...)` polling params | Function args | `loops/inner_loop.py:58` | Controls max iterations, poll backoff, and idle escalation thresholds. |
@@ -60,6 +61,7 @@ None identified.
 
 | value | write step | snapshot step | read step | ordering valid? |
 |---|---|---|---|---|
+| comment-approval settings (`usernames`, `pattern`) | Written by outer loop to `inner_loop_approval_config.json` | Loaded once at run start before default PR poller closure creation | Used on each `WAITING_ON_REVIEW` poll to evaluate comment-based approval | Yes |
 | `needs_user_input` | Written in `_run_codex_turn`, `_force_needs_input`, signal apply path (`loops/inner_loop.py:601`, `loops/inner_loop.py:857`, `loops/inner_loop.py:941`) | Reloaded at top of each iteration (`loops/inner_loop.py:87`) | Used by `derive_run_state` (`loops/inner_loop.py:89`, `loops/run_record.py:139`) | Yes |
 | `pr.review_status` | Updated from Codex output or PR poll (`loops/inner_loop.py:635`, `loops/inner_loop.py:259`, `loops/inner_loop.py:392`) | Reloaded each iteration (`loops/inner_loop.py:87`) | Branches into `WAITING_ON_REVIEW`/`PR_APPROVED` (`loops/inner_loop.py:208`, `loops/inner_loop.py:325`) | Yes |
 | `pr.merged_at` | Written by PR status poll (`loops/inner_loop.py:767`, persisted at `loops/inner_loop.py:392`) | Reloaded each iteration (`loops/inner_loop.py:87`) | Triggers `DONE` via `derive_run_state` (`loops/run_record.py:142`) | Yes |
@@ -73,6 +75,22 @@ None identified.
 ```ts
 function runInnerLoop(runDir: Path, opts: Options): RunRecord {
   initializePathsAndDefaults(runDir, opts)
+  commentApproval = loadCommentApprovalSettings(runDir) // reads inner_loop_approval_config.json
+  if (commentApproval.configLoadError) {
+    log("[loops] failed to load run approval config; using defaults")
+  }
+  if (commentApproval.usedDefaultPattern) {
+    log("[loops] invalid approval comment pattern in run approval config; falling back to default")
+  }
+  if (prStatusFetcher is null) {
+    prStatusFetcher = (pr) => {
+      [updatedPr, approvedByComment, approver] = pollPrWithGhAndContext(pr, commentApproval)
+      if (approvedByComment) {
+        log(`[loops] treating PR as approved via allowlisted approval comment by ${approver}`)
+      }
+      return updatedPr
+    }
+  }
 
   for (iteration = 1; iteration <= maxIterations; iteration++) {
     record = readRunRecord(runJsonPath)
@@ -116,7 +134,7 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
       }
 
       try {
-        updatedPr = pollPrWithGh(record.pr)
+        updatedPr = prStatusFetcher(record.pr)
         record = writeRunRecord({ ...record, pr: updatedPr })
       } catch {
         maybeEscalateToNeedsInputAfterIdlePolls()
@@ -153,7 +171,7 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
     }
 
     try {
-      updatedPr = pollPrWithGh(record.pr)
+      updatedPr = prStatusFetcher(record.pr)
       record = writeRunRecord({ ...record, pr: updatedPr })
     } catch {
       sleepWithBackoff()
@@ -176,8 +194,9 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
   - Sets `needs_user_input=true` on non-zero exits or successful turns with no PR detected.
 
 - Review polling behavior (`loops/inner_loop.py:767`):
-  - Calls `gh pr view ... --json reviewDecision,mergedAt,url,number,repository,latestReviews`.
-  - Maps decision into `review_status` and captures latest relevant review timestamp.
+  - Loads comment-approval settings once per run from `inner_loop_approval_config.json` and compiles approval pattern with safe fallback.
+  - Calls `gh pr view ... --json reviewDecision,mergedAt,url,number,repository,latestReviews,comments`.
+  - Maps decision into `review_status`, captures latest relevant review timestamp, and may override to approved when an allowlisted approval comment matches pattern and is newer than latest `CHANGES_REQUESTED` review.
 
 - Signal consumption behavior (`loops/inner_loop.py:941`):
   - Reads unread JSONL entries from queue offset.
@@ -258,6 +277,9 @@ A: If exit code is zero but no PR is detected in output, the loop requests manua
 Q: Why does review feedback not always re-trigger Codex?
 A: The loop only resumes Codex on `changes_requested` when `_is_new_review` is true, using review timestamps to avoid duplicate rework (`loops/inner_loop.py:263`, `loops/inner_loop.py:727`).
 
+Q: Can a PR move to `PR_APPROVED` without `reviewDecision=APPROVED`?
+A: Yes. If configured allowlisted usernames post a matching approval comment and it is newer than the latest `CHANGES_REQUESTED` review, polling treats the PR as approved.
+
 Q: Who owns `run.json` updates?
 A: Inner loop only. Signal producers append to queue; they do not mutate `run.json` (`loops/state_signal.py:49`, `loops/inner_loop.py:941`).
 
@@ -267,3 +289,6 @@ A: Inner loop only. Signal producers append to queue; they do not mutate `run.js
 
 ## Changelog
 - 2026-02-16: Created inner-loop flow doc for runtime state-machine behavior and integration points. (019c6863-d581-7f83-9809-fabbefa042e8)
+- 2026-02-17: Documented allowlisted comment-based approval detection and ordering guard against newer changes-requested reviews. (019c68ed-a6c5-78e0-891a-6b70a1a1450c)
+- 2026-02-17: Updated flow to use run-scoped `inner_loop_approval_config.json` transport instead of env-based approval settings. (019c68ed-a6c5-78e0-891a-6b70a1a1450c)
+- 2026-02-17: Updated inner-loop pseudocode to reflect run-scoped approval config loading and context-aware PR polling path. (019c68ed-a6c5-78e0-891a-6b70a1a1450c)

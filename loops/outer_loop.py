@@ -17,6 +17,12 @@ from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import ValidationError
 
+from loops.approval_config import (
+    DEFAULT_APPROVAL_COMMENT_PATTERN,
+    build_inner_loop_approval_config,
+    normalize_approval_usernames,
+    write_inner_loop_approval_config,
+)
 from loops.provider_types import LoopsProviderConfig, SecretRequirement
 from loops.providers.registry import get_provider_definition
 from loops.run_record import RunRecord, Task, write_run_record
@@ -39,6 +45,8 @@ class OuterLoopConfig:
     emit_on_first_run: bool = False
     force: bool = False
     task_ready_status: str = DEFAULT_TASK_READY_STATUS
+    approval_comment_usernames: tuple[str, ...] = ()
+    approval_comment_pattern: str = DEFAULT_APPROVAL_COMMENT_PATTERN
 
 
 @dataclass(frozen=True)
@@ -200,6 +208,13 @@ class OuterLoopRunner:
                 updated_at=now_iso,
             )
             write_run_record(run_dir / "run.json", record)
+            write_inner_loop_approval_config(
+                run_dir,
+                build_inner_loop_approval_config(
+                    approval_comment_usernames=self.config.approval_comment_usernames,
+                    approval_comment_pattern=self.config.approval_comment_pattern,
+                ),
+            )
             _touch(run_dir / "run.log")
             _touch(run_dir / "agent.log")
             to_launch.append((run_dir, task))
@@ -427,6 +442,14 @@ def _load_outer_loop_config(payload: Any) -> OuterLoopConfig:
         emit_on_first_run=_load_bool(payload, "emit_on_first_run", False),
         force=_load_bool(payload, "force", False),
         task_ready_status=_load_str(payload, "task_ready_status", DEFAULT_TASK_READY_STATUS),
+        approval_comment_usernames=normalize_approval_usernames(
+            _load_str_list(payload, "approval_comment_usernames", ())
+        ),
+        approval_comment_pattern=_load_str(
+            payload,
+            "approval_comment_pattern",
+            DEFAULT_APPROVAL_COMMENT_PATTERN,
+        ),
     )
 
 
@@ -493,6 +516,25 @@ def _load_str(payload: dict[str, Any], key: str, default: str) -> str:
     if not isinstance(value, str):
         raise TypeError(f"{key} must be a string")
     return value
+
+
+def _load_str_list(
+    payload: dict[str, Any],
+    key: str,
+    default: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Load a list of strings with validation."""
+
+    value = payload.get(key, default)
+    if isinstance(value, tuple):
+        candidate = list(value)
+    else:
+        candidate = value
+    if not isinstance(candidate, list) or not all(
+        isinstance(item, str) for item in candidate
+    ):
+        raise TypeError(f"{key} must be a list of strings")
+    return tuple(candidate)
 
 
 def _is_ready(task: Task, config: OuterLoopConfig) -> bool:
