@@ -13,6 +13,7 @@ from loops.approval_config import (
 )
 from loops.outer_loop import (
     InnerLoopCommandConfig,
+    LATEST_LOOPS_CONFIG_VERSION,
     LoopsConfig,
     OuterLoopConfig,
     OuterLoopRunner,
@@ -286,6 +287,7 @@ def test_load_config_reads_sync_mode(tmp_path: Path) -> None:
 
     config = load_config(config_path)
     assert config.loop_config.sync_mode is True
+    assert config.version == LATEST_LOOPS_CONFIG_VERSION
 
 
 def test_load_config_reads_comment_approval_config(tmp_path: Path) -> None:
@@ -301,6 +303,7 @@ def test_load_config_reads_comment_approval_config(tmp_path: Path) -> None:
     config_path.write_text(json.dumps(payload))
 
     config = load_config(config_path)
+    assert config.version == LATEST_LOOPS_CONFIG_VERSION
     assert config.loop_config.approval_comment_usernames == (
         "maintainer",
         "review-bot",
@@ -338,6 +341,7 @@ def test_build_provider_accepts_alias_secret_env_var(monkeypatch) -> None:
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.setenv("GH_TOKEN", "token-from-alias")
     config = LoopsConfig(
+        version=LATEST_LOOPS_CONFIG_VERSION,
         provider_id="github_projects_v2",
         provider_config={"url": "https://github.com/orgs/acme/projects/1"},
         loop_config=OuterLoopConfig(),
@@ -353,6 +357,7 @@ def test_build_provider_rejects_missing_required_secret(monkeypatch) -> None:
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.delenv("GH_TOKEN", raising=False)
     config = LoopsConfig(
+        version=LATEST_LOOPS_CONFIG_VERSION,
         provider_id="github_projects_v2",
         provider_config={"url": "https://github.com/orgs/acme/projects/1"},
         loop_config=OuterLoopConfig(),
@@ -366,6 +371,7 @@ def test_build_provider_rejects_missing_required_secret(monkeypatch) -> None:
 def test_build_provider_validates_provider_config(monkeypatch) -> None:
     monkeypatch.setenv("GITHUB_TOKEN", "token")
     config = LoopsConfig(
+        version=LATEST_LOOPS_CONFIG_VERSION,
         provider_id="github_projects_v2",
         provider_config={
             "url": "https://github.com/orgs/acme/projects/1",
@@ -408,6 +414,7 @@ def test_build_inner_loop_launcher_sync_mode_uses_subprocess_run(
     task = make_task("1", "Ship it")
 
     config = LoopsConfig(
+        version=LATEST_LOOPS_CONFIG_VERSION,
         provider_id="github_projects_v2",
         provider_config={"url": "https://github.com/orgs/acme/projects/1"},
         loop_config=OuterLoopConfig(
@@ -449,6 +456,19 @@ def test_build_inner_loop_launcher_sync_mode_uses_subprocess_run(
     assert env["LOOPS_TASK_ID"] == task.id
     assert "LOOPS_APPROVAL_COMMENT_USERNAMES" not in env
     assert "LOOPS_APPROVAL_COMMENT_PATTERN" not in env
+
+
+def test_load_config_preserves_explicit_version(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    payload = {
+        "version": LATEST_LOOPS_CONFIG_VERSION,
+        "provider_id": "github_projects_v2",
+        "provider_config": {},
+    }
+    config_path.write_text(json.dumps(payload))
+
+    config = load_config(config_path)
+    assert config.version == LATEST_LOOPS_CONFIG_VERSION
 
 
 def test_run_once_writes_custom_comment_approval_config(tmp_path: Path) -> None:
