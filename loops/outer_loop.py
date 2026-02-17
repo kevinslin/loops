@@ -12,19 +12,26 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Mapping, Optional
+from urllib.parse import urlsplit, urlunsplit
 
-from loops.providers.github_projects_v2 import (
-    GITHUB_PROJECTS_V2_PROVIDER_ID,
-    GithubProjectsV2TaskProvider,
-    GithubProjectsV2TaskProviderConfig,
+from pydantic import ValidationError
+
+from loops.approval_config import (
+    DEFAULT_APPROVAL_COMMENT_PATTERN,
+    build_inner_loop_approval_config,
+    normalize_approval_usernames,
+    write_inner_loop_approval_config,
 )
+from loops.provider_types import LoopsProviderConfig, SecretRequirement
+from loops.providers.registry import get_provider_definition
 from loops.run_record import RunRecord, Task, write_run_record
 from loops.task_provider import TaskProvider
 
 DEFAULT_POLL_INTERVAL_SECONDS = 30
 DEFAULT_PARALLEL_TASKS_LIMIT = 5
 DEFAULT_TASK_READY_STATUS = "Ready"
+INNER_LOOP_RUNS_DIR_NAME = "jobs"
 
 
 @dataclass(frozen=True)
@@ -34,9 +41,12 @@ class OuterLoopConfig:
     poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS
     parallel_tasks: bool = False
     parallel_tasks_limit: int = DEFAULT_PARALLEL_TASKS_LIMIT
+    sync_mode: bool = False
     emit_on_first_run: bool = False
     force: bool = False
     task_ready_status: str = DEFAULT_TASK_READY_STATUS
+    approval_comment_usernames: tuple[str, ...] = ()
+    approval_comment_pattern: str = DEFAULT_APPROVAL_COMMENT_PATTERN
 
 
 @dataclass(frozen=True)
@@ -153,14 +163,23 @@ class OuterLoopRunner:
         self.state_path = self.loops_root / "outer_state.json"
         self.log_path = self.loops_root / "oloops.log"
 
-    def run_once(self, limit: int | None = None) -> list[Path]:
+    def run_once(
+        self,
+        limit: int | None = None,
+        *,
+        forced_task_url: str | None = None,
+    ) -> list[Path]:
         """Run a single poll cycle and return created run directories."""
 
         self.loops_root.mkdir(parents=True, exist_ok=True)
+        _inner_loop_runs_root(self.loops_root).mkdir(parents=True, exist_ok=True)
         state = read_outer_state(self.state_path)
-        ready_tasks = [
-            task for task in self.provider.poll(limit) if _is_ready(task, self.config)
-        ]
+        poll_limit = None if forced_task_url is not None else limit
+        polled_tasks = self.provider.poll(poll_limit)
+        if forced_task_url is not None:
+            ready_tasks = [_select_task_by_url(polled_tasks, forced_task_url)]
+        else:
+            ready_tasks = [task for task in polled_tasks if _is_ready(task, self.config)]
         now_iso = _now_iso()
         emit_tasks: list[Task] = []
         first_run = not state.initialized
@@ -189,7 +208,15 @@ class OuterLoopRunner:
                 updated_at=now_iso,
             )
             write_run_record(run_dir / "run.json", record)
+            write_inner_loop_approval_config(
+                run_dir,
+                build_inner_loop_approval_config(
+                    approval_comment_usernames=self.config.approval_comment_usernames,
+                    approval_comment_pattern=self.config.approval_comment_pattern,
+                ),
+            )
             _touch(run_dir / "run.log")
+            _touch(run_dir / "agent.log")
             to_launch.append((run_dir, task))
 
         try:
@@ -215,6 +242,12 @@ class OuterLoopRunner:
         launcher = self.inner_loop_launcher
         if launcher is None:
             raise RuntimeError("inner_loop_launcher is required to launch tasks")
+        if self.config.sync_mode:
+            # Foreground mode is explicitly interactive; launch serially so stdin/stdout
+            # are unambiguous and user handoff prompts are readable.
+            for run_dir, task in tasks:
+                launcher(run_dir, task)
+            return
         if not self.config.parallel_tasks or len(tasks) <= 1:
             for run_dir, task in tasks:
                 launcher(run_dir, task)
@@ -264,10 +297,17 @@ def load_config(path: str | Path) -> LoopsConfig:
 def build_provider(config: LoopsConfig) -> TaskProvider:
     """Construct the task provider for the configured provider id."""
 
-    if config.provider_id != GITHUB_PROJECTS_V2_PROVIDER_ID:
-        raise ValueError(f"Unsupported provider_id: {config.provider_id}")
-    provider_kwargs = _filter_provider_config(config.provider_config)
-    return GithubProjectsV2TaskProvider(GithubProjectsV2TaskProviderConfig(**provider_kwargs))
+    definition = get_provider_definition(config.provider_id)
+    _validate_required_secrets(definition.metadata, environ=os.environ)
+    try:
+        provider_config = definition.metadata.provider_config_model.model_validate(
+            config.provider_config
+        )
+    except ValidationError as exc:
+        raise ValueError(
+            f"provider_config is invalid for provider '{definition.metadata.id}': {exc}"
+        ) from exc
+    return definition.build(provider_config)
 
 
 def build_inner_loop_launcher(
@@ -278,6 +318,7 @@ def build_inner_loop_launcher(
     if config.inner_loop is None:
         raise ValueError("inner_loop.command is required to launch tasks")
     inner_loop = config.inner_loop
+    sync_mode = config.loop_config.sync_mode
 
     def launcher(run_dir: Path, task: Task) -> None:
         """Launch a single inner loop invocation."""
@@ -295,8 +336,17 @@ def build_inner_loop_launcher(
         command = list(inner_loop.command)
         if inner_loop.append_task_url:
             command.append(task.url)
-        
-        log_fd = os.open(str(run_log), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)   
+
+        if sync_mode:
+            subprocess.run(
+                command,
+                cwd=inner_loop.working_dir,
+                env=env,
+                check=False,
+            )
+            return
+
+        log_fd = os.open(str(run_log), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
         try:
             subprocess.Popen(
                 command,
@@ -346,21 +396,29 @@ def write_outer_state(path: str | Path, state: OuterLoopState) -> None:
 def create_run_dir(task: Task, loops_root: Path) -> Path:
     """Create a run directory for a task and return its path."""
 
+    runs_root = _inner_loop_runs_root(loops_root)
+    runs_root.mkdir(parents=True, exist_ok=True)
     date_prefix = datetime.now(timezone.utc).date().isoformat()
     title_slug = _slugify(task.title) or "task"
     id_slug = _slugify(task.id) or "id"
     base_name = f"{date_prefix}-{title_slug}-{id_slug}"
-    candidate = loops_root / base_name
+    candidate = runs_root / base_name
     if not candidate.exists():
         candidate.mkdir(parents=True, exist_ok=True)
         return candidate
     suffix = 1
     while True:
-        contender = loops_root / f"{base_name}-{suffix}"
+        contender = runs_root / f"{base_name}-{suffix}"
         if not contender.exists():
             contender.mkdir(parents=True, exist_ok=True)
             return contender
         suffix += 1
+
+
+def _inner_loop_runs_root(loops_root: Path) -> Path:
+    """Return the directory containing per-task inner-loop run directories."""
+
+    return loops_root / INNER_LOOP_RUNS_DIR_NAME
 
 
 def _load_outer_loop_config(payload: Any) -> OuterLoopConfig:
@@ -380,21 +438,57 @@ def _load_outer_loop_config(payload: Any) -> OuterLoopConfig:
         poll_interval_seconds=poll_interval,
         parallel_tasks=_load_bool(payload, "parallel_tasks", False),
         parallel_tasks_limit=parallel_limit,
+        sync_mode=_load_bool(payload, "sync_mode", False),
         emit_on_first_run=_load_bool(payload, "emit_on_first_run", False),
         force=_load_bool(payload, "force", False),
         task_ready_status=_load_str(payload, "task_ready_status", DEFAULT_TASK_READY_STATUS),
+        approval_comment_usernames=normalize_approval_usernames(
+            _load_str_list(payload, "approval_comment_usernames", ())
+        ),
+        approval_comment_pattern=_load_str(
+            payload,
+            "approval_comment_pattern",
+            DEFAULT_APPROVAL_COMMENT_PATTERN,
+        ),
     )
 
 
-def _filter_provider_config(payload: dict[str, Any]) -> dict[str, Any]:
-    """Filter provider config and reject unknown keys."""
+def _validate_required_secrets(
+    provider: LoopsProviderConfig,
+    *,
+    environ: Mapping[str, str],
+) -> None:
+    """Validate that provider-declared env secrets are present."""
 
-    allowed_keys = {"url", "status_field", "page_size", "github_token"}
-    unknown_keys = set(payload.keys()) - allowed_keys
-    if unknown_keys:
-        formatted = ", ".join(sorted(unknown_keys))
-        raise ValueError(f"provider_config contains unsupported keys: {formatted}")
-    return dict(payload)
+    missing: list[SecretRequirement] = []
+    for requirement in provider.required_secrets:
+        if _resolve_secret_env_name(requirement, environ=environ) is None:
+            missing.append(requirement)
+    if not missing:
+        return
+
+    lines = [
+        f"Missing required secret environment variables for provider "
+        f"'{provider.display_name()}' ({provider.id}):"
+    ]
+    for requirement in missing:
+        env_names = ", ".join(requirement.env_names()) or requirement.name
+        lines.append(f"- {env_names}: {requirement.description}")
+    raise ValueError("\n".join(lines))
+
+
+def _resolve_secret_env_name(
+    requirement: SecretRequirement,
+    *,
+    environ: Mapping[str, str],
+) -> str | None:
+    """Resolve the first non-empty env var that satisfies a secret requirement."""
+
+    for env_name in requirement.env_names():
+        value = environ.get(env_name)
+        if value is not None and value.strip():
+            return env_name
+    return None
 
 
 def _load_bool(payload: dict[str, Any], key: str, default: bool) -> bool:
@@ -424,10 +518,81 @@ def _load_str(payload: dict[str, Any], key: str, default: str) -> str:
     return value
 
 
+def _load_str_list(
+    payload: dict[str, Any],
+    key: str,
+    default: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Load a list of strings with validation."""
+
+    value = payload.get(key, default)
+    if isinstance(value, tuple):
+        candidate = list(value)
+    else:
+        candidate = value
+    if not isinstance(candidate, list) or not all(
+        isinstance(item, str) for item in candidate
+    ):
+        raise TypeError(f"{key} must be a list of strings")
+    return tuple(candidate)
+
+
 def _is_ready(task: Task, config: OuterLoopConfig) -> bool:
     """Return True if a task matches the configured ready status."""
 
     return task.status.casefold() == config.task_ready_status.casefold()
+
+
+def _select_task_by_url(tasks: list[Task], task_url: str) -> Task:
+    """Select a single task by URL after normalizing common URL variants."""
+
+    normalized_target = _normalize_task_url(task_url)
+    matches: list[Task] = []
+    seen_keys: set[str] = set()
+    for task in tasks:
+        try:
+            normalized_task_url = _normalize_task_url(task.url)
+        except ValueError:
+            continue
+        if normalized_task_url != normalized_target:
+            continue
+        key = _task_key(task)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        matches.append(task)
+
+    if not matches:
+        raise ValueError(
+            f"--task-url was not found in provider results: {task_url}"
+        )
+    if len(matches) > 1:
+        candidates = ", ".join(
+            f"{task.id} ({task.url})" for task in matches[:5]
+        )
+        raise ValueError(
+            f"--task-url matched multiple tasks: {task_url}. Candidates: {candidates}"
+        )
+    return matches[0]
+
+
+def _normalize_task_url(url: str) -> str:
+    raw_url = url.strip()
+    if not raw_url:
+        raise ValueError("task URL cannot be empty")
+    parts = urlsplit(raw_url)
+    if not parts.scheme or not parts.netloc:
+        raise ValueError(f"task URL must be absolute: {url}")
+    normalized_path = parts.path.rstrip("/") or "/"
+    return urlunsplit(
+        (
+            parts.scheme.casefold(),
+            parts.netloc.casefold(),
+            normalized_path,
+            "",
+            "",
+        )
+    )
 
 
 def _task_key(task: Task) -> str:

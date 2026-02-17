@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from typing import Any, Literal
 from urllib.parse import urlparse
 
+from pydantic import BaseModel, ConfigDict, Field
+
+from loops.provider_types import LoopsProviderConfig, SecretRequirement
 from loops.run_record import Task
 
 GITHUB_PROJECTS_V2_PROVIDER_ID = "github_projects_v2"
@@ -14,12 +17,30 @@ OwnerType = Literal["organization", "user"]
 GH_API_TIMEOUT_SECONDS = 30
 
 
-@dataclass(frozen=True)
-class GithubProjectsV2TaskProviderConfig:
+class GithubProjectsV2TaskProviderConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     url: str
     status_field: str = "Status"
-    page_size: int = 50
+    page_size: int = Field(default=50, gt=0)
     github_token: str | None = None
+
+
+GITHUB_PROJECTS_V2_PROVIDER_CONFIG = LoopsProviderConfig(
+    id=GITHUB_PROJECTS_V2_PROVIDER_ID,
+    name="GitHub Projects V2",
+    required_secrets=(
+        SecretRequirement(
+            name="GITHUB_TOKEN",
+            alias=("GH_TOKEN",),
+            description=(
+                "GitHub API token used to poll project items "
+                "(set GITHUB_TOKEN or GH_TOKEN)."
+            ),
+        ),
+    ),
+    provider_config_model=GithubProjectsV2TaskProviderConfig,
+)
 
 
 @dataclass(frozen=True)
@@ -240,7 +261,19 @@ def _run_gh_graphql(
     for key, value in variables.items():
         if value is None:
             continue
-        args.extend(["-f", f"{key}={value}"])
+        if isinstance(value, bool):
+            encoded = "true" if value else "false"
+            args.extend(["-F", f"{key}={encoded}"])
+            continue
+        if isinstance(value, int) and not isinstance(value, bool):
+            args.extend(["-F", f"{key}={value}"])
+            continue
+        if isinstance(value, str):
+            args.extend(["-f", f"{key}={value}"])
+            continue
+        raise TypeError(
+            f"Unsupported GraphQL variable type for '{key}': {type(value).__name__}"
+        )
     try:
         result = subprocess.run(
             args,

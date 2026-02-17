@@ -72,6 +72,7 @@ def test_write_run_record_writes_required_keys(tmp_path) -> None:
             "pr",
             "codex_session",
             "needs_user_input",
+            "needs_user_input_payload",
             "last_state",
             "updated_at",
         ]
@@ -92,6 +93,66 @@ def test_read_run_record_rejects_non_bool_needs_user_input(tmp_path) -> None:
         "codex_session": None,
         "needs_user_input": "false",
         "last_state": "RUNNING",
+        "updated_at": "2026-02-03T00:00:00Z",
+    }
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps(payload))
+
+    with pytest.raises(TypeError):
+        read_run_record(path)
+
+
+def test_read_run_record_accepts_needs_user_input_payload(tmp_path) -> None:
+    payload = {
+        "task": _task().to_dict(),
+        "pr": None,
+        "codex_session": None,
+        "needs_user_input": True,
+        "needs_user_input_payload": {
+            "message": "Need decision",
+            "context": {"foo": "bar"},
+        },
+        "last_state": "NEEDS_INPUT",
+        "updated_at": "2026-02-03T00:00:00Z",
+    }
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps(payload))
+
+    record = read_run_record(path)
+    assert record.needs_user_input_payload is not None
+    assert record.needs_user_input_payload["message"] == "Need decision"
+
+
+def test_run_pr_round_trips_review_timestamp_fields() -> None:
+    pr = RunPR(
+        url="https://example.com/pr/1",
+        review_status="changes_requested",
+        latest_review_submitted_at="2026-02-09T01:00:00Z",
+        review_addressed_at="2026-02-09T01:00:00Z",
+    )
+    d = pr.to_dict()
+    assert d["latest_review_submitted_at"] == "2026-02-09T01:00:00Z"
+    assert d["review_addressed_at"] == "2026-02-09T01:00:00Z"
+    restored = RunPR.from_dict(d)
+    assert restored.latest_review_submitted_at == "2026-02-09T01:00:00Z"
+    assert restored.review_addressed_at == "2026-02-09T01:00:00Z"
+
+
+def test_run_pr_from_dict_without_review_timestamp_fields() -> None:
+    d = {"url": "https://example.com/pr/1", "review_status": "open"}
+    pr = RunPR.from_dict(d)
+    assert pr.latest_review_submitted_at is None
+    assert pr.review_addressed_at is None
+
+
+def test_read_run_record_rejects_invalid_needs_user_input_payload(tmp_path) -> None:
+    payload = {
+        "task": _task().to_dict(),
+        "pr": None,
+        "codex_session": None,
+        "needs_user_input": True,
+        "needs_user_input_payload": {"context": {"foo": "bar"}},
+        "last_state": "NEEDS_INPUT",
         "updated_at": "2026-02-03T00:00:00Z",
     }
     path = tmp_path / "run.json"

@@ -8,6 +8,7 @@ from typing import Any, Dict, Literal, Mapping, Optional
 
 RunState = Literal["RUNNING", "WAITING_ON_REVIEW", "NEEDS_INPUT", "PR_APPROVED", "DONE"]
 ReviewStatus = Literal["open", "changes_requested", "approved"]
+MAX_NEEDS_USER_INPUT_PAYLOAD_BYTES = 16 * 1024
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,8 @@ class RunPR:
     review_status: Optional[ReviewStatus] = None
     merged_at: Optional[str] = None
     last_checked_at: Optional[str] = None
+    latest_review_submitted_at: Optional[str] = None
+    review_addressed_at: Optional[str] = None
 
     @staticmethod
     def from_dict(data: Mapping[str, Any]) -> "RunPR":
@@ -67,6 +70,8 @@ class RunPR:
             review_status=data.get("review_status"),
             merged_at=data.get("merged_at"),
             last_checked_at=data.get("last_checked_at"),
+            latest_review_submitted_at=data.get("latest_review_submitted_at"),
+            review_addressed_at=data.get("review_addressed_at"),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -81,6 +86,10 @@ class RunPR:
             payload["merged_at"] = self.merged_at
         if self.last_checked_at is not None:
             payload["last_checked_at"] = self.last_checked_at
+        if self.latest_review_submitted_at is not None:
+            payload["latest_review_submitted_at"] = self.latest_review_submitted_at
+        if self.review_addressed_at is not None:
+            payload["review_addressed_at"] = self.review_addressed_at
         return payload
 
 
@@ -111,6 +120,7 @@ class RunRecord:
     needs_user_input: bool
     last_state: RunState
     updated_at: str
+    needs_user_input_payload: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -120,6 +130,7 @@ class RunRecord:
                 self.codex_session.to_dict() if self.codex_session is not None else None
             ),
             "needs_user_input": self.needs_user_input,
+            "needs_user_input_payload": self.needs_user_input_payload,
             "last_state": self.last_state,
             "updated_at": self.updated_at,
         }
@@ -141,11 +152,42 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _validate_needs_user_input_payload(
+    payload: Any,
+) -> Optional[Dict[str, Any]]:
+    if payload is None:
+        return None
+    if not isinstance(payload, Mapping):
+        raise TypeError('payload["needs_user_input_payload"] must be an object or null')
+    message = payload.get("message")
+    if not isinstance(message, str) or not message.strip():
+        raise TypeError(
+            'payload["needs_user_input_payload"]["message"] must be a non-empty string'
+        )
+    context = payload.get("context")
+    if context is not None and not isinstance(context, Mapping):
+        raise TypeError(
+            'payload["needs_user_input_payload"]["context"] must be an object when provided'
+        )
+
+    normalized: Dict[str, Any] = {"message": message.strip()}
+    if context is not None:
+        normalized["context"] = dict(context)
+
+    serialized = json.dumps(normalized, ensure_ascii=True)
+    if len(serialized.encode("utf-8")) > MAX_NEEDS_USER_INPUT_PAYLOAD_BYTES:
+        raise ValueError("needs_user_input_payload exceeds max allowed size")
+    return normalized
+
+
 def read_run_record(path: str | Path) -> RunRecord:
     payload = json.loads(Path(path).read_text())
     needs_user_input = payload.get("needs_user_input")
     if not isinstance(needs_user_input, bool):
         raise TypeError('payload["needs_user_input"] must be a boolean')
+    needs_user_input_payload = _validate_needs_user_input_payload(
+        payload.get("needs_user_input_payload")
+    )
     return RunRecord(
         task=Task.from_dict(payload["task"]),
         pr=RunPR.from_dict(payload["pr"]) if payload.get("pr") else None,
@@ -155,17 +197,22 @@ def read_run_record(path: str | Path) -> RunRecord:
             else None
         ),
         needs_user_input=needs_user_input,
+        needs_user_input_payload=needs_user_input_payload,
         last_state=payload["last_state"],
         updated_at=payload["updated_at"],
     )
 
 
 def write_run_record(path: str | Path, record: RunRecord) -> RunRecord:
+    needs_user_input_payload = _validate_needs_user_input_payload(
+        record.needs_user_input_payload
+    )
     updated_record = RunRecord(
         task=record.task,
         pr=record.pr,
         codex_session=record.codex_session,
         needs_user_input=record.needs_user_input,
+        needs_user_input_payload=needs_user_input_payload,
         last_state=derive_run_state(record.pr, record.needs_user_input),
         updated_at=_now_iso(),
     )

@@ -2,11 +2,26 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from loops.outer_loop import OuterLoopConfig, OuterLoopRunner, load_config, read_outer_state
+from loops.approval_config import (
+    DEFAULT_APPROVAL_COMMENT_PATTERN,
+    INNER_LOOP_APPROVAL_CONFIG_FILE,
+)
+from loops.outer_loop import (
+    InnerLoopCommandConfig,
+    LoopsConfig,
+    OuterLoopConfig,
+    OuterLoopRunner,
+    build_provider,
+    build_inner_loop_launcher,
+    load_config,
+    read_outer_state,
+)
+from loops.providers.github_projects_v2 import GithubProjectsV2TaskProvider
 from loops.run_record import Task, read_run_record
 
 
@@ -18,6 +33,16 @@ class StubProvider:
         if limit is None:
             return list(self._tasks)
         return list(self._tasks)[:limit]
+
+
+class RecordingProvider(StubProvider):
+    def __init__(self, tasks: list[Task]) -> None:
+        super().__init__(tasks)
+        self.poll_limits: list[int | None] = []
+
+    def poll(self, limit: int | None = None) -> list[Task]:
+        self.poll_limits.append(limit)
+        return super().poll(limit)
 
 
 def make_task(task_id: str, title: str, status: str = "Ready") -> Task:
@@ -33,9 +58,10 @@ def make_task(task_id: str, title: str, status: str = "Ready") -> Task:
 
 
 def list_run_dirs(loops_root: Path) -> list[Path]:
-    if not loops_root.exists():
+    runs_root = loops_root / "jobs"
+    if not runs_root.exists():
         return []
-    return sorted([path for path in loops_root.iterdir() if path.is_dir()])
+    return sorted([path for path in runs_root.iterdir() if path.is_dir()])
 
 
 def test_run_once_creates_run_records(tmp_path: Path) -> None:
@@ -58,6 +84,8 @@ def test_run_once_creates_run_records(tmp_path: Path) -> None:
     assert len(run_dirs) == 2
     titles = {read_run_record(run_dir / "run.json").task.title for run_dir in run_dirs}
     assert titles == {"Ship it", "Next"}
+    assert all((run_dir / "agent.log").exists() for run_dir in run_dirs)
+    assert all((run_dir / INNER_LOOP_APPROVAL_CONFIG_FILE).exists() for run_dir in run_dirs)
     assert len(launched) == 2
 
     state = read_outer_state(loops_root / "outer_state.json")
@@ -115,6 +143,90 @@ def test_force_reprocesses_tasks(tmp_path: Path) -> None:
     assert len(launched) == 4
 
 
+def test_run_once_forced_task_url_selects_task_and_ignores_ready_filter(
+    tmp_path: Path,
+) -> None:
+    tasks = [
+        make_task("1", "Ship it", status="Backlog"),
+        make_task("2", "Next", status="In Progress"),
+    ]
+    provider = RecordingProvider(tasks)
+    loops_root = tmp_path / ".loops"
+    launched: list[Path] = []
+
+    def launcher(run_dir: Path, _task: Task) -> None:
+        launched.append(run_dir)
+
+    config = OuterLoopConfig(
+        task_ready_status="Ready",
+        emit_on_first_run=False,
+        force=True,
+    )
+    runner = OuterLoopRunner(
+        provider, config, loops_root=loops_root, inner_loop_launcher=launcher
+    )
+
+    runner.run_once(limit=1, forced_task_url="https://example.com/2/?utm=1#frag")
+
+    run_dirs = list_run_dirs(loops_root)
+    assert len(run_dirs) == 1
+    run_record = read_run_record(run_dirs[0] / "run.json")
+    assert run_record.task.id == "2"
+    assert len(launched) == 1
+    assert provider.poll_limits == [None]
+    state = read_outer_state(loops_root / "outer_state.json")
+    assert list(state.tasks.keys()) == ["stub:2"]
+
+
+def test_run_once_forced_task_url_raises_when_missing(tmp_path: Path) -> None:
+    tasks = [make_task("1", "Ship it"), make_task("2", "Next")]
+    provider = StubProvider(tasks)
+    loops_root = tmp_path / ".loops"
+    config = OuterLoopConfig(
+        task_ready_status="Ready",
+        emit_on_first_run=False,
+        force=True,
+    )
+    runner = OuterLoopRunner(provider, config, loops_root=loops_root)
+
+    with pytest.raises(ValueError, match="not found"):
+        runner.run_once(forced_task_url="https://example.com/missing")
+
+
+def test_run_once_forced_task_url_raises_on_ambiguous_match(tmp_path: Path) -> None:
+    tasks = [
+        Task(
+            provider_id="stub",
+            id="1",
+            title="First",
+            status="Ready",
+            url="https://example.com/shared",
+            created_at="2026-02-05T00:00:00Z",
+            updated_at="2026-02-05T00:00:00Z",
+        ),
+        Task(
+            provider_id="stub",
+            id="2",
+            title="Second",
+            status="Ready",
+            url="https://example.com/shared",
+            created_at="2026-02-05T00:00:00Z",
+            updated_at="2026-02-05T00:00:00Z",
+        ),
+    ]
+    provider = StubProvider(tasks)
+    loops_root = tmp_path / ".loops"
+    config = OuterLoopConfig(
+        task_ready_status="Ready",
+        emit_on_first_run=False,
+        force=True,
+    )
+    runner = OuterLoopRunner(provider, config, loops_root=loops_root)
+
+    with pytest.raises(ValueError, match="matched multiple tasks"):
+        runner.run_once(forced_task_url="https://example.com/shared")
+
+
 def test_emit_on_first_run_skips_launch(tmp_path: Path) -> None:
     tasks = [make_task("1", "Ship it"), make_task("2", "Next")]
     provider = StubProvider(tasks)
@@ -159,6 +271,56 @@ def test_load_config_resolves_working_dir(tmp_path: Path) -> None:
     assert config.inner_loop.working_dir == str((tmp_path / "inner").resolve())
 
 
+def test_load_config_reads_sync_mode(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    payload = {
+        "provider_id": "github_projects_v2",
+        "provider_config": {},
+        "loop_config": {"sync_mode": True},
+        "inner_loop": {
+            "command": ["echo", "hello"],
+            "append_task_url": False,
+        },
+    }
+    config_path.write_text(json.dumps(payload))
+
+    config = load_config(config_path)
+    assert config.loop_config.sync_mode is True
+
+
+def test_load_config_reads_comment_approval_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    payload = {
+        "provider_id": "github_projects_v2",
+        "provider_config": {},
+        "loop_config": {
+            "approval_comment_usernames": ["Maintainer", "review-bot", "maintainer"],
+            "approval_comment_pattern": r"^\s*/shipit\b",
+        },
+    }
+    config_path.write_text(json.dumps(payload))
+
+    config = load_config(config_path)
+    assert config.loop_config.approval_comment_usernames == (
+        "maintainer",
+        "review-bot",
+    )
+    assert config.loop_config.approval_comment_pattern == r"^\s*/shipit\b"
+
+
+def test_load_config_rejects_invalid_comment_approval_usernames(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    payload = {
+        "provider_id": "github_projects_v2",
+        "provider_config": {},
+        "loop_config": {"approval_comment_usernames": "maintainer"},
+    }
+    config_path.write_text(json.dumps(payload))
+
+    with pytest.raises(TypeError, match="approval_comment_usernames"):
+        load_config(config_path)
+
+
 def test_load_config_rejects_bool_ints(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     payload = {
@@ -170,6 +332,51 @@ def test_load_config_rejects_bool_ints(tmp_path: Path) -> None:
 
     with pytest.raises(TypeError, match="poll_interval_seconds"):
         load_config(config_path)
+
+
+def test_build_provider_accepts_alias_secret_env_var(monkeypatch) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("GH_TOKEN", "token-from-alias")
+    config = LoopsConfig(
+        provider_id="github_projects_v2",
+        provider_config={"url": "https://github.com/orgs/acme/projects/1"},
+        loop_config=OuterLoopConfig(),
+        inner_loop=None,
+    )
+
+    provider = build_provider(config)
+
+    assert isinstance(provider, GithubProjectsV2TaskProvider)
+
+
+def test_build_provider_rejects_missing_required_secret(monkeypatch) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    config = LoopsConfig(
+        provider_id="github_projects_v2",
+        provider_config={"url": "https://github.com/orgs/acme/projects/1"},
+        loop_config=OuterLoopConfig(),
+        inner_loop=None,
+    )
+
+    with pytest.raises(ValueError, match=r"GITHUB_TOKEN, GH_TOKEN"):
+        build_provider(config)
+
+
+def test_build_provider_validates_provider_config(monkeypatch) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    config = LoopsConfig(
+        provider_id="github_projects_v2",
+        provider_config={
+            "url": "https://github.com/orgs/acme/projects/1",
+            "unsupported": "value",
+        },
+        loop_config=OuterLoopConfig(),
+        inner_loop=None,
+    )
+
+    with pytest.raises(ValueError, match="provider_config is invalid"):
+        build_provider(config)
 
 
 def test_run_once_persists_state_on_launch_error(tmp_path: Path) -> None:
@@ -191,3 +398,101 @@ def test_run_once_persists_state_on_launch_error(tmp_path: Path) -> None:
     state = read_outer_state(loops_root / "outer_state.json")
     assert state.initialized is True
     assert len(state.tasks) == 1
+
+
+def test_build_inner_loop_launcher_sync_mode_uses_subprocess_run(
+    tmp_path: Path, monkeypatch
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    task = make_task("1", "Ship it")
+
+    config = LoopsConfig(
+        provider_id="github_projects_v2",
+        provider_config={"url": "https://github.com/orgs/acme/projects/1"},
+        loop_config=OuterLoopConfig(
+            sync_mode=True,
+            approval_comment_usernames=("maintainer", "review-bot"),
+            approval_comment_pattern=r"^\s*/shipit\b",
+        ),
+        inner_loop=InnerLoopCommandConfig(
+            command=["echo", "hello"],
+            append_task_url=False,
+        ),
+    )
+    launcher = build_inner_loop_launcher(config)
+
+    captured: dict[str, object] = {}
+
+    def fake_run(command, *, cwd, env, check):
+        captured["command"] = command
+        captured["cwd"] = cwd
+        captured["env"] = env
+        captured["check"] = check
+        return subprocess.CompletedProcess(command, 0)
+
+    def fail_popen(*_args, **_kwargs):
+        raise AssertionError("subprocess.Popen should not be used in sync_mode")
+
+    monkeypatch.setattr("loops.outer_loop.subprocess.run", fake_run)
+    monkeypatch.setattr("loops.outer_loop.subprocess.Popen", fail_popen)
+    monkeypatch.delenv("LOOPS_APPROVAL_COMMENT_USERNAMES", raising=False)
+    monkeypatch.delenv("LOOPS_APPROVAL_COMMENT_PATTERN", raising=False)
+
+    launcher(run_dir, task)
+
+    assert captured["command"] == ["echo", "hello"]
+    assert captured["check"] is False
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["LOOPS_RUN_DIR"] == str(run_dir)
+    assert env["LOOPS_TASK_ID"] == task.id
+    assert "LOOPS_APPROVAL_COMMENT_USERNAMES" not in env
+    assert "LOOPS_APPROVAL_COMMENT_PATTERN" not in env
+
+
+def test_run_once_writes_custom_comment_approval_config(tmp_path: Path) -> None:
+    task = make_task("1", "Ship it")
+    provider = StubProvider([task])
+    loops_root = tmp_path / ".loops"
+
+    config = OuterLoopConfig(
+        task_ready_status="Ready",
+        emit_on_first_run=True,
+        approval_comment_usernames=("maintainer", "review-bot"),
+        approval_comment_pattern=r"^\s*/shipit\b",
+    )
+    runner = OuterLoopRunner(
+        provider,
+        config,
+        loops_root=loops_root,
+        inner_loop_launcher=lambda _run_dir, _task: None,
+    )
+
+    run_dirs = runner.run_once()
+    assert len(run_dirs) == 1
+    payload = json.loads((run_dirs[0] / INNER_LOOP_APPROVAL_CONFIG_FILE).read_text())
+    assert payload == {
+        "approval_comment_pattern": r"^\s*/shipit\b",
+        "approval_comment_usernames": ["maintainer", "review-bot"],
+    }
+
+
+def test_run_once_writes_default_comment_approval_config(tmp_path: Path) -> None:
+    task = make_task("1", "Ship it")
+    provider = StubProvider([task])
+    loops_root = tmp_path / ".loops"
+    runner = OuterLoopRunner(
+        provider,
+        OuterLoopConfig(task_ready_status="Ready", emit_on_first_run=True),
+        loops_root=loops_root,
+        inner_loop_launcher=lambda _run_dir, _task: None,
+    )
+
+    run_dirs = runner.run_once()
+    assert len(run_dirs) == 1
+    payload = json.loads((run_dirs[0] / INNER_LOOP_APPROVAL_CONFIG_FILE).read_text())
+    assert payload == {
+        "approval_comment_pattern": DEFAULT_APPROVAL_COMMENT_PATTERN,
+        "approval_comment_usernames": [],
+    }
