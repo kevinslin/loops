@@ -157,7 +157,7 @@ Key types:
 - `InnerLoopConfig`: single prompt, required skills, user handoff handler.
 - `Task`: provider metadata (id, title, status, url, timestamps, optional repo).
 - `TaskProvider`: provider interface with `poll()`.
-- `RunState`: `RUNNING | WAITING_ON_REVIEW | NEEDS_INPUT | DONE`.
+- `RunState`: `RUNNING | WAITING_ON_REVIEW | NEEDS_INPUT | PR_APPROVED | DONE`.
 - `RunRecord`: persisted run metadata for `run.json`.
 
 ## 3. Configuration
@@ -340,15 +340,15 @@ The outer loop uses `outer_state.json` as a dedupe ledger to avoid re-processing
 |-------|-------------|
 | `START` | LLM launched with initial prompt. Session being established. |
 | `NEEDS_INPUT` | LLM needs human input before continuing. |
-| `WAIT_REVIEW` | PR submitted. Polling for reviewer feedback. |
-| `CLEANUP` | PR approved. Running merge and post-merge cleanup. |
+| `WAITING_ON_REVIEW` | PR submitted. Polling for reviewer feedback. |
+| `PR_APPROVED` | PR approved. Running merge and post-merge cleanup. |
 | `DONE` | PR merged. Terminal state. |
 
 #### State derivation
 - `NEEDS_INPUT` if `needs_user_input == true`.
 - `DONE` if a PR exists and `merged_at` is set (merged).
-- `CLEANUP` if a PR exists, `review_status` is approved, and `needs_user_input == false`.
-- `WAIT_REVIEW` if a PR exists and `review_status` is not approved.
+- `PR_APPROVED` if a PR exists, `review_status` is approved, and `needs_user_input == false`.
+- `WAITING_ON_REVIEW` if a PR exists and `review_status` is not approved.
 - `START` / `RUNNING` otherwise.
 
 State derivation uses only PR status plus the single `needs_user_input` flag; `last_state` is cached in `run.json`.
@@ -364,8 +364,8 @@ Precedence rule: `NEEDS_INPUT` has priority over `DONE`; if `needs_user_input=tr
 **Loop** (read `run.json`, derive state, dispatch):
 
 - **If `NEEDS_INPUT`**: send signal S:NEEDS_INPUT, payload: `{ questions }`. Block until user responds. Clear flag, persist answer, resume LLM. Retry: still wait for input.
-- **If PR submitted → `WAIT_REVIEW`**: set S:WAIT_REVIEW. Run poll script. If changes requested AND `latest_review_submitted_at > review_addressed_at` (new review event), exec trigger:fix-pr and record `review_addressed_at`. If approved, transition to CLEANUP. Retry: continue polling.
-- **If PR approved → `CLEANUP`**: set S:CLEANUP. Run trigger:merge-pr. On success, derive DONE from `pr.merged_at`. Retry: re-run trigger (idempotent).
+- **If PR submitted → `WAITING_ON_REVIEW`**: set S:WAITING_ON_REVIEW. Run poll script. If changes requested AND `latest_review_submitted_at > review_addressed_at` (new review event), exec trigger:fix-pr and record `review_addressed_at`. If approved, transition to PR_APPROVED. Retry: continue polling.
+- **If PR approved → `PR_APPROVED`**: set S:PR_APPROVED. Run trigger:merge-pr. On success, derive DONE from `pr.merged_at`. Retry: re-run trigger (idempotent).
 
 ### State transitions (ASCII)
 
@@ -386,17 +386,17 @@ Precedence rule: `NEEDS_INPUT` has priority over `DONE`; if `needs_user_input=tr
                           |          |
           PR submitted    |          | needs input
                           v          v
-                 +-------------------+    +---------------+
-                 |   WAIT_REVIEW     |    |  NEEDS_INPUT  |
-                 +-------------------+    +---------------+
+                 +------------------------+    +---------------+
+                 |   WAITING_ON_REVIEW    |    |  NEEDS_INPUT  |
+                 +------------------------+    +---------------+
                     |           |                |
        changes      |           | approved       | user responds
        requested    |           |                |
           |         |           v                v
-          v         |     +---------------+   (back to RUNNING
-  trigger:fix-pr    |     |    CLEANUP    |    or WAIT_REVIEW)
-  (back to          |     +---------------+
-   WAIT_REVIEW)     |           |
+          v         |     +------------------+   (back to RUNNING
+  trigger:fix-pr    |     |   PR_APPROVED    |    or WAITING_ON_REVIEW)
+  (back to          |     +------------------+
+   WAITING_ON_REVIEW)     |           |
                     |           | trigger:merge-pr
                     |           | pr.merged_at set
                     |           v
@@ -415,8 +415,8 @@ From any non-DONE state:
 | `START` (no state file) | State file missing | Start fresh with prompt |
 | `START` (session recorded) | Resume existing session | Resume session ID with prompt `"continue"` |
 | `NEEDS_INPUT` | Still waiting | Re-enter wait; do not re-send signal |
-| `WAIT_REVIEW` | Polling interrupted | Continue polling PR status |
-| `CLEANUP` | Merge may be partial | Re-run trigger:merge-pr (idempotent) |
+| `WAITING_ON_REVIEW` | Polling interrupted | Continue polling PR status |
+| `PR_APPROVED` | Merge may be partial | Re-run trigger:merge-pr (idempotent) |
 | `DONE` | Terminal | Exit immediately |
 
 ### Signal handling
@@ -432,8 +432,8 @@ From any non-DONE state:
 
 | Trigger | Invoked from | Description |
 |---------|-------------|-------------|
-| `trigger:fix-pr` | `WAIT_REVIEW` | Resume Codex to address review feedback and update the PR. |
-| `trigger:merge-pr` | `CLEANUP` | Merge the PR and run post-merge cleanup. Idempotent. |
+| `trigger:fix-pr` | `WAITING_ON_REVIEW` | Resume Codex to address review feedback and update the PR. |
+| `trigger:merge-pr` | `PR_APPROVED` | Merge the PR and run post-merge cleanup. Idempotent. |
 
 ### CLI callers
 
@@ -447,7 +447,7 @@ From any non-DONE state:
 ### Prompt
 Single prompt used for initial run and all resumes:
 
-```
+```text
 Use dev.do to implement the task, open a PR, wait for review, address feedback, and cleanup when approved.
 If needing input from user, use "$needs_input" skill to request user input.
 Task: [task]

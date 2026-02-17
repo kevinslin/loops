@@ -52,8 +52,8 @@ When the inner loop starts and encounters an existing state file, it is resuming
 |-------|-------------|
 | `START` | LLM has been launched with the initial prompt. Session is being established. |
 | `NEEDS_INPUT` | LLM needs input from a human before it can continue. |
-| `WAIT_REVIEW` | A PR has been submitted. Polling for reviewer feedback. |
-| `CLEANUP` | PR has been approved. Running merge and post-merge cleanup. |
+| `WAITING_ON_REVIEW` | A PR has been submitted. Polling for reviewer feedback. |
+| `PR_APPROVED` | PR has been approved. Running merge and post-merge cleanup. |
 | `DONE` | PR merged. Terminal state. |
 
 ### Logic
@@ -75,16 +75,16 @@ The inner loop reads `run.json`, derives state, and dispatches to the matching h
 - On response: clear `needs_user_input`, persist answer, resume LLM with user input.
 - **Retry** (crash while waiting): Still wait for input. The state file already records `NEEDS_INPUT`, so the loop re-enters the same handler.
 
-##### If PR submitted → `WAIT_REVIEW`
-- Set **S:WAIT_REVIEW**.
+##### If PR submitted → `WAITING_ON_REVIEW`
+- Set **S:WAITING_ON_REVIEW**.
 - Run poll script to check PR review status (fetches `latestReviews` from GitHub to get `latest_review_submitted_at`).
 - If reviewer requested changes AND `latest_review_submitted_at > review_addressed_at` (new review event): exec **trigger:fix-pr** (resume Codex to address feedback), then record `review_addressed_at = latest_review_submitted_at`.
 - If reviewer requested changes but `latest_review_submitted_at <= review_addressed_at`: skip re-invocation, continue polling with backoff (already addressed this review round).
-- If reviewer approved: transition to `CLEANUP`.
-- **Retry** (crash while polling): Continue polling. State file already says `WAIT_REVIEW`.
+- If reviewer approved: transition to `PR_APPROVED`.
+- **Retry** (crash while polling): Continue polling. State file already says `WAITING_ON_REVIEW`.
 
-##### If PR approved → `CLEANUP`
-- Set **S:CLEANUP**.
+##### If PR approved → `PR_APPROVED`
+- Set **S:PR_APPROVED**.
 - Run **trigger:merge-pr** (merge the PR and run post-merge cleanup).
 - On success: derive `DONE` from `pr.merged_at`.
 - **Retry** (crash during cleanup): Continue. Re-run merge trigger (idempotent).
@@ -108,18 +108,18 @@ The inner loop reads `run.json`, derives state, and dispatches to the matching h
                           |          |
           PR submitted    |          | needs input
                           v          v
-                 +-------------------+    +---------------+
-                 |   WAIT_REVIEW     |    |  NEEDS_INPUT  |
-                 +-------------------+    +---------------+
+                 +------------------------+    +---------------+
+                 |   WAITING_ON_REVIEW    |    |  NEEDS_INPUT  |
+                 +------------------------+    +---------------+
                     |           |                |
        changes      |           | approved       | user responds
        requested    |           |                |
           |         |           v                v
-          |         |     +---------------+   (back to RUNNING
-          v         |     |    CLEANUP    |    or WAIT_REVIEW)
-  trigger:fix-pr    |     +---------------+
+          |         |     +------------------+   (back to RUNNING
+          v         |     |   PR_APPROVED    |    or WAITING_ON_REVIEW)
+  trigger:fix-pr    |     +------------------+
   (back to          |           |
-   WAIT_REVIEW)     |           | trigger:merge-pr
+   WAITING_ON_REVIEW)     |           | trigger:merge-pr
                     |           | pr.merged_at set
                     |           v
                     |     +-------------+
@@ -137,8 +137,8 @@ From any non-DONE state:
 | `START` (no state file) | State file missing | Start fresh with prompt |
 | `START` (state file exists, session recorded) | Resume existing session | Resume session ID with prompt `"continue"` |
 | `NEEDS_INPUT` | Still waiting for input | Re-enter wait; do not re-send signal |
-| `WAIT_REVIEW` | Polling was interrupted | Continue polling PR status |
-| `CLEANUP` | Merge may be partial | Re-run trigger:merge-pr (idempotent) |
+| `WAITING_ON_REVIEW` | Polling was interrupted | Continue polling PR status |
+| `PR_APPROVED` | Merge may be partial | Re-run trigger:merge-pr (idempotent) |
 | `DONE` | Terminal | Exit immediately |
 
 ---
@@ -172,7 +172,7 @@ From any non-DONE state:
 ### Important Context
 - `_handle_state` behavior is encoded in explicit state branches inside `run_inner_loop`.
 - `NEEDS_INPUT` blocks until handoff returns a non-empty response.
-- `CLEANUP` runs trigger:merge-pr once per PR URL, then continues polling for merge.
+- `PR_APPROVED` runs trigger:merge-pr once per PR URL, then continues polling for merge.
 - Default inner-loop prompt includes: `If needing input from user, use "$needs_input" skill to request user input.`
 
 ---
@@ -195,16 +195,16 @@ From any non-DONE state:
 - [x] Refactor `run_inner_loop` into a persistent state loop.
 - [x] Ensure `PROMPT_TEMPLATE` includes explicit `$needs_input` instruction.
 - [x] `RUNNING` / `START`: invoke Codex, persist session/output-derived PR metadata.
-- [x] `WAIT_REVIEW`: poll PR status with backoff and persist changes.
+- [x] `WAITING_ON_REVIEW`: poll PR status with backoff and persist changes.
 - [x] `NEEDS_INPUT`: block for user handoff, persist response, clear input flag.
-- [x] `CLEANUP` / `PR_APPROVED`: run trigger:merge-pr and continue polling for merged state.
+- [x] `PR_APPROVED`: run trigger:merge-pr and continue polling for merged state.
 - [x] Add guardrails (max iterations, idle poll escalation to `NEEDS_INPUT`, structured logs).
 
 ### Phase 4: Add explicit retry/crash recovery
 - [ ] Ensure START state detects existing session and resumes with `"continue"` prompt.
 - [ ] Ensure NEEDS_INPUT retry re-enters wait without re-sending signal.
-- [ ] Ensure WAIT_REVIEW retry continues polling without side effects.
-- [ ] Ensure CLEANUP retry re-runs trigger:merge-pr idempotently.
+- [ ] Ensure WAITING_ON_REVIEW retry continues polling without side effects.
+- [ ] Ensure PR_APPROVED retry re-runs trigger:merge-pr idempotently.
 - [ ] Add integration tests for crash-resume scenarios per state.
 
 ### Phase 5: Verification and docs
@@ -294,7 +294,7 @@ Result:
 ## Notes
 
 - Simplification kept: model output is advisory; persisted state drives lifecycle.
-- State names aligned with operational semantics: `WAIT_REVIEW` (was `WAITING_ON_REVIEW`), `CLEANUP` (was `PR_APPROVED`).
+- State names aligned with current implementation: `WAITING_ON_REVIEW` and `PR_APPROVED`.
 - Triggers (`trigger:fix-pr`, `trigger:merge-pr`) are named actions invoked by the loop, not model-initiated.
 - Implemented files:
   - `loops/run_record.py`
