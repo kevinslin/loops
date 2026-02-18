@@ -77,6 +77,9 @@ Top-level config file: `.loops/config.json`
 - `provider_config.status_field` (string, optional, default `"Status"`): Project field name to map task status.
 - `provider_config.page_size` (integer, optional, default `50`): GraphQL page size.
 - `provider_config.github_token` (string, optional): Overrides token used by the provider once launched.
+- `provider_config.filters` (string[], optional): provider-side `key=value` filters. Supported keys:
+  - `repository=<owner>/<repo>` (repeatable; multiple repository filters are OR)
+  - `tag=<label-name>` (repeatable; multiple tag filters are AND)
 - `provider_config` is validated by the provider's typed Pydantic model (unknown keys and invalid types fail fast).
 - Required provider secrets are declared by provider metadata and validated from env before provider construction.
 - `loop_config` (object, optional):
@@ -162,6 +165,7 @@ Notes:
 - `--task-url` forces foreground execution for that run (`sync_mode=true`) so targeted runs are interactive and deterministic.
 - URL matching for `--task-url` compares normalized URLs (scheme/host case-insensitive, query/fragment removed, trailing slash ignored).
 - `--task-url` bypasses ready-status filtering for the selected task and raises an error when the URL is missing or ambiguous in poll results.
+- Provider filters (`provider_config.filters`) are applied during provider polling before outer-loop status filtering.
 - `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`, and `LOOPS_RUN_DIR` are injected into each launched inner-loop process.
 - PR approval is detected from GitHub review decision or from allowlisted approval comments configured in `loop_config`.
 
