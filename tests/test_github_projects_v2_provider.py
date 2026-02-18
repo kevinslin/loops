@@ -558,10 +558,10 @@ def test_poll_filtered_limit_counts_only_matched_items(monkeypatch) -> None:
             }
         }
     }
-    calls: list[str | None] = []
+    calls: list[tuple[str | None, int | None]] = []
 
     def fake_run(*, query, variables, github_token, gh_bin):
-        calls.append(variables.get("after"))
+        calls.append((variables.get("after"), variables.get("first")))
         if variables.get("after") is None:
             return first_page
         if variables.get("after") == "cursor-1":
@@ -581,7 +581,7 @@ def test_poll_filtered_limit_counts_only_matched_items(monkeypatch) -> None:
     )
     tasks = provider.poll(limit=1)
     assert [task.title for task in tasks] == ["Matched"]
-    assert calls == [None, "cursor-1"]
+    assert calls == [(None, 50), ("cursor-1", 50)]
 
 
 def test_poll_missing_cursor_raises(monkeypatch) -> None:

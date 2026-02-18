@@ -225,7 +225,7 @@ class GithubProjectsV2TaskProvider:
             remaining = None if limit is None else max(limit - len(tasks), 0)
             if remaining == 0:
                 return tasks
-            page_size = self._page_size(remaining)
+            page_size = self._page_size(remaining, filtered=not self.filters.is_empty())
             response = _run_gh_graphql(
                 query=_select_query(locator.owner_type),
                 variables={
@@ -255,8 +255,10 @@ class GithubProjectsV2TaskProvider:
             if not after:
                 raise RuntimeError("Pagination missing endCursor while hasNextPage=true")
 
-    def _page_size(self, remaining: int | None) -> int:
+    def _page_size(self, remaining: int | None, *, filtered: bool) -> int:
         if remaining is None:
+            return self.config.page_size
+        if filtered:
             return self.config.page_size
         return min(self.config.page_size, remaining)
 
