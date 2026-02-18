@@ -55,6 +55,7 @@ UUID_PATTERN = re.compile(
 UserHandoffHandler = Callable[[dict[str, Any]], str]
 PRStatusFetcher = Callable[[RunPR], RunPR]
 SleepFn = Callable[[float], None]
+GH_PR_VIEW_JSON_FIELDS = "reviewDecision,mergedAt,url,number,latestReviews,comments"
 
 
 @dataclass(frozen=True)
@@ -971,7 +972,7 @@ def _fetch_pr_status_with_gh_with_context(
             "view",
             pr.url,
             "--json",
-            "reviewDecision,mergedAt,url,number,repository,latestReviews,comments",
+            GH_PR_VIEW_JSON_FIELDS,
         ],
         text=True,
         stdout=subprocess.PIPE,
@@ -1001,17 +1002,24 @@ def _fetch_pr_status_with_gh_with_context(
         )
         raise
 
+    pr_url = str(payload.get("url") or pr.url)
+    parsed_url_pr = _run_pr_from_url(pr_url)
+
     repo = pr.repo
-    repository = payload.get("repository")
-    if isinstance(repository, dict):
-        owner = repository.get("owner")
-        owner_login = owner.get("login") if isinstance(owner, dict) else None
-        name = repository.get("name")
-        if isinstance(owner_login, str) and isinstance(name, str):
-            repo = f"{owner_login}/{name}"
+    if parsed_url_pr is not None and parsed_url_pr.repo is not None:
+        repo = parsed_url_pr.repo
 
     number = payload.get("number")
-    parsed_number = number if isinstance(number, int) else pr.number
+    if isinstance(number, int):
+        parsed_number = number
+    elif isinstance(number, str) and number.isdigit():
+        parsed_number = int(number)
+    elif pr.number is not None:
+        parsed_number = pr.number
+    elif parsed_url_pr is not None:
+        parsed_number = parsed_url_pr.number
+    else:
+        parsed_number = None
     merged_at = payload.get("mergedAt")
     merged_at_str = str(merged_at) if merged_at is not None else None
     review_decision_raw = payload.get("reviewDecision")
@@ -1052,7 +1060,7 @@ def _fetch_pr_status_with_gh_with_context(
                 )
 
     updated_pr = RunPR(
-        url=str(payload.get("url") or pr.url),
+        url=pr_url,
         number=parsed_number,
         repo=repo,
         review_status=review_status,

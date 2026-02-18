@@ -809,6 +809,46 @@ def test_fetch_pr_status_logs_context_and_result(monkeypatch) -> None:
     assert any("PR status poll result" in message for message in messages)
 
 
+def test_fetch_pr_status_uses_supported_gh_json_fields(monkeypatch) -> None:
+    captured_args: list[str] = []
+    payload = {
+        "url": "https://github.com/acme/api/pull/42",
+        "number": 42,
+        "reviewDecision": "REVIEW_REQUIRED",
+        "mergedAt": None,
+        "latestReviews": [],
+        "comments": [],
+    }
+
+    def fake_subprocess_run(args, **_kwargs):
+        nonlocal captured_args
+        captured_args = list(args)
+        return subprocess.CompletedProcess(
+            args=["gh", "pr", "view"],
+            returncode=0,
+            stdout=json.dumps(payload),
+            stderr="",
+        )
+
+    monkeypatch.setattr(inner_loop_module.subprocess, "run", fake_subprocess_run)
+    settings = inner_loop_module.CommentApprovalSettings(
+        allowed_usernames=(),
+        pattern_text=r"^\s*/approve\b",
+        approval_regex=re.compile(r"^\s*/approve\b", re.IGNORECASE),
+    )
+    updated, _approved_by_comment, _approved_by = (
+        inner_loop_module._fetch_pr_status_with_gh_with_context(
+            RunPR(url="https://github.com/acme/api/pull/42"),
+            comment_approval=settings,
+        )
+    )
+
+    assert updated.repo == "acme/api"
+    assert "--json" in captured_args
+    json_fields = captured_args[captured_args.index("--json") + 1]
+    assert "repository" not in json_fields
+
+
 def test_fetch_pr_status_ignores_non_allowlisted_comment(monkeypatch) -> None:
     payload = {
         "url": "https://github.com/acme/api/pull/42",
