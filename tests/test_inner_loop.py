@@ -773,6 +773,42 @@ def test_fetch_pr_status_approves_from_allowlisted_comment(monkeypatch) -> None:
     assert approved_by == "maintainer"
 
 
+def test_fetch_pr_status_logs_context_and_result(monkeypatch) -> None:
+    payload = {
+        "url": "https://github.com/acme/api/pull/42",
+        "number": 42,
+        "repository": {"owner": {"login": "acme"}, "name": "api"},
+        "reviewDecision": "REVIEW_REQUIRED",
+        "mergedAt": None,
+        "latestReviews": [],
+        "comments": [],
+    }
+
+    def fake_subprocess_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess(
+            args=["gh", "pr", "view"],
+            returncode=0,
+            stdout=json.dumps(payload),
+            stderr="",
+        )
+
+    monkeypatch.setattr(inner_loop_module.subprocess, "run", fake_subprocess_run)
+    settings = inner_loop_module.CommentApprovalSettings(
+        allowed_usernames=("maintainer",),
+        pattern_text=r"^\s*/approve\b",
+        approval_regex=re.compile(r"^\s*/approve\b", re.IGNORECASE),
+    )
+    messages: list[str] = []
+    inner_loop_module._fetch_pr_status_with_gh_with_context(
+        RunPR(url="https://github.com/acme/api/pull/42"),
+        comment_approval=settings,
+        log_message=messages.append,
+    )
+
+    assert any("polling PR status via gh" in message for message in messages)
+    assert any("PR status poll result" in message for message in messages)
+
+
 def test_fetch_pr_status_ignores_non_allowlisted_comment(monkeypatch) -> None:
     payload = {
         "url": "https://github.com/acme/api/pull/42",
