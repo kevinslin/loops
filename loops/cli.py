@@ -16,12 +16,14 @@ from loops.inner_loop import reset_run_record, run_inner_loop
 from loops.outer_loop import (
     InnerLoopCommandConfig,
     INNER_LOOP_RUNS_DIR_NAME,
+    LATEST_LOOPS_CONFIG_VERSION,
     OuterLoopConfig,
     OuterLoopRunner,
     OuterLoopState,
     build_inner_loop_launcher,
     build_provider,
     load_config,
+    upgrade_config_payload,
     write_outer_state,
 )
 from loops.providers.github_projects_v2 import GITHUB_PROJECTS_V2_PROVIDER_ID
@@ -207,6 +209,42 @@ def init_command(loops_root: Path, force: bool) -> None:
     click.echo(f"Config: {config_path}")
 
 
+@main.command("doctor")
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=Path(".loops/config.json"),
+    show_default=True,
+    help="Path to the loops config JSON.",
+)
+def doctor_command(config_path: Path) -> None:
+    """Upgrade config.json to the latest schema version and defaults."""
+
+    resolved_path = config_path.resolve()
+    if not resolved_path.exists():
+        raise click.ClickException(f"Config does not exist: {resolved_path}")
+
+    try:
+        payload = json.loads(resolved_path.read_text())
+        upgraded_payload, changed = upgrade_config_payload(payload)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if changed:
+        resolved_path.write_text(
+            json.dumps(upgraded_payload, indent=2, sort_keys=True) + "\n"
+        )
+        click.echo(
+            f"Upgraded config to version {LATEST_LOOPS_CONFIG_VERSION}: {resolved_path}"
+        )
+        return
+
+    click.echo(
+        f"Config already up to date (version {LATEST_LOOPS_CONFIG_VERSION}): {resolved_path}"
+    )
+
+
 def _run_outer_loop(
     *,
     config_path: Path,
@@ -282,6 +320,7 @@ def _build_default_config() -> dict[str, Any]:
 
     defaults = OuterLoopConfig()
     return {
+        "version": LATEST_LOOPS_CONFIG_VERSION,
         "provider_id": GITHUB_PROJECTS_V2_PROVIDER_ID,
         "provider_config": {
             "url": "https://github.com/orgs/YOUR_ORG/projects/1",

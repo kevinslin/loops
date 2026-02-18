@@ -164,12 +164,13 @@ Key types:
 
 ### Config file
 - Default path: `.loops/config.json`
-- Top-level keys: `provider_id`, `provider_config`, `loop_config`, `inner_loop`
+- Top-level keys: `version`, `provider_id`, `provider_config`, `loop_config`, `inner_loop`
 - `inner_loop` keys: `command`, `working_dir`, `env`, `append_task_url`
 
 Config shape:
 ```ts
 type LoopsConfigFile = {
+    version: number
     provider_id: "github_projects_v2"
     provider_config: GithubProjectsV2TaskProviderConfig
     loop_config?: OuterLoopConfig
@@ -204,6 +205,8 @@ type GithubProjectsV2TaskProviderConfig = {
 ```
 
 Notes:
+- `version` tracks config schema revisions; legacy configs without `version` are treated as version `0`.
+- `loops doctor` upgrades `config.json` to the latest supported version and fills missing `loop_config` keys with defaults.
 - `provider_id` currently supports only `"github_projects_v2"`.
 - `provider_config` is validated by the provider's Pydantic model.
 - Required provider secrets are validated from environment variables before provider construction.
@@ -439,6 +442,7 @@ From any non-DONE state:
 
 - `python -m loops` is the top-level wrapper CLI.
 - `python -m loops init` initializes `.loops/` scaffolding (`jobs/`, logs, state, default config).
+- `python -m loops doctor` upgrades config schema/default values in `config.json`.
 - `python -m loops run` starts the outer loop runner.
 - `python -m loops inner-loop` runs one inner-loop execution for a run directory.
 - `python -m loops signal` enqueues a run-local signal (MVP: `NEEDS_INPUT`).

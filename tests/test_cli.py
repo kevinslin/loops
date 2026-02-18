@@ -9,7 +9,11 @@ import loops.cli as cli_module
 
 from loops.__main__ import _normalize_argv, entrypoint
 from loops.cli import main
-from loops.outer_loop import LoopsConfig, OuterLoopConfig
+from loops.outer_loop import (
+    LATEST_LOOPS_CONFIG_VERSION,
+    LoopsConfig,
+    OuterLoopConfig,
+)
 from loops.run_record import RunPR, RunRecord, Task, read_run_record, write_run_record
 
 
@@ -26,6 +30,7 @@ def test_init_creates_default_loops_structure(tmp_path: Path) -> None:
     assert (loops_root / "jobs").exists()
 
     config_payload = json.loads((loops_root / "config.json").read_text())
+    assert config_payload["version"] == LATEST_LOOPS_CONFIG_VERSION
     assert config_payload["provider_id"] == "github_projects_v2"
     assert config_payload["loop_config"]["sync_mode"] is False
     assert config_payload["loop_config"]["approval_comment_usernames"] == []
@@ -67,7 +72,7 @@ def test_init_force_overwrites_existing_config(tmp_path: Path) -> None:
 
 
 def test_normalize_argv_preserves_known_subcommands() -> None:
-    argv = ["python", "init"]
+    argv = ["python", "doctor"]
     assert _normalize_argv(argv) == argv
 
 
@@ -282,6 +287,7 @@ def test_run_outer_loop_task_url_implies_run_once_and_force(
     config_path = tmp_path / "config.json"
     config_path.write_text("{}")
     loaded = LoopsConfig(
+        version=LATEST_LOOPS_CONFIG_VERSION,
         provider_id="github_projects_v2",
         provider_config={
             "url": "https://github.com/orgs/default/projects/1",
@@ -359,3 +365,39 @@ def test_run_outer_loop_task_url_implies_run_once_and_force(
     assert captured["run_once_limit"] == 7
     assert captured["run_once_task_url"] == "https://github.com/acme/api/issues/9"
     assert "run_forever_limit" not in captured
+
+
+def test_doctor_upgrades_legacy_config(tmp_path: Path) -> None:
+    runner = CliRunner()
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "provider_id": "github_projects_v2",
+                "provider_config": {"url": "https://github.com/orgs/acme/projects/7"},
+                "loop_config": {"task_ready_status": "Todo"},
+            }
+        )
+    )
+
+    result = runner.invoke(main, ["doctor", "--config", str(config_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "Upgraded config to version" in result.output
+    payload = json.loads(config_path.read_text())
+    assert payload["version"] == LATEST_LOOPS_CONFIG_VERSION
+    assert payload["provider_config"]["url"] == "https://github.com/orgs/acme/projects/7"
+    assert payload["loop_config"]["task_ready_status"] == "Todo"
+    assert payload["loop_config"]["parallel_tasks"] is False
+    assert payload["loop_config"]["approval_comment_usernames"] == []
+
+
+def test_doctor_reports_when_config_is_up_to_date(tmp_path: Path) -> None:
+    runner = CliRunner()
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(cli_module._build_default_config()))
+
+    result = runner.invoke(main, ["doctor", "--config", str(config_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "Config already up to date" in result.output

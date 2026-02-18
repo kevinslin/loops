@@ -32,6 +32,7 @@ DEFAULT_POLL_INTERVAL_SECONDS = 30
 DEFAULT_PARALLEL_TASKS_LIMIT = 5
 DEFAULT_TASK_READY_STATUS = "Ready"
 INNER_LOOP_RUNS_DIR_NAME = "jobs"
+LATEST_LOOPS_CONFIG_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -108,6 +109,7 @@ class InnerLoopCommandConfig:
 class LoopsConfig:
     """Top-level Loops configuration loaded from JSON."""
 
+    version: int
     provider_id: str
     provider_config: dict[str, Any]
     loop_config: OuterLoopConfig
@@ -267,8 +269,7 @@ def load_config(path: str | Path) -> LoopsConfig:
     """Load a LoopsConfig from a JSON file."""
 
     payload = json.loads(Path(path).read_text())
-    if not isinstance(payload, dict):
-        raise TypeError("Config must be a JSON object")
+    payload, _ = upgrade_config_payload(payload)
     provider_id = payload.get("provider_id")
     if not isinstance(provider_id, str) or not provider_id:
         raise TypeError("provider_id is required and must be a string")
@@ -287,11 +288,50 @@ def load_config(path: str | Path) -> LoopsConfig:
             base_dir=base_dir,
         )
     return LoopsConfig(
+        version=_load_config_version(payload),
         provider_id=provider_id,
         provider_config=provider_config,
         loop_config=loop_config,
         inner_loop=inner_loop,
     )
+
+
+def upgrade_config_payload(payload: Any) -> tuple[dict[str, Any], bool]:
+    """Upgrade a config payload in-memory to the latest schema version."""
+
+    if not isinstance(payload, dict):
+        raise TypeError("Config must be a JSON object")
+    upgraded = dict(payload)
+    changed = False
+    version = _load_config_version(upgraded)
+
+    if version > LATEST_LOOPS_CONFIG_VERSION:
+        raise ValueError(
+            f"Unsupported config version: {version}. "
+            f"Latest supported version is {LATEST_LOOPS_CONFIG_VERSION}."
+        )
+
+    if version < LATEST_LOOPS_CONFIG_VERSION:
+        upgraded["version"] = LATEST_LOOPS_CONFIG_VERSION
+        changed = True
+
+    existing_loop_payload = upgraded.get("loop_config")
+    if existing_loop_payload is None:
+        loop_payload: dict[str, Any] = {}
+    elif isinstance(existing_loop_payload, dict):
+        loop_payload = dict(existing_loop_payload)
+    else:
+        raise TypeError("loop_config must be an object")
+
+    for key, value in _default_loop_config_payload().items():
+        if key not in loop_payload:
+            loop_payload[key] = value
+            changed = True
+
+    if existing_loop_payload != loop_payload:
+        upgraded["loop_config"] = loop_payload
+
+    return upgraded, changed
 
 
 def build_provider(config: LoopsConfig) -> TaskProvider:
@@ -453,6 +493,21 @@ def _load_outer_loop_config(payload: Any) -> OuterLoopConfig:
     )
 
 
+def _default_loop_config_payload() -> dict[str, Any]:
+    defaults = OuterLoopConfig()
+    return {
+        "poll_interval_seconds": defaults.poll_interval_seconds,
+        "parallel_tasks": defaults.parallel_tasks,
+        "parallel_tasks_limit": defaults.parallel_tasks_limit,
+        "sync_mode": defaults.sync_mode,
+        "emit_on_first_run": defaults.emit_on_first_run,
+        "force": defaults.force,
+        "task_ready_status": defaults.task_ready_status,
+        "approval_comment_usernames": list(defaults.approval_comment_usernames),
+        "approval_comment_pattern": defaults.approval_comment_pattern,
+    }
+
+
 def _validate_required_secrets(
     provider: LoopsProviderConfig,
     *,
@@ -535,6 +590,15 @@ def _load_str_list(
     ):
         raise TypeError(f"{key} must be a list of strings")
     return tuple(candidate)
+
+
+def _load_config_version(payload: dict[str, Any]) -> int:
+    value = payload.get("version", 0)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError("version must be an integer")
+    if value < 0:
+        raise ValueError("version must be >= 0")
+    return value
 
 
 def _is_ready(task: Task, config: OuterLoopConfig) -> bool:

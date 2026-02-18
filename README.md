@@ -71,6 +71,7 @@ Loops writes runtime state under `.loops/`:
 Top-level config file: `.loops/config.json`
 
 - `provider_id` (string, required): currently only `"github_projects_v2"`.
+- `version` (integer, required for latest schema): config schema version. Legacy files without this field are treated as version `0`; latest is `1`.
 - `provider_config` (object, required):
 - `provider_config.url` (string, required): GitHub Projects V2 URL, for example `https://github.com/orgs/acme/projects/7`.
 - `provider_config.status_field` (string, optional, default `"Status"`): Project field name to map task status.
@@ -112,11 +113,13 @@ Subcommands:
 - `run`: run the outer loop runner.
 - `inner-loop`: run inner loop for one run directory.
 - `signal`: enqueue a state signal for a run directory.
+- `doctor`: upgrade config schema/default keys in `config.json`.
 
 Examples:
 
 ```sh
 loops init
+loops doctor
 loops run --run-once
 loops inner-loop --run-dir .loops/jobs/2026-02-09-example-task-123
 loops signal --run-dir .loops/jobs/2026-02-09-example-task-123 --message "Need approval"
@@ -161,6 +164,23 @@ Notes:
 - `--task-url` bypasses ready-status filtering for the selected task and raises an error when the URL is missing or ambiguous in poll results.
 - `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`, and `LOOPS_RUN_DIR` are injected into each launched inner-loop process.
 - PR approval is detected from GitHub review decision or from allowlisted approval comments configured in `loop_config`.
+
+### `loops doctor`
+
+Upgrades `config.json` to the latest supported schema version and fills missing
+`loop_config` keys with current defaults without overwriting existing values.
+
+Options:
+
+- `--config PATH`: Config file path. Default: `.loops/config.json`.
+- `-h, --help`: Show help.
+
+Examples:
+
+```sh
+loops doctor
+loops doctor --config /path/to/config.json
+```
 
 ### `loops inner-loop`
 
