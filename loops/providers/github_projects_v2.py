@@ -24,6 +24,7 @@ class GithubProjectsV2TaskProviderConfig(BaseModel):
     status_field: str = "Status"
     page_size: int = Field(default=50, gt=0)
     github_token: str | None = None
+    filters: list[str] = Field(default_factory=list)
 
 
 GITHUB_PROJECTS_V2_PROVIDER_CONFIG = LoopsProviderConfig(
@@ -48,6 +49,15 @@ class ProjectLocator:
     owner_type: OwnerType
     login: str
     number: int
+
+
+@dataclass(frozen=True)
+class ProjectFilters:
+    repositories: tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
+
+    def is_empty(self) -> bool:
+        return not self.repositories and not self.tags
 
 
 def parse_project_url(url: str) -> ProjectLocator:
@@ -103,6 +113,11 @@ query($login: String!, $number: Int!, $after: String, $first: Int!, $statusField
               repository {
                 nameWithOwner
               }
+              labels(first: 100) {
+                nodes {
+                  name
+                }
+              }
             }
             ... on PullRequest {
               id
@@ -112,6 +127,11 @@ query($login: String!, $number: Int!, $after: String, $first: Int!, $statusField
               updatedAt
               repository {
                 nameWithOwner
+              }
+              labels(first: 100) {
+                nodes {
+                  name
+                }
               }
             }
           }
@@ -153,6 +173,11 @@ query($login: String!, $number: Int!, $after: String, $first: Int!, $statusField
               repository {
                 nameWithOwner
               }
+              labels(first: 100) {
+                nodes {
+                  name
+                }
+              }
             }
             ... on PullRequest {
               id
@@ -162,6 +187,11 @@ query($login: String!, $number: Int!, $after: String, $first: Int!, $statusField
               updatedAt
               repository {
                 nameWithOwner
+              }
+              labels(first: 100) {
+                nodes {
+                  name
+                }
               }
             }
           }
@@ -181,6 +211,7 @@ class GithubProjectsV2TaskProvider:
     ) -> None:
         self.config = config
         self.gh_bin = gh_bin
+        self.filters = _parse_filters(config.filters)
 
     def poll(self, limit: int | None = None) -> list[Task]:
         if limit is not None and limit <= 0:
@@ -212,6 +243,8 @@ class GithubProjectsV2TaskProvider:
                 task = _map_item_to_task(item)
                 if task is None:
                     continue
+                if not _matches_filters(task, item, self.filters):
+                    continue
                 tasks.append(task)
                 if limit is not None and len(tasks) >= limit:
                     return tasks
@@ -236,6 +269,51 @@ def _select_query(owner_type: OwnerType) -> str:
 
 def _normalize_query(query: str) -> str:
     return " ".join(query.split())
+
+
+def _parse_filters(expressions: list[str]) -> ProjectFilters:
+    repositories: list[str] = []
+    tags: list[str] = []
+    for index, raw_expression in enumerate(expressions):
+        expression = raw_expression.strip()
+        if not expression:
+            raise ValueError(f"filters[{index}] must be non-empty")
+        if "=" not in expression:
+            raise ValueError(
+                f"filters[{index}] must use key=value syntax: {raw_expression!r}"
+            )
+        raw_key, raw_value = expression.split("=", 1)
+        key = raw_key.strip().casefold()
+        value = raw_value.strip().casefold()
+        if not key:
+            raise ValueError(f"filters[{index}] key must be non-empty")
+        if not value:
+            raise ValueError(f"filters[{index}] value must be non-empty")
+        if key == "repository":
+            repositories.append(value)
+            continue
+        if key == "tag":
+            tags.append(value)
+            continue
+        raise ValueError(
+            f"Unsupported provider filter key {key!r}; supported keys: repository, tag"
+        )
+
+    return ProjectFilters(
+        repositories=_dedupe_preserve_order(repositories),
+        tags=_dedupe_preserve_order(tags),
+    )
+
+
+def _dedupe_preserve_order(values: list[str]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    return tuple(deduped)
 
 
 def _resolve_github_token(config: GithubProjectsV2TaskProviderConfig) -> str:
@@ -329,6 +407,45 @@ def _extract_status_value(field_value: dict[str, Any] | None) -> str:
     if typename == "ProjectV2ItemFieldTextValue":
         return str(field_value.get("text") or "")
     return ""
+
+
+def _extract_item_tags(item: dict[str, Any]) -> tuple[str, ...]:
+    content = item.get("content") or {}
+    labels = content.get("labels") or {}
+    nodes = labels.get("nodes") or []
+    tags: list[str] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        name = node.get("name")
+        if not isinstance(name, str):
+            continue
+        normalized = name.strip().casefold()
+        if not normalized:
+            continue
+        tags.append(normalized)
+    return _dedupe_preserve_order(tags)
+
+
+def _matches_filters(
+    task: Task,
+    item: dict[str, Any],
+    filters: ProjectFilters,
+) -> bool:
+    if filters.is_empty():
+        return True
+
+    if filters.repositories:
+        repository = (task.repo or "").strip().casefold()
+        if repository not in filters.repositories:
+            return False
+
+    if filters.tags:
+        item_tags = set(_extract_item_tags(item))
+        if not all(tag in item_tags for tag in filters.tags):
+            return False
+
+    return True
 
 
 def _map_item_to_task(item: dict[str, Any]) -> Task | None:

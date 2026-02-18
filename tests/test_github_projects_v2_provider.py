@@ -5,6 +5,7 @@ from loops.providers.github_projects_v2 import (
     GithubProjectsV2TaskProviderConfig,
     _extract_status_value,
     _map_item_to_task,
+    _parse_filters,
     _run_gh_graphql,
     parse_project_url,
 )
@@ -32,6 +33,34 @@ def test_parse_project_url_invalid() -> None:
 def test_parse_project_url_non_positive() -> None:
     with pytest.raises(ValueError):
         parse_project_url("https://github.com/orgs/acme/projects/0")
+
+
+def test_parse_filters_normalizes_values() -> None:
+    parsed = _parse_filters(
+        [
+            " repository = Acme/Repo ",
+            "tag=Backend",
+            "tag=priority/high",
+            "tag=backend",
+        ]
+    )
+    assert parsed.repositories == ("acme/repo",)
+    assert parsed.tags == ("backend", "priority/high")
+
+
+def test_parse_filters_rejects_invalid_expression() -> None:
+    with pytest.raises(ValueError, match="key=value"):
+        _parse_filters(["repository"])
+
+
+def test_parse_filters_rejects_unsupported_key() -> None:
+    with pytest.raises(ValueError, match="Unsupported provider filter key"):
+        _parse_filters(["repo=acme/repo"])
+
+
+def test_parse_filters_rejects_empty_value() -> None:
+    with pytest.raises(ValueError, match="value must be non-empty"):
+        _parse_filters(["tag=  "])
 
 
 def test_extract_status_value() -> None:
@@ -180,6 +209,210 @@ def test_poll_handles_empty_results(monkeypatch) -> None:
     assert tasks == []
 
 
+def test_poll_filters_by_repository(monkeypatch) -> None:
+    response = {
+        "data": {
+            "organization": {
+                "projectV2": {
+                    "items": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [
+                            {
+                                "id": "PVTI_1",
+                                "fieldValueByName": {
+                                    "__typename": "ProjectV2ItemFieldSingleSelectValue",
+                                    "name": "Ready",
+                                },
+                                "content": {
+                                    "__typename": "Issue",
+                                    "id": "ISSUE_1",
+                                    "title": "Repo A task",
+                                    "url": "https://github.com/acme/repo-a/issues/1",
+                                    "createdAt": "2026-02-03T00:00:00Z",
+                                    "updatedAt": "2026-02-03T01:00:00Z",
+                                    "repository": {"nameWithOwner": "acme/repo-a"},
+                                },
+                            },
+                            {
+                                "id": "PVTI_2",
+                                "fieldValueByName": {
+                                    "__typename": "ProjectV2ItemFieldSingleSelectValue",
+                                    "name": "Ready",
+                                },
+                                "content": {
+                                    "__typename": "Issue",
+                                    "id": "ISSUE_2",
+                                    "title": "Repo B task",
+                                    "url": "https://github.com/acme/repo-b/issues/2",
+                                    "createdAt": "2026-02-03T00:00:00Z",
+                                    "updatedAt": "2026-02-03T01:00:00Z",
+                                    "repository": {"nameWithOwner": "acme/repo-b"},
+                                },
+                            },
+                        ],
+                    }
+                }
+            }
+        }
+    }
+
+    def fake_run(*, query, variables, github_token, gh_bin):
+        return response
+
+    from loops.providers import github_projects_v2
+
+    monkeypatch.setattr(github_projects_v2, "_run_gh_graphql", fake_run)
+
+    provider = GithubProjectsV2TaskProvider(
+        GithubProjectsV2TaskProviderConfig(
+            url="https://github.com/orgs/acme/projects/1",
+            github_token="token",
+            filters=["repository=acme/repo-a"],
+        )
+    )
+    tasks = provider.poll()
+    assert [task.title for task in tasks] == ["Repo A task"]
+
+
+def test_poll_filters_by_tag(monkeypatch) -> None:
+    response = {
+        "data": {
+            "organization": {
+                "projectV2": {
+                    "items": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [
+                            {
+                                "id": "PVTI_1",
+                                "fieldValueByName": {
+                                    "__typename": "ProjectV2ItemFieldSingleSelectValue",
+                                    "name": "Ready",
+                                },
+                                "content": {
+                                    "__typename": "Issue",
+                                    "id": "ISSUE_1",
+                                    "title": "Backend task",
+                                    "url": "https://github.com/acme/repo/issues/1",
+                                    "createdAt": "2026-02-03T00:00:00Z",
+                                    "updatedAt": "2026-02-03T01:00:00Z",
+                                    "repository": {"nameWithOwner": "acme/repo"},
+                                    "labels": {"nodes": [{"name": "backend"}]},
+                                },
+                            },
+                            {
+                                "id": "PVTI_2",
+                                "fieldValueByName": {
+                                    "__typename": "ProjectV2ItemFieldSingleSelectValue",
+                                    "name": "Ready",
+                                },
+                                "content": {
+                                    "__typename": "Issue",
+                                    "id": "ISSUE_2",
+                                    "title": "Frontend task",
+                                    "url": "https://github.com/acme/repo/issues/2",
+                                    "createdAt": "2026-02-03T00:00:00Z",
+                                    "updatedAt": "2026-02-03T01:00:00Z",
+                                    "repository": {"nameWithOwner": "acme/repo"},
+                                    "labels": {"nodes": [{"name": "frontend"}]},
+                                },
+                            },
+                        ],
+                    }
+                }
+            }
+        }
+    }
+
+    def fake_run(*, query, variables, github_token, gh_bin):
+        return response
+
+    from loops.providers import github_projects_v2
+
+    monkeypatch.setattr(github_projects_v2, "_run_gh_graphql", fake_run)
+
+    provider = GithubProjectsV2TaskProvider(
+        GithubProjectsV2TaskProviderConfig(
+            url="https://github.com/orgs/acme/projects/1",
+            github_token="token",
+            filters=["tag=backend"],
+        )
+    )
+    tasks = provider.poll()
+    assert [task.title for task in tasks] == ["Backend task"]
+
+
+def test_poll_filters_require_all_tags(monkeypatch) -> None:
+    response = {
+        "data": {
+            "organization": {
+                "projectV2": {
+                    "items": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [
+                            {
+                                "id": "PVTI_1",
+                                "fieldValueByName": {
+                                    "__typename": "ProjectV2ItemFieldSingleSelectValue",
+                                    "name": "Ready",
+                                },
+                                "content": {
+                                    "__typename": "Issue",
+                                    "id": "ISSUE_1",
+                                    "title": "Full match",
+                                    "url": "https://github.com/acme/repo/issues/1",
+                                    "createdAt": "2026-02-03T00:00:00Z",
+                                    "updatedAt": "2026-02-03T01:00:00Z",
+                                    "repository": {"nameWithOwner": "acme/repo"},
+                                    "labels": {
+                                        "nodes": [
+                                            {"name": "backend"},
+                                            {"name": "priority/high"},
+                                        ]
+                                    },
+                                },
+                            },
+                            {
+                                "id": "PVTI_2",
+                                "fieldValueByName": {
+                                    "__typename": "ProjectV2ItemFieldSingleSelectValue",
+                                    "name": "Ready",
+                                },
+                                "content": {
+                                    "__typename": "Issue",
+                                    "id": "ISSUE_2",
+                                    "title": "Partial match",
+                                    "url": "https://github.com/acme/repo/issues/2",
+                                    "createdAt": "2026-02-03T00:00:00Z",
+                                    "updatedAt": "2026-02-03T01:00:00Z",
+                                    "repository": {"nameWithOwner": "acme/repo"},
+                                    "labels": {"nodes": [{"name": "backend"}]},
+                                },
+                            },
+                        ],
+                    }
+                }
+            }
+        }
+    }
+
+    def fake_run(*, query, variables, github_token, gh_bin):
+        return response
+
+    from loops.providers import github_projects_v2
+
+    monkeypatch.setattr(github_projects_v2, "_run_gh_graphql", fake_run)
+
+    provider = GithubProjectsV2TaskProvider(
+        GithubProjectsV2TaskProviderConfig(
+            url="https://github.com/orgs/acme/projects/1",
+            github_token="token",
+            filters=["tag=backend", "tag=priority/high"],
+        )
+    )
+    tasks = provider.poll()
+    assert [task.title for task in tasks] == ["Full match"]
+
+
 def test_poll_paginates(monkeypatch) -> None:
     first_page = {
         "data": {
@@ -261,6 +494,93 @@ def test_poll_paginates(monkeypatch) -> None:
     )
     tasks = provider.poll()
     assert [task.title for task in tasks] == ["First", "Second"]
+    assert calls == [None, "cursor-1"]
+
+
+def test_poll_filtered_limit_counts_only_matched_items(monkeypatch) -> None:
+    first_page = {
+        "data": {
+            "organization": {
+                "projectV2": {
+                    "items": {
+                        "pageInfo": {"hasNextPage": True, "endCursor": "cursor-1"},
+                        "nodes": [
+                            {
+                                "id": "PVTI_1",
+                                "fieldValueByName": {
+                                    "__typename": "ProjectV2ItemFieldSingleSelectValue",
+                                    "name": "Ready",
+                                },
+                                "content": {
+                                    "__typename": "Issue",
+                                    "id": "ISSUE_1",
+                                    "title": "Unmatched",
+                                    "url": "https://github.com/acme/repo/issues/1",
+                                    "createdAt": "2026-02-03T00:00:00Z",
+                                    "updatedAt": "2026-02-03T01:00:00Z",
+                                    "repository": {"nameWithOwner": "acme/repo"},
+                                    "labels": {"nodes": [{"name": "frontend"}]},
+                                },
+                            }
+                        ],
+                    }
+                }
+            }
+        }
+    }
+    second_page = {
+        "data": {
+            "organization": {
+                "projectV2": {
+                    "items": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [
+                            {
+                                "id": "PVTI_2",
+                                "fieldValueByName": {
+                                    "__typename": "ProjectV2ItemFieldSingleSelectValue",
+                                    "name": "Ready",
+                                },
+                                "content": {
+                                    "__typename": "Issue",
+                                    "id": "ISSUE_2",
+                                    "title": "Matched",
+                                    "url": "https://github.com/acme/repo/issues/2",
+                                    "createdAt": "2026-02-03T00:00:00Z",
+                                    "updatedAt": "2026-02-03T01:00:00Z",
+                                    "repository": {"nameWithOwner": "acme/repo"},
+                                    "labels": {"nodes": [{"name": "backend"}]},
+                                },
+                            }
+                        ],
+                    }
+                }
+            }
+        }
+    }
+    calls: list[str | None] = []
+
+    def fake_run(*, query, variables, github_token, gh_bin):
+        calls.append(variables.get("after"))
+        if variables.get("after") is None:
+            return first_page
+        if variables.get("after") == "cursor-1":
+            return second_page
+        raise AssertionError("Unexpected pagination cursor")
+
+    from loops.providers import github_projects_v2
+
+    monkeypatch.setattr(github_projects_v2, "_run_gh_graphql", fake_run)
+
+    provider = GithubProjectsV2TaskProvider(
+        GithubProjectsV2TaskProviderConfig(
+            url="https://github.com/orgs/acme/projects/1",
+            github_token="token",
+            filters=["tag=backend"],
+        )
+    )
+    tasks = provider.poll(limit=1)
+    assert [task.title for task in tasks] == ["Matched"]
     assert calls == [None, "cursor-1"]
 
 
