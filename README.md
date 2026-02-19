@@ -205,7 +205,7 @@ LOOPS_RUN_DIR=.loops/jobs/2026-02-09-example-task-123 CODEX_CMD="codex exec --yo
 Behavior summary:
 
 - Reads and writes `run.json` as the authoritative state file.
-- Writes inner-loop orchestration logs to `run.log`.
+- Writes inner-loop orchestration logs to `run.log` and appends Codex output there.
 - Streams Codex/agent output to `agent.log`.
 - Uses `CODEX_CMD` if set; default command is `codex exec --yolo`.
 - Polls PR state with `gh pr view` when a PR is present.

@@ -189,7 +189,7 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
 
 - Codex turn behavior (`loops/inner_loop.py:601`):
   - Builds prompt (standard vs review-feedback path).
-  - Streams stdout/stderr into `agent.log` (`loops/inner_loop.py:539`).
+  - Streams stdout/stderr into `agent.log` and appends the same output to `run.log`.
   - Extracts session id and PR URL from output.
   - Sets `needs_user_input=true` on non-zero exits or successful turns with no PR detected.
 
@@ -267,7 +267,7 @@ Key logs and emit sites:
 - Review/merge polling failures: `loops/inner_loop.py:231`, `loops/inner_loop.py:375`.
 - Signal accepted (producer): `loops/state_signal.py:75`.
 - Signal applied/ignored (consumer): `loops/inner_loop.py:952`, `loops/inner_loop.py:956`, `loops/inner_loop.py:960`.
-- Agent streamed output destination: `agent.log` via `loops/inner_loop.py:556`.
+- Agent streamed output destination: `agent.log` (also mirrored to `run.log`).
 
 ## FAQ
 

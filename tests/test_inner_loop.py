@@ -135,6 +135,8 @@ def test_inner_loop_reaches_done_lifecycle(tmp_path, monkeypatch) -> None:
     assert result.last_state == "DONE"
     assert result.pr is not None
     assert result.pr.merged_at == "2026-02-09T00:00:02Z"
+    assert result.codex_session is not None
+    assert result.codex_session.id == "session-1"
     assert counter_path.read_text() == "2"  # RUNNING + PR_APPROVED cleanup
     run_log = (run_dir / "run.log").read_text()
     assert re.search(
@@ -142,8 +144,55 @@ def test_inner_loop_reaches_done_lifecycle(tmp_path, monkeypatch) -> None:
         run_log,
         re.MULTILINE,
     )
+    assert "Opened PR https://github.com/acme/api/pull/42" in run_log
+    assert "cleanup complete" in run_log
     assert "iteration 1 enter: state=RUNNING" in run_log
     assert "exit: next_state=DONE action=done_exit" in run_log
+
+
+def test_inner_loop_sets_needs_user_input_on_nonzero_codex_exit(
+    tmp_path, monkeypatch
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(run_dir)
+
+    failing_stub = tmp_path / "codex_failing_stub.py"
+    failing_stub.write_text(
+        "\n".join(
+            [
+                "import json",
+                "import sys",
+                "print(json.dumps({'session_id': 'session-failed'}))",
+                "print('codex simulated non-zero exit')",
+                "sys.exit(17)",
+                "",
+            ]
+        )
+    )
+    monkeypatch.setenv(
+        "CODEX_CMD",
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(failing_stub))}",
+    )
+
+    result = run_inner_loop(
+        run_dir,
+        sleep_fn=lambda _seconds: None,
+        max_iterations=5,
+    )
+
+    assert result.last_state == "NEEDS_INPUT"
+    assert result.codex_session is not None
+    assert result.codex_session.id == "session-failed"
+    assert result.needs_user_input is True
+    assert result.needs_user_input_payload == {
+        "message": "Codex exited with a non-zero status. Provide guidance.",
+        "context": {"exit_code": 17},
+    }
+
+    run_log = (run_dir / "run.log").read_text()
+    assert "codex simulated non-zero exit" in run_log
+    assert "[loops] codex exit code 17" in run_log
 
 
 def test_inner_loop_consumes_signal_and_uses_user_response_in_prompt(

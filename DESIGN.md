@@ -256,7 +256,7 @@ Task provider (GitHub Projects V2)
 - Uses `codex exec` to execute the single prompt and records a session id for resuming.
 - Is the single writer for `[INNER_LOOP_ROOT]/run.json`.
 - Consumes model-authored signals from a run-local queue and applies validated state changes to `run.json`.
-- Writes inner-loop orchestration logs to `[INNER_LOOP_ROOT]/run.log`.
+- Writes inner-loop orchestration logs to `[INNER_LOOP_ROOT]/run.log` and appends Codex output there.
 - Streams Codex/agent output to `[INNER_LOOP_ROOT]/agent.log`.
 - Supports a manual `--reset` operation to clear orchestration/session/input fields in `run.json` while preserving task metadata and existing PR link identity.
 
@@ -474,7 +474,7 @@ Task: [task]
 
 ### Logging
 - Outer loop logs: `[LOOPS_ROOT]/oloops.log`.
-- Inner loop orchestration logs: `[INNER_LOOP_ROOT]/run.log`.
+- Inner loop orchestration logs + Codex output mirror: `[INNER_LOOP_ROOT]/run.log`.
 - Agent/Codex logs: `[INNER_LOOP_ROOT]/agent.log`.
 
 ### Metrics (optional)
