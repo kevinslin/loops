@@ -97,7 +97,9 @@ def test_inner_loop_reaches_done_lifecycle(tmp_path, monkeypatch) -> None:
     stub = tmp_path / "codex_stub.py"
     _write_codex_stub(stub)
     counter_path = tmp_path / "counter.txt"
+    prompt_log_path = tmp_path / "prompts.log"
     monkeypatch.setenv("STUB_COUNTER_PATH", str(counter_path))
+    monkeypatch.setenv("STUB_PROMPT_LOG", str(prompt_log_path))
     monkeypatch.setenv(
         "CODEX_CMD",
         f"{shlex.quote(sys.executable)} {shlex.quote(str(stub))}",
@@ -148,6 +150,9 @@ def test_inner_loop_reaches_done_lifecycle(tmp_path, monkeypatch) -> None:
     assert "cleanup complete" in run_log
     assert "iteration 1 enter: state=RUNNING" in run_log
     assert "exit: next_state=DONE action=done_exit" in run_log
+    prompts = prompt_log_path.read_text()
+    assert "<state>START</state>" in prompts
+    assert "<state>PR_APPROVED</state>" in prompts
 
 
 def test_inner_loop_sets_needs_user_input_on_nonzero_codex_exit(
@@ -248,7 +253,9 @@ def test_inner_loop_consumes_signal_and_uses_user_response_in_prompt(
         'If needing input from user, use "$needs_input" skill to request user input.'
         in prompts
     )
+    assert "Do not merge until the state is exactly <state>PR_APPROVED</state>." in prompts
     assert "User input:\\nack: Need user decision" in prompts
+    assert "<state>START</state>" in prompts
 
 
 def test_inner_loop_uses_user_response_for_review_feedback_turn(
@@ -324,6 +331,7 @@ def test_inner_loop_uses_user_response_for_review_feedback_turn(
     prompts = prompt_log_path.read_text()
     assert "User input:\\nack: Need user decision" in prompts
     assert "has changes requested. Address review feedback" in prompts
+    assert "<state>WAITING_ON_REVIEW</state>" in prompts
 
 
 def test_inner_loop_resumes_from_waiting_on_review_without_codex(tmp_path, monkeypatch) -> None:

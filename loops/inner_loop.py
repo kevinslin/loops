@@ -36,8 +36,14 @@ PROMPT_TEMPLATE = (
     "Use dev.do to implement the task, open a PR, wait for review, address feedback, "
     "and cleanup when approved.\n"
     'If needing input from user, use "$needs_input" skill to request user input.\n'
+    "The current inner-loop state is passed via a trailing <state>...</state> tag; "
+    "initial state is <state>START</state>.\n"
+    "Do not merge until the state is exactly <state>PR_APPROVED</state>.\n"
     "Task: {task}\n"
 )
+PROMPT_STATE_START = "START"
+PROMPT_STATE_WAITING_ON_REVIEW = "WAITING_ON_REVIEW"
+PROMPT_STATE_PR_APPROVED = "PR_APPROVED"
 SIGNAL_OFFSET_FILE = "state_signals.offset"
 DEFAULT_MAX_ITERATIONS = 200
 DEFAULT_REVIEW_POLL_SECONDS = 5.0
@@ -635,20 +641,28 @@ def _build_prompt(
     base_prompt: Optional[str],
     *,
     user_response: Optional[str] = None,
+    state: Optional[str] = PROMPT_STATE_START,
 ) -> str:
     prompt = PROMPT_TEMPLATE.format(task=task_url)
     if user_response is not None and user_response.strip():
         prompt += f"\nUser input:\n{user_response.strip()}\n"
     if base_prompt:
         trimmed = base_prompt.rstrip()
-        return f"{trimmed}\n\n{prompt}"
+        prompt = f"{trimmed}\n\n{prompt}"
+    if state is not None:
+        prompt = _append_state_tag(prompt, state)
     return prompt
+
+
+def _append_state_tag(prompt: str, state: str) -> str:
+    state_value = state.strip().upper()
+    return f"{prompt.rstrip()}\n<state>{state_value}</state>\n"
 
 
 def _build_cleanup_prompt(task_url: str, base_prompt: Optional[str]) -> str:
-    prompt = _build_prompt(task_url, base_prompt)
+    prompt = _build_prompt(task_url, base_prompt, state=None)
     prompt += "\nPR is approved. Run cleanup now and report completion.\n"
-    return prompt
+    return _append_state_tag(prompt, PROMPT_STATE_PR_APPROVED)
 
 
 def _build_review_feedback_prompt(
@@ -658,12 +672,17 @@ def _build_review_feedback_prompt(
     *,
     user_response: Optional[str] = None,
 ) -> str:
-    prompt = _build_prompt(task_url, base_prompt, user_response=user_response)
+    prompt = _build_prompt(
+        task_url,
+        base_prompt,
+        user_response=user_response,
+        state=None,
+    )
     prompt += (
         f"\nPR {pr_url} has changes requested. Address review feedback, update the PR, "
         "and summarize what changed.\n"
     )
-    return prompt
+    return _append_state_tag(prompt, PROMPT_STATE_WAITING_ON_REVIEW)
 
 
 def _run_codex(command: list[str], prompt: str, agent_log: Path) -> tuple[str, int]:

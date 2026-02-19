@@ -459,7 +459,10 @@ Single prompt used for initial run and all resumes:
 ```text
 Use dev.do to implement the task, open a PR, wait for review, address feedback, and cleanup when approved.
 If needing input from user, use "$needs_input" skill to request user input.
+The current inner-loop state is passed via a trailing <state>...</state> tag; initial state is <state>START</state>.
+Do not merge until the state is exactly <state>PR_APPROVED</state>.
 Task: [task]
+<state>START</state>
 ```
 
 ## 7. PR review handling
@@ -467,7 +470,7 @@ Task: [task]
 - When a PR is opened, the inner loop records it in `run.json`.
 - The inner loop polls PR status and updates `pr.review_status`.
 - When a review requests changes, the inner loop records `latest_review_submitted_at` (the review's `submittedAt` timestamp from GitHub) and invokes Codex to address the feedback. After Codex runs, `review_addressed_at` is set to `latest_review_submitted_at`. On subsequent polls, the loop only re-invokes Codex if `latest_review_submitted_at > review_addressed_at`, indicating a genuinely new review event. This prevents duplicate fix attempts when the reviewer has not yet re-reviewed.
-- When approval is detected (GitHub review decision or allowlisted approval comment newer than latest `CHANGES_REQUESTED` review), the inner loop runs cleanup immediately; if cleanup fails it sets `needs_user_input=true`.
+- When approval is detected (GitHub review decision or allowlisted approval comment newer than latest `CHANGES_REQUESTED` review), the inner loop runs cleanup immediately and appends `<state>PR_APPROVED</state>` to that cleanup prompt; if cleanup fails it sets `needs_user_input=true`.
 
 ## 8. Error handling and recovery
 
