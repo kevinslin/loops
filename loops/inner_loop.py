@@ -444,6 +444,7 @@ def run_inner_loop(
             if cleanup_executed_for_pr != run_record.pr.url:
                 cleanup_prompt = _build_cleanup_prompt(run_record.task.url, base_prompt)
                 output, exit_code = _run_codex(command, cleanup_prompt, agent_log)
+                append_log(run_log, output)
                 if exit_code != 0:
                     run_record = _force_needs_input(
                         run_json_path,
@@ -741,6 +742,7 @@ def _run_codex_turn(
         )
 
     output, exit_code = _run_codex(command, prompt, agent_log)
+    append_log(run_log, output)
 
     session_id = _extract_session_id(output)
     codex_session = run_record.codex_session
@@ -754,8 +756,6 @@ def _run_codex_turn(
     needs_user_input = exit_code != 0
     needs_user_input_payload = run_record.needs_user_input_payload
     if exit_code != 0:
-        if output.startswith("[loops] codex invocation failed:"):
-            append_log(run_log, output)
         append_log(run_log, f"[loops] codex exit code {exit_code}")
         needs_user_input_payload = {
             "message": "Codex exited with a non-zero status. Provide guidance.",
