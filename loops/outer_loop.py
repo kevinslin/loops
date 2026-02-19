@@ -176,27 +176,73 @@ class OuterLoopRunner:
         self.loops_root.mkdir(parents=True, exist_ok=True)
         _inner_loop_runs_root(self.loops_root).mkdir(parents=True, exist_ok=True)
         state = read_outer_state(self.state_path)
+        first_run = not state.initialized
         poll_limit = None if forced_task_url is not None else limit
+        _log(
+            self.log_path,
+            "run_once.start "
+            f"first_run={first_run} "
+            f"poll_limit={poll_limit if poll_limit is not None else 'none'} "
+            f"forced_task_url={'set' if forced_task_url is not None else 'none'} "
+            f"emit_on_first_run={self.config.emit_on_first_run} "
+            f"force={self.config.force} "
+            f"ready_status={self.config.task_ready_status!r}",
+        )
+
         polled_tasks = self.provider.poll(poll_limit)
         if forced_task_url is not None:
-            ready_tasks = [_select_task_by_url(polled_tasks, forced_task_url)]
+            selected_task = _select_task_by_url(polled_tasks, forced_task_url)
+            ready_tasks = [selected_task]
+            _log(
+                self.log_path,
+                "run_once.forced_task_selected "
+                f"key={_task_key(selected_task)} "
+                f"url={selected_task.url}",
+            )
         else:
             ready_tasks = [task for task in polled_tasks if _is_ready(task, self.config)]
+
+        _log(
+            self.log_path,
+            "run_once.poll "
+            f"polled={len(polled_tasks)} "
+            f"ready={len(ready_tasks)}",
+        )
         now_iso = _now_iso()
         emit_tasks: list[Task] = []
-        first_run = not state.initialized
         should_emit = self.config.emit_on_first_run or self.config.force or not first_run
+        seen_count = 0
+        skipped_not_emitting_count = 0
+        skipped_seen_count = 0
 
         for task in ready_tasks:
             already_seen = state.has_task(task)
+            if already_seen:
+                seen_count += 1
             state.record_task(task, now_iso)
             if not should_emit:
+                skipped_not_emitting_count += 1
                 continue
             if already_seen and not self.config.force:
+                skipped_seen_count += 1
                 continue
             emit_tasks.append(task)
 
+        _log(
+            self.log_path,
+            "run_once.select "
+            f"should_emit={should_emit} "
+            f"seen={seen_count} "
+            f"skipped_not_emitting={skipped_not_emitting_count} "
+            f"skipped_seen={skipped_seen_count} "
+            f"emit={len(emit_tasks)}",
+        )
+
         if emit_tasks and self.inner_loop_launcher is None:
+            _log(
+                self.log_path,
+                "run_once.error reason=missing_inner_loop_launcher",
+            )
             raise RuntimeError("inner_loop_launcher is required to launch tasks")
         to_launch: list[tuple[Path, Task]] = []
         for task in emit_tasks:
@@ -221,14 +267,31 @@ class OuterLoopRunner:
             _touch(run_dir / "agent.log")
             to_launch.append((run_dir, task))
 
+        _log(
+            self.log_path,
+            "run_once.launch "
+            f"prepared={len(to_launch)} "
+            f"tasks={_task_keys_preview([task for _, task in to_launch])}",
+        )
+
+        launch_error: str | None = None
         try:
             if to_launch:
                 self._launch_tasks(to_launch)
+        except Exception as exc:
+            launch_error = type(exc).__name__
+            raise
         finally:
             state.initialized = True
             state.updated_at = now_iso
             write_outer_state(self.state_path, state)
             _log(self.log_path, _format_log_line(len(ready_tasks), len(to_launch)))
+            _log(
+                self.log_path,
+                "run_once.done "
+                f"state_tasks={len(state.tasks)} "
+                f"launch_error={launch_error or 'none'}",
+            )
         return [run_dir for run_dir, _ in to_launch]
 
     def run_forever(self, limit: int | None = None) -> None:
@@ -694,6 +757,18 @@ def _format_log_line(ready_count: int, processed_count: int) -> str:
     """Format a log line for the outer loop runner."""
 
     return f"ready={ready_count} processed={processed_count}"
+
+
+def _task_keys_preview(tasks: list[Task], *, max_items: int = 5) -> str:
+    """Return a compact preview of task keys for logging."""
+
+    if not tasks:
+        return "-"
+    keys = [_task_key(task) for task in tasks[:max_items]]
+    preview = ",".join(keys)
+    if len(tasks) > max_items:
+        preview = f"{preview},+{len(tasks) - max_items}more"
+    return preview
 
 
 def _touch(path: Path) -> None:

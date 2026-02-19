@@ -253,6 +253,28 @@ def test_emit_on_first_run_skips_launch(tmp_path: Path) -> None:
     assert launched == []
 
 
+def test_run_once_writes_detailed_logs(tmp_path: Path) -> None:
+    task = make_task("1", "Ship it")
+    provider = StubProvider([task])
+    loops_root = tmp_path / ".loops"
+    runner = OuterLoopRunner(
+        provider,
+        OuterLoopConfig(task_ready_status="Ready", emit_on_first_run=True),
+        loops_root=loops_root,
+        inner_loop_launcher=lambda _run_dir, _task: None,
+    )
+
+    runner.run_once(limit=3)
+
+    log_text = (loops_root / "oloops.log").read_text()
+    assert "run_once.start" in log_text
+    assert "run_once.poll" in log_text
+    assert "run_once.select" in log_text
+    assert "run_once.launch" in log_text
+    assert "run_once.done" in log_text
+    assert "ready=1 processed=1" in log_text
+
+
 def test_load_config_resolves_working_dir(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     payload = {
