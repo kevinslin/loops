@@ -201,6 +201,10 @@ type GithubProjectsV2TaskProviderConfig = {
     status_field: "Status"
     page_size?: number
     github_token?: string
+    // provider-side key=value filters. supported keys:
+    // repository=<owner>/<repo> (OR across repository entries)
+    // tag=<label-name> (AND across tag entries)
+    filters?: string[]
 }
 ```
 
@@ -209,6 +213,7 @@ Notes:
 - `loops doctor` upgrades `config.json` to the latest supported version and fills missing `loop_config` keys with defaults.
 - `provider_id` currently supports only `"github_projects_v2"`.
 - `provider_config` is validated by the provider's Pydantic model.
+- `provider_config.filters` supports provider-side `key=value` filters for GitHub Projects V2 (`repository`, `tag`).
 - Required provider secrets are validated from environment variables before provider construction.
 - `loop_config` is optional; omitted keys fall back to defaults.
 - `loop_config.approval_comment_usernames` allows comment-based PR approval overrides from specific usernames.

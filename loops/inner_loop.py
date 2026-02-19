@@ -55,6 +55,7 @@ UUID_PATTERN = re.compile(
 UserHandoffHandler = Callable[[dict[str, Any]], str]
 PRStatusFetcher = Callable[[RunPR], RunPR]
 SleepFn = Callable[[float], None]
+GH_PR_VIEW_JSON_FIELDS = "reviewDecision,mergedAt,url,number,latestReviews,comments"
 
 
 @dataclass(frozen=True)
@@ -158,6 +159,7 @@ def run_inner_loop(
             updated_pr, approved_by_comment, approved_by = _fetch_pr_status_with_gh_with_context(
                 pr,
                 comment_approval=comment_approval,
+                log_message=lambda message: append_log(run_log, message),
             )
             if approved_by_comment:
                 append_log(
@@ -948,7 +950,21 @@ def _fetch_pr_status_with_gh_with_context(
     pr: RunPR,
     *,
     comment_approval: CommentApprovalSettings,
+    log_message: Optional[Callable[[str], None]] = None,
 ) -> tuple[RunPR, bool, str]:
+    def _log(message: str) -> None:
+        if log_message is None:
+            return
+        log_message(message)
+
+    _log(
+        (
+            "[loops] polling PR status via gh: "
+            f"pr_url={pr.url} "
+            f"comment_approval_enabled={'yes' if comment_approval.enabled else 'no'} "
+            f"allowlisted_usernames={len(comment_approval.allowed_usernames)}"
+        )
+    )
     result = subprocess.run(
         [
             "gh",
@@ -956,7 +972,7 @@ def _fetch_pr_status_with_gh_with_context(
             "view",
             pr.url,
             "--json",
-            "reviewDecision,mergedAt,url,number,repository,latestReviews,comments",
+            GH_PR_VIEW_JSON_FIELDS,
         ],
         text=True,
         stdout=subprocess.PIPE,
@@ -965,20 +981,45 @@ def _fetch_pr_status_with_gh_with_context(
         env=os.environ.copy(),
     )
     if result.returncode != 0:
+        _log(
+            (
+                "[loops] gh pr view failed: "
+                f"pr_url={pr.url} "
+                f"returncode={result.returncode} "
+                f"stderr={result.stderr.strip() or '-'}"
+            )
+        )
         raise RuntimeError(result.stderr.strip() or result.stdout.strip())
-    payload = json.loads(result.stdout)
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        snippet = result.stdout.strip().replace("\n", " ")[:200]
+        _log(
+            (
+                "[loops] gh pr view returned invalid JSON: "
+                f"pr_url={pr.url} snippet={snippet or '-'}"
+            )
+        )
+        raise
+
+    pr_url = str(payload.get("url") or pr.url)
+    parsed_url_pr = _run_pr_from_url(pr_url)
 
     repo = pr.repo
-    repository = payload.get("repository")
-    if isinstance(repository, dict):
-        owner = repository.get("owner")
-        owner_login = owner.get("login") if isinstance(owner, dict) else None
-        name = repository.get("name")
-        if isinstance(owner_login, str) and isinstance(name, str):
-            repo = f"{owner_login}/{name}"
+    if parsed_url_pr is not None and parsed_url_pr.repo is not None:
+        repo = parsed_url_pr.repo
 
     number = payload.get("number")
-    parsed_number = number if isinstance(number, int) else pr.number
+    if isinstance(number, int):
+        parsed_number = number
+    elif isinstance(number, str) and number.isdigit():
+        parsed_number = int(number)
+    elif pr.number is not None:
+        parsed_number = pr.number
+    elif parsed_url_pr is not None:
+        parsed_number = parsed_url_pr.number
+    else:
+        parsed_number = None
     merged_at = payload.get("mergedAt")
     merged_at_str = str(merged_at) if merged_at is not None else None
     review_decision_raw = payload.get("reviewDecision")
@@ -1007,9 +1048,19 @@ def _fetch_pr_status_with_gh_with_context(
                 approved_by_comment = True
                 approved_by = approval_author
                 latest_review_submitted_at = comment_timestamp
+            else:
+                _log(
+                    (
+                        "[loops] ignoring allowlisted approval comment because a newer "
+                        "changes_requested review exists: "
+                        f"pr_url={pr.url} "
+                        f"approval_comment_at={comment_timestamp} "
+                        f"latest_changes_requested_at={latest_changes_requested_at}"
+                    )
+                )
 
     updated_pr = RunPR(
-        url=str(payload.get("url") or pr.url),
+        url=pr_url,
         number=parsed_number,
         repo=repo,
         review_status=review_status,
@@ -1017,6 +1068,18 @@ def _fetch_pr_status_with_gh_with_context(
         last_checked_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         latest_review_submitted_at=latest_review_submitted_at,
         review_addressed_at=pr.review_addressed_at,
+    )
+    _log(
+        (
+            "[loops] PR status poll result: "
+            f"pr_url={updated_pr.url} "
+            f"review_decision={str(review_decision_raw or '').lower() or 'none'} "
+            f"review_status={updated_pr.review_status or 'unknown'} "
+            f"merged={'yes' if updated_pr.merged_at else 'no'} "
+            f"approved_by_comment={'yes' if approved_by_comment else 'no'} "
+            f"approved_by={approved_by or '-'} "
+            f"latest_review_submitted_at={updated_pr.latest_review_submitted_at or '-'}"
+        )
     )
     return updated_pr, approved_by_comment, approved_by
 
