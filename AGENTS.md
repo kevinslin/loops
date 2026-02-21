@@ -7,6 +7,7 @@ Document expectations and configuration for coding agents working in this repo.
 - Always refer to DESIGN.md before starting work.
 - Use the active spec in docs/specs/active when present.
 - If current changes deviate or add more detail to DESIGN.md, make sure to also edit DESIGN.md
+- When updating `loop_config` schema/defaults, always update `loops doctor` (config upgrade path + tests) so older configs are backfilled correctly.
 
 ## Parameters and Configuration
 - `.loops/config.json`: outer loop configuration (provider + loop + inner loop command).
