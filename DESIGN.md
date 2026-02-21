@@ -55,12 +55,24 @@ type OuterLoopConfig = {
     approval_comment_usernames: string[]
     // regex pattern for approval comments from allowlisted usernames
     approval_comment_pattern: string
+    // NEEDS_INPUT handoff strategy
+    // stdin_handler | gh_comment_handler
+    handoff_handler: string
 }
 
 /**
  * Ask user for input
  */
-type UserHandoffHandler = (message: string) => Promise<string>
+type HandoffResult = {
+    // waiting means keep polling; response means continue with returned text
+    status: "waiting" | "response"
+    response?: string
+}
+
+type UserHandoffHandler = (payload: {
+    message: string
+    context?: Record<string, unknown>
+}) => Promise<HandoffResult | string>
 
 type InnerLoopConfig = {
     // single prompt for the full task lifecycle
@@ -187,6 +199,7 @@ type OuterLoopConfig = {
     task_ready_status?: string
     approval_comment_usernames?: string[]
     approval_comment_pattern?: string
+    handoff_handler?: string
 }
 
 type InnerLoopCommandConfig = {
@@ -218,6 +231,7 @@ Notes:
 - `loop_config` is optional; omitted keys fall back to defaults.
 - `loop_config.approval_comment_usernames` allows comment-based PR approval overrides from specific usernames.
 - `loop_config.approval_comment_pattern` controls which comment bodies count as approval signals.
+- `loop_config.handoff_handler` selects built-in NEEDS_INPUT handoff behavior (`stdin_handler` default, `gh_comment_handler` for issue-comment handoff).
 - `inner_loop` is optional when running via the CLI; if omitted, the CLI uses
   `python -m loops.inner_loop` with `append_task_url=false`.
 - `python -m loops run --task-url <task-url>` targets exactly one task from the provider poll, implies `run-once`, `force=true`, and `sync_mode=true`, and does not mutate `provider_config.url`.
@@ -229,6 +243,7 @@ Notes:
 - `CODEX_CMD`: command used to invoke Codex (default: `codex exec --yolo`).
 - `LOOPS_PROMPT_FILE` / `CODEX_PROMPT_FILE`: optional base prompt file path.
 - `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`: task metadata injected by the outer loop launcher.
+- `LOOPS_HANDOFF_HANDLER`: selected built-in handoff handler injected by outer loop from `loop_config.handoff_handler`.
 
 ## 4. Architecture
 

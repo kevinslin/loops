@@ -337,6 +337,7 @@ def _build_default_config() -> dict[str, Any]:
             "task_ready_status": defaults.task_ready_status,
             "approval_comment_usernames": list(defaults.approval_comment_usernames),
             "approval_comment_pattern": defaults.approval_comment_pattern,
+            "handoff_handler": defaults.handoff_handler,
         },
         "inner_loop": {
             "command": [sys.executable, "-m", "loops.inner_loop"],

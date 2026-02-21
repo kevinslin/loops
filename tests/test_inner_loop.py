@@ -16,6 +16,7 @@ from loops.approval_config import (
     DEFAULT_APPROVAL_COMMENT_PATTERN,
     INNER_LOOP_APPROVAL_CONFIG_FILE,
 )
+from loops.handoff_handlers import HandoffResult
 from loops import inner_loop as inner_loop_module
 from loops.inner_loop import run_inner_loop
 from loops.run_record import RunPR, RunRecord, Task, read_run_record, write_run_record
@@ -733,6 +734,92 @@ def test_inner_loop_exits_promptly_when_needs_input_and_non_interactive(
     assert sleep_calls == []
     log_output = (run_dir / "run.log").read_text()
     assert "non-interactive mode; exiting while waiting for user input" in log_output
+
+
+def test_handle_needs_input_waiting_result(tmp_path: Path) -> None:
+    run_log = tmp_path / "run.log"
+    run_record = RunRecord(
+        task=_task(),
+        pr=None,
+        codex_session=None,
+        needs_user_input=True,
+        needs_user_input_payload={"message": "Need manual decision"},
+        last_state="NEEDS_INPUT",
+        updated_at="",
+    )
+
+    response = inner_loop_module._handle_needs_input(
+        run_record,
+        handler=lambda _payload: HandoffResult.waiting(),
+        run_log=run_log,
+    )
+
+    assert response is None
+    assert "user handoff waiting for response" in run_log.read_text()
+
+
+def test_handle_needs_input_response_result(tmp_path: Path) -> None:
+    run_log = tmp_path / "run.log"
+    run_record = RunRecord(
+        task=_task(),
+        pr=None,
+        codex_session=None,
+        needs_user_input=True,
+        needs_user_input_payload={"message": "Need manual decision"},
+        last_state="NEEDS_INPUT",
+        updated_at="",
+    )
+
+    response = inner_loop_module._handle_needs_input(
+        run_record,
+        handler=lambda _payload: HandoffResult.from_response("  Proceed with plan A  "),
+        run_log=run_log,
+    )
+
+    assert response == "Proceed with plan A"
+    assert "user input received" in run_log.read_text()
+
+
+def test_inner_loop_rejects_invalid_configured_handoff_handler(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        needs_user_input=True,
+        needs_user_input_payload={"message": "Need manual input"},
+    )
+    monkeypatch.setenv("LOOPS_HANDOFF_HANDLER", "unknown_handler")
+
+    with pytest.raises(ValueError, match="handoff_handler"):
+        run_inner_loop(
+            run_dir,
+            sleep_fn=lambda _seconds: None,
+            max_iterations=1,
+        )
+
+
+def test_inner_loop_gh_comment_handler_requires_github_provider(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        needs_user_input=True,
+        needs_user_input_payload={"message": "Need manual input"},
+    )
+    monkeypatch.setenv("LOOPS_HANDOFF_HANDLER", "gh_comment_handler")
+
+    with pytest.raises(ValueError, match="requires provider_id='github_projects_v2'"):
+        run_inner_loop(
+            run_dir,
+            sleep_fn=lambda _seconds: None,
+            max_iterations=1,
+        )
 
 
 def test_run_codex_streams_output_to_agent_log_while_running(tmp_path) -> None:

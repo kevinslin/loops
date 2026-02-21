@@ -92,6 +92,10 @@ Top-level config file: `.loops/config.json`
 - `loop_config.task_ready_status` (string, default `"Ready"`)
 - `loop_config.approval_comment_usernames` (string[], default `[]`): allowlisted GitHub usernames whose approval comments can mark a PR as approved.
 - `loop_config.approval_comment_pattern` (string, default `^\s*/approve\b`): regex used to match approval comments from allowlisted usernames.
+- `loop_config.handoff_handler` (string, default `"stdin_handler"`): built-in NEEDS_INPUT handoff strategy. Supported values:
+  - `stdin_handler`: prompt on stdin/stdout (interactive mode).
+  - `gh_comment_handler`: post handoff prompts to the task GitHub issue and wait for `/loops-reply ...` comments.
+    Requires `provider_id="github_projects_v2"` and `task.url` in issue URL format.
 - `inner_loop` (object, optional when using outer CLI):
 - `inner_loop.command` (string or string[], required when `inner_loop` is provided)
 - `inner_loop.working_dir` (string, optional): relative paths are resolved from config directory.
@@ -166,7 +170,7 @@ Notes:
 - URL matching for `--task-url` compares normalized URLs (scheme/host case-insensitive, query/fragment removed, trailing slash ignored).
 - `--task-url` bypasses ready-status filtering for the selected task and raises an error when the URL is missing or ambiguous in poll results.
 - Provider filters (`provider_config.filters`) are applied during provider polling before outer-loop status filtering.
-- `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`, and `LOOPS_RUN_DIR` are injected into each launched inner-loop process.
+- `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`, `LOOPS_HANDOFF_HANDLER`, and `LOOPS_RUN_DIR` are injected into each launched inner-loop process.
 - PR approval is detected from GitHub review decision or from allowlisted approval comments configured in `loop_config`.
 
 ### `loops doctor`
@@ -215,6 +219,9 @@ Behavior summary:
 - Polls PR state with `gh pr view` when a PR is present.
 - In review polling, Loops treats a PR as approved if `reviewDecision=APPROVED` or if a matching approval comment from `loop_config.approval_comment_usernames` is newer than the latest `CHANGES_REQUESTED` review.
 - Applies pending signals from `state_signals.jsonl`.
+- Selects handoff behavior from `LOOPS_HANDOFF_HANDLER`:
+  - `stdin_handler`: prompt directly in terminal.
+  - `gh_comment_handler`: comment on task issue and wait for `/loops-reply ...`.
 - `--reset` keeps task metadata and preserves an existing PR link (`pr.url`/`number`/`repo`) when present; non-link PR status fields are cleared.
 - If `run.json` is missing, task fields fall back to `LOOPS_TASK_*` env vars (or defaults).
 
@@ -258,6 +265,7 @@ Output on success:
 - `LOOPS_RUN_DIR`: run directory for `loops.inner_loop` and `loops.state_signal` when `--run-dir` is not passed.
 - `LOOPS_PROMPT_FILE` / `CODEX_PROMPT_FILE`: optional base prompt file for inner loop.
 - `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`: set by outer loop when launching inner loops.
+- `LOOPS_HANDOFF_HANDLER`: handoff strategy for inner loop (`stdin_handler` or `gh_comment_handler`). Outer loop sets this from `loop_config.handoff_handler`.
 
 ## Development
 

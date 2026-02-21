@@ -20,6 +20,13 @@ from loops.approval_config import (
     InnerLoopApprovalConfig,
     read_inner_loop_approval_config,
 )
+from loops.handoff_handlers import (
+    DEFAULT_HANDOFF_HANDLER,
+    HANDOFF_HANDLER_STDIN,
+    HandoffResult,
+    resolve_builtin_handoff_handler,
+    validate_handoff_handler_name,
+)
 from loops.logging_utils import append_log
 from loops.run_record import (
     CodexSession,
@@ -58,7 +65,7 @@ UUID_PATTERN = re.compile(
     r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
     re.IGNORECASE,
 )
-UserHandoffHandler = Callable[[dict[str, Any]], str]
+UserHandoffHandler = Callable[[dict[str, Any]], HandoffResult | str | None]
 PRStatusFetcher = Callable[[RunPR], RunPR]
 SleepFn = Callable[[float], None]
 GH_PR_VIEW_JSON_FIELDS = "reviewDecision,mergedAt,url,number,latestReviews,comments"
@@ -178,8 +185,23 @@ def run_inner_loop(
             return updated_pr
 
         pr_status_fetcher = _default_pr_status_fetcher
-    using_default_handoff_handler = user_handoff_handler is None
-    user_handoff_handler = user_handoff_handler or _default_user_handoff_handler
+    configured_handoff_handler = _resolve_configured_handoff_handler_name()
+    initial_run_record = read_run_record(run_json_path)
+    if user_handoff_handler is None:
+        user_handoff_handler = resolve_builtin_handoff_handler(
+            configured_handoff_handler,
+            run_dir=run_dir,
+            task=initial_run_record.task,
+            stdin_handler=_default_user_handoff_handler,
+            log_message=lambda message: append_log(run_log, message),
+            environ=os.environ.copy(),
+        )
+        selected_handoff_handler = configured_handoff_handler
+        using_default_handoff_handler = selected_handoff_handler == HANDOFF_HANDLER_STDIN
+    else:
+        selected_handoff_handler = "custom_handler"
+        using_default_handoff_handler = False
+    append_log(run_log, f"[loops] using handoff handler: {selected_handoff_handler}")
     non_interactive_default_handoff = (
         using_default_handoff_handler and not _has_interactive_stdin()
     )
@@ -1129,19 +1151,44 @@ def _handle_needs_input(
         "message": "Input required to continue.",
     }
     try:
-        response = handler(payload)
+        raw_result = handler(payload)
     except EOFError:
         append_log(run_log, "[loops] unable to read user input from stdin")
         return None
     except Exception as exc:
         append_log(run_log, f"[loops] user handoff handler failed: {exc}")
         return None
-    normalized = response.strip()
+    try:
+        handoff_result = _normalize_handoff_result(raw_result)
+    except (TypeError, ValueError) as exc:
+        append_log(run_log, f"[loops] user handoff handler returned invalid result: {exc}")
+        return None
+    if handoff_result.status == "waiting":
+        append_log(run_log, "[loops] user handoff waiting for response")
+        return None
+    normalized = str(handoff_result.response or "").strip()
     if not normalized:
         append_log(run_log, "[loops] empty user response received")
         return None
     append_log(run_log, "[loops] user input received")
     return normalized
+
+
+def _normalize_handoff_result(
+    raw_result: HandoffResult | str | None,
+) -> HandoffResult:
+    if raw_result is None:
+        return HandoffResult.waiting()
+    if isinstance(raw_result, HandoffResult):
+        return raw_result
+    if isinstance(raw_result, str):
+        stripped = raw_result.strip()
+        if not stripped:
+            return HandoffResult.waiting()
+        return HandoffResult.from_response(stripped)
+    raise TypeError(
+        "expected HandoffResult, string, or null response from handoff handler"
+    )
 
 
 def _force_needs_input(
@@ -1266,6 +1313,13 @@ def _resolve_run_dir(run_dir: Optional[str]) -> Path:
     if env_run_dir:
         return Path(env_run_dir)
     raise SystemExit("LOOPS_RUN_DIR is required (or pass --run-dir)")
+
+
+def _resolve_configured_handoff_handler_name() -> str:
+    raw_handler = os.environ.get("LOOPS_HANDOFF_HANDLER", DEFAULT_HANDOFF_HANDLER)
+    if not isinstance(raw_handler, str):
+        raw_handler = DEFAULT_HANDOFF_HANDLER
+    return validate_handoff_handler_name(raw_handler)
 
 
 def main() -> None:

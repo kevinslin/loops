@@ -11,6 +11,7 @@ from loops.approval_config import (
     DEFAULT_APPROVAL_COMMENT_PATTERN,
     INNER_LOOP_APPROVAL_CONFIG_FILE,
 )
+from loops.handoff_handlers import HANDOFF_HANDLER_GH_COMMENT
 from loops.outer_loop import (
     InnerLoopCommandConfig,
     LATEST_LOOPS_CONFIG_VERSION,
@@ -312,6 +313,45 @@ def test_load_config_reads_sync_mode(tmp_path: Path) -> None:
     assert config.version == LATEST_LOOPS_CONFIG_VERSION
 
 
+def test_load_config_reads_handoff_handler(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    payload = {
+        "provider_id": "github_projects_v2",
+        "provider_config": {},
+        "loop_config": {"handoff_handler": HANDOFF_HANDLER_GH_COMMENT},
+    }
+    config_path.write_text(json.dumps(payload))
+
+    config = load_config(config_path)
+    assert config.loop_config.handoff_handler == HANDOFF_HANDLER_GH_COMMENT
+
+
+def test_load_config_rejects_invalid_handoff_handler(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    payload = {
+        "provider_id": "github_projects_v2",
+        "provider_config": {},
+        "loop_config": {"handoff_handler": "unsupported_handler"},
+    }
+    config_path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="handoff_handler"):
+        load_config(config_path)
+
+
+def test_load_config_rejects_gh_handoff_for_non_github_provider(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    payload = {
+        "provider_id": "custom_provider",
+        "provider_config": {},
+        "loop_config": {"handoff_handler": HANDOFF_HANDLER_GH_COMMENT},
+    }
+    config_path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="requires provider_id='github_projects_v2'"):
+        load_config(config_path)
+
+
 def test_load_config_reads_comment_approval_config(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     payload = {
@@ -476,6 +516,7 @@ def test_build_inner_loop_launcher_sync_mode_uses_subprocess_run(
     assert isinstance(env, dict)
     assert env["LOOPS_RUN_DIR"] == str(run_dir)
     assert env["LOOPS_TASK_ID"] == task.id
+    assert env["LOOPS_HANDOFF_HANDLER"] == "stdin_handler"
     assert "LOOPS_APPROVAL_COMMENT_USERNAMES" not in env
     assert "LOOPS_APPROVAL_COMMENT_PATTERN" not in env
 

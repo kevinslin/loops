@@ -1,6 +1,6 @@
 # Inner Loop Flow
 
-Last updated: 2026-02-17
+Last updated: 2026-02-19
 
 ## Overview
 
@@ -36,6 +36,7 @@ None identified.
 | `CODEX_CMD` | `loops/inner_loop.py:481` | `codex exec --yolo` | Controls the command used for Codex turns and cleanup turns. |
 | `LOOPS_PROMPT_FILE` | `loops/inner_loop.py:489` | unset | Optional base prompt prepended to generated prompts. |
 | `CODEX_PROMPT_FILE` | `loops/inner_loop.py:489` | unset | Secondary fallback prompt file when `LOOPS_PROMPT_FILE` is unset. |
+| `LOOPS_HANDOFF_HANDLER` | `loops/inner_loop.py` handoff resolver | `stdin_handler` | Selects built-in NEEDS_INPUT handoff strategy (`stdin_handler` or `gh_comment_handler`). |
 | `GITHUB_TOKEN` / `GH_TOKEN` | Read by `gh` subprocess invoked from `loops/inner_loop.py:767` | environment-dependent | Determines whether PR status polling via `gh pr view` succeeds in review/merge polling states. |
 
 ### Other User-Settable Inputs
@@ -45,6 +46,7 @@ None identified.
 | `--run-dir` | CLI option | `loops/cli.py:77`, `loops/inner_loop.py:982` | Overrides `LOOPS_RUN_DIR` for the target run. |
 | `--prompt-file` | CLI option | `loops/cli.py:84`, `loops/inner_loop.py:489` | Overrides prompt-file env fallbacks and changes all Codex prompts for the run. |
 | `loop_config.approval_comment_usernames` / `loop_config.approval_comment_pattern` | Config file fields (outer loop) | `loops/outer_loop.py` -> written to `inner_loop_approval_config.json` | Controls comment-based approval override behavior in review polling. |
+| `loop_config.handoff_handler` | Config file field (outer loop) | `loops/outer_loop.py` -> `LOOPS_HANDOFF_HANDLER` | Controls whether NEEDS_INPUT uses stdin prompts or GitHub issue comments. |
 | Signal payload (`--message`, `--context`) | Signal queue input | `loops/state_signal.py:49`, consumed by `loops/inner_loop.py:941` | Causes state transition to `NEEDS_INPUT` with structured handoff payload. |
 | `run.json` content (`pr`, `needs_user_input`, `needs_user_input_payload`) | Persisted state | `loops/run_record.py:183`, `loops/run_record.py:139` | Determines the branch selected by each loop iteration. |
 | `run_inner_loop(...)` polling params | Function args | `loops/inner_loop.py:58` | Controls max iterations, poll backoff, and idle escalation thresholds. |
@@ -67,6 +69,7 @@ None identified.
 | `pr.merged_at` | Written by PR status poll (`loops/inner_loop.py:767`, persisted at `loops/inner_loop.py:392`) | Reloaded each iteration (`loops/inner_loop.py:87`) | Triggers `DONE` via `derive_run_state` (`loops/run_record.py:142`) | Yes |
 | `pr.latest_review_submitted_at` and `pr.review_addressed_at` | Written in gh fetch + review-feedback codex completion (`loops/inner_loop.py:767`, `loops/inner_loop.py:659`) | Reloaded each iteration (`loops/inner_loop.py:87`) | Checked by `_is_new_review` gate (`loops/inner_loop.py:727`) | Yes |
 | `codex_session.id` | Extracted and persisted after Codex turn (`loops/inner_loop.py:628`, `loops/inner_loop.py:664`) | Reloaded each iteration (`loops/inner_loop.py:87`) | Used for durable session metadata and diagnostics | Yes |
+| `handoff_gh_comment_state.json` | Written by `gh_comment_handler` after prompt/reply detection | Reloaded on each NEEDS_INPUT iteration when handler is `gh_comment_handler` | Enforces idempotent prompt posting and reply de-duplication | Yes |
 | Signal queue offset (`state_signals.offset`) | Written after successful signal consume (`loops/inner_loop.py:923`, `loops/inner_loop.py:941`) | Read before queue consume (`loops/inner_loop.py:878`) | Prevents duplicate signal application (`loops/inner_loop.py:945`) | Yes |
 
 ### Inner loop state-machine execution
@@ -104,7 +107,11 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
     }
 
     if (state === "NEEDS_INPUT") {
-      response = handleNeedsInput(record.payload)
+      handoffResult = handleNeedsInput(record.payload, configuredHandler)
+      // built-ins:
+      // - stdin_handler: immediate response from terminal input
+      // - gh_comment_handler: post/poll issue comments until /loops-reply arrives
+      response = handoffResult.responseOrNull
       if (response == null) {
         if (nonInteractiveDefaultHandoff) {
           return readRunRecord(runJsonPath)
@@ -203,6 +210,12 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
   - Applies `NEEDS_INPUT` payloads to run record.
   - Advances offset only after successful record write.
 
+- Handoff behavior (`loops/inner_loop.py`, `loops/handoff_handlers.py`):
+  - Resolves built-in handler from `LOOPS_HANDOFF_HANDLER` (`stdin_handler` default).
+  - `stdin_handler` prompts in terminal.
+  - `gh_comment_handler` requires `task.provider_id=github_projects_v2`, parses `task.url` as issue URL, posts prompt comment, and waits for explicit `/loops-reply ...` comments.
+  - Persists `handoff_gh_comment_state.json` to avoid duplicate prompt comments across retries.
+
 ### Exit/handoff contracts
 
 - Inner loop exits normally only when derived state is `DONE` (`loops/inner_loop.py:99`).
@@ -280,6 +293,9 @@ A: The loop only resumes Codex on `changes_requested` when `_is_new_review` is t
 Q: Can a PR move to `PR_APPROVED` without `reviewDecision=APPROVED`?
 A: Yes. If configured allowlisted usernames post a matching approval comment and it is newer than the latest `CHANGES_REQUESTED` review, polling treats the PR as approved.
 
+Q: How does `gh_comment_handler` know which comment to consume?
+A: It only accepts comments that start with `/loops-reply` and are newer than the current prompt comment, tracked with run-local handoff state.
+
 Q: Who owns `run.json` updates?
 A: Inner loop only. Signal producers append to queue; they do not mutate `run.json` (`loops/state_signal.py:49`, `loops/inner_loop.py:941`).
 
@@ -292,3 +308,4 @@ A: Inner loop only. Signal producers append to queue; they do not mutate `run.js
 - 2026-02-17: Documented allowlisted comment-based approval detection and ordering guard against newer changes-requested reviews. (019c68ed-a6c5-78e0-891a-6b70a1a1450c)
 - 2026-02-17: Updated flow to use run-scoped `inner_loop_approval_config.json` transport instead of env-based approval settings. (019c68ed-a6c5-78e0-891a-6b70a1a1450c)
 - 2026-02-17: Updated inner-loop pseudocode to reflect run-scoped approval config loading and context-aware PR polling path. (019c68ed-a6c5-78e0-891a-6b70a1a1450c)
+- 2026-02-19: Added built-in handoff handler flow (`stdin_handler` and `gh_comment_handler`) including GitHub issue comment handoff state tracking. (019c747a-a05e-7be1-b09d-66c5debb37c4)

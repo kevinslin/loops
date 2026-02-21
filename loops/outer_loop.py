@@ -23,6 +23,11 @@ from loops.approval_config import (
     normalize_approval_usernames,
     write_inner_loop_approval_config,
 )
+from loops.handoff_handlers import (
+    DEFAULT_HANDOFF_HANDLER,
+    validate_handoff_handler_name,
+    validate_handoff_handler_provider_compatibility,
+)
 from loops.provider_types import LoopsProviderConfig, SecretRequirement
 from loops.providers.registry import get_provider_definition
 from loops.run_record import RunRecord, Task, write_run_record
@@ -48,6 +53,7 @@ class OuterLoopConfig:
     task_ready_status: str = DEFAULT_TASK_READY_STATUS
     approval_comment_usernames: tuple[str, ...] = ()
     approval_comment_pattern: str = DEFAULT_APPROVAL_COMMENT_PATTERN
+    handoff_handler: str = DEFAULT_HANDOFF_HANDLER
 
 
 @dataclass(frozen=True)
@@ -343,6 +349,10 @@ def load_config(path: str | Path) -> LoopsConfig:
     if not isinstance(provider_config, dict):
         raise TypeError("provider_config must be an object")
     loop_config = _load_outer_loop_config(payload.get("loop_config"))
+    validate_handoff_handler_provider_compatibility(
+        loop_config.handoff_handler,
+        provider_id,
+    )
     inner_loop_payload = payload.get("inner_loop")
     inner_loop = None
     if inner_loop_payload is not None:
@@ -437,6 +447,7 @@ def build_inner_loop_launcher(
         env["LOOPS_TASK_TITLE"] = task.title
         env["LOOPS_TASK_URL"] = task.url
         env["LOOPS_TASK_PROVIDER"] = task.provider_id
+        env["LOOPS_HANDOFF_HANDLER"] = config.loop_config.handoff_handler
         if inner_loop.env:
             env.update(inner_loop.env)
         command = list(inner_loop.command)
@@ -556,6 +567,9 @@ def _load_outer_loop_config(payload: Any) -> OuterLoopConfig:
             "approval_comment_pattern",
             DEFAULT_APPROVAL_COMMENT_PATTERN,
         ),
+        handoff_handler=validate_handoff_handler_name(
+            _load_str(payload, "handoff_handler", DEFAULT_HANDOFF_HANDLER)
+        ),
     )
 
 
@@ -571,6 +585,7 @@ def _default_loop_config_payload() -> dict[str, Any]:
         "task_ready_status": defaults.task_ready_status,
         "approval_comment_usernames": list(defaults.approval_comment_usernames),
         "approval_comment_pattern": defaults.approval_comment_pattern,
+        "handoff_handler": defaults.handoff_handler,
     }
 
 
