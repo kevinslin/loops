@@ -41,7 +41,7 @@ from loops.state_signal import SIGNAL_QUEUE_FILE
 
 PROMPT_TEMPLATE = (
     "Use dev.do to implement the task, open a PR, wait for review, address feedback, "
-    "and cleanup when approved.\n"
+    "and trigger:merge-pr when the state is exactly <state>PR_APPROVED</state>.\n"
     'If needing input from user, use "$needs_input" skill to request user input.\n'
     "The current inner-loop state is passed via a trailing <state>...</state> tag; "
     "initial state is <state>START</state>.\n"
