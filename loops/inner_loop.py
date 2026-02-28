@@ -44,11 +44,11 @@ PROMPT_TEMPLATE = (
     "and trigger:merge-pr when the state is exactly <state>PR_APPROVED</state>.\n"
     'If needing input from user, use "$needs_input" skill to request user input.\n'
     "The current inner-loop state is passed via a trailing <state>...</state> tag; "
-    "initial state is <state>START</state>.\n"
+    "initial state is <state>RUNNING</state>.\n"
     "Do not merge until the state is exactly <state>PR_APPROVED</state>.\n"
     "Task: {task}\n"
 )
-PROMPT_STATE_START = "START"
+PROMPT_STATE_RUNNING = "RUNNING"
 PROMPT_STATE_WAITING_ON_REVIEW = "WAITING_ON_REVIEW"
 PROMPT_STATE_PR_APPROVED = "PR_APPROVED"
 SIGNAL_OFFSET_FILE = "state_signals.offset"
@@ -663,7 +663,7 @@ def _build_prompt(
     base_prompt: Optional[str],
     *,
     user_response: Optional[str] = None,
-    state: Optional[str] = PROMPT_STATE_START,
+    state: Optional[str] = PROMPT_STATE_RUNNING,
 ) -> str:
     prompt = PROMPT_TEMPLATE.format(task=task_url)
     if user_response is not None and user_response.strip():
