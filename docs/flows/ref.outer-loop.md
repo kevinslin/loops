@@ -116,6 +116,7 @@ None identified.
 | `GITHUB_TOKEN` / `GH_TOKEN` | `loops/providers/github_projects_v2.py:220` | none | Required by GitHub provider polling when `provider_config.github_token` is not set. |
 | Process env passthrough (`os.environ.copy()`) | `loops/outer_loop.py:298`, `loops/providers/github_projects_v2.py:236` | N/A | Baseline environment passed to inner-loop child and `gh api graphql` subprocesses. |
 | `LOOPS_HANDOFF_HANDLER` (child env) | set in `loops/outer_loop.py` launcher | `stdin_handler` via config default | Selects built-in inner-loop NEEDS_INPUT handoff strategy for child process. |
+| `LOOPS_STREAM_LOGS_STDOUT` (child env) | set in `loops/outer_loop.py` launcher when `sync_mode=true` | unset | Enables inner-loop `run.log` mirroring to stdout for foreground runs. |
 
 ### Other User-Settable Inputs
 
@@ -149,6 +150,7 @@ None identified.
 | `run.json` initial state | Written by `write_run_record` (`loops/outer_loop.py:194`) | Materialized before launcher call | Consumed by inner loop as authoritative starting state | Yes |
 | `inner_loop_approval_config.json` | Written in run dir from `loop_config.approval_comment_*` before launch | Materialized before launcher call | Consumed by inner loop PR poller config loader | Yes |
 | `LOOPS_HANDOFF_HANDLER` child env | Injected from `loop_config.handoff_handler` during launch | Snapshot at launch invocation | Inner loop built-in handoff resolver chooses handler | Yes |
+| `LOOPS_STREAM_LOGS_STDOUT` child env | Injected as `1` during sync-mode launch | Snapshot at launch invocation | Inner-loop log appender mirrors `run.log` lines to stdout | Yes |
 | `oloops.log` cycle summary | Appended in finally block (`loops/outer_loop.py:206`, formatter at `loops/outer_loop.py:493`) | N/A | Used for operational summaries (`ready`/`processed`) | Yes |
 
 ### Outer-loop runtime invocation
@@ -276,6 +278,7 @@ class OuterLoopRunner
 - `build_inner_loop_launcher` builds a closure that:
   - Injects run/task metadata env vars (`LOOPS_RUN_DIR`, `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`) (`loops/outer_loop.py:299`).
   - Injects configured handoff strategy (`LOOPS_HANDOFF_HANDLER`) from `loop_config.handoff_handler`.
+  - In `sync_mode=true`, injects `LOOPS_STREAM_LOGS_STDOUT=1` so inner-loop `run.log` writes are mirrored to stdout.
   - Merges configured `inner_loop.env` (`loops/outer_loop.py:304`).
   - Appends task URL to command when configured (`loops/outer_loop.py:307`).
   - Uses `subprocess.run` in `sync_mode=true` (`loops/outer_loop.py:310`) or detached `subprocess.Popen` writing to `run.log` (`loops/outer_loop.py:319`).
@@ -358,11 +361,12 @@ Key outer-loop logs and emit sites:
 - Per-cycle summary log: `_log(self.log_path, _format_log_line(...))` (`loops/outer_loop.py:206`).
 - Log format payload: `ready=<n> processed=<m>` (`loops/outer_loop.py:493`).
 - Log sink file: `.loops/oloops.log` (`loops/outer_loop.py:156`).
+- In `sync_mode=true`, outer-loop log writes are mirrored to stdout while still appended to `.loops/oloops.log`.
 
 Related launch output behavior:
 
 - Detached mode routes child stdout/stderr to per-run `run.log` (`loops/outer_loop.py:319`).
-- Sync mode uses foreground `subprocess.run` and does not detach (`loops/outer_loop.py:310`).
+- Sync mode uses foreground `subprocess.run`, does not detach, and enables inner-loop `run.log` stdout mirroring (`loops/outer_loop.py:310`).
 
 ## FAQ
 
@@ -396,3 +400,4 @@ A: Outer loop injects `LOOPS_HANDOFF_HANDLER` from `loop_config.handoff_handler`
 - 2026-02-17: Documented OuterLoopConfig comment-approval fields and run-scoped approval-config file handoff to inner loop. (019c68ed-a6c5-78e0-891a-6b70a1a1450c)
 - 2026-02-19: Documented `loop_config.handoff_handler` and `LOOPS_HANDOFF_HANDLER` propagation into inner-loop runtime. (019c747a-a05e-7be1-b09d-66c5debb37c4)
 - 2026-02-28: Added schedule-log coverage noting per-task `run_once.schedule` entries include the created run directory path. (019ca550-9ae5-7393-b5e6-e5e68e6c959d)
+- 2026-02-28: Documented sync-mode stdout log mirroring for outer-loop logs and `LOOPS_STREAM_LOGS_STDOUT` propagation into inner-loop runs. (019ca579-eb69-7883-a6a5-ff48348ca2ab)

@@ -519,8 +519,34 @@ def test_build_inner_loop_launcher_sync_mode_uses_subprocess_run(
     assert env["LOOPS_RUN_DIR"] == str(run_dir)
     assert env["LOOPS_TASK_ID"] == task.id
     assert env["LOOPS_HANDOFF_HANDLER"] == "stdin_handler"
+    assert env["LOOPS_STREAM_LOGS_STDOUT"] == "1"
     assert "LOOPS_APPROVAL_COMMENT_USERNAMES" not in env
     assert "LOOPS_APPROVAL_COMMENT_PATTERN" not in env
+
+
+def test_run_once_sync_mode_streams_outer_logs_to_stdout(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    provider = StubProvider([make_task("1", "Ship it")])
+    loops_root = tmp_path / ".loops"
+    runner = OuterLoopRunner(
+        provider,
+        OuterLoopConfig(
+            task_ready_status="Ready",
+            emit_on_first_run=True,
+            sync_mode=True,
+        ),
+        loops_root=loops_root,
+        inner_loop_launcher=lambda _run_dir, _task: None,
+    )
+
+    runner.run_once()
+
+    captured = capsys.readouterr()
+    assert "run_once.start" in captured.out
+    assert "run_once.launch" in captured.out
+    assert "run_once.done" in captured.out
 
 
 def test_load_config_preserves_explicit_version(tmp_path: Path) -> None:

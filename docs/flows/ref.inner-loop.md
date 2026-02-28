@@ -1,6 +1,6 @@
 # Inner Loop Flow
 
-Last updated: 2026-02-19
+Last updated: 2026-02-28
 
 ## Overview
 
@@ -22,6 +22,85 @@ It is intended as a fast context-recapture artifact for humans and LLM agents ch
 - `Signal queue`: Append-only `state_signals.jsonl` used to request `NEEDS_INPUT` without direct `run.json` writes.
 - `Single-writer model`: Inner loop is the only writer of `run.json`.
 
+## Purpose / Question Answered
+
+How does the inner loop execute a single run directory end-to-end, derive state transitions, and coordinate Codex/review/handoff work while preserving single-writer ownership of `run.json`?
+
+## Entry points
+
+- CLI command `python -m loops inner-loop` resolves run directory and calls `run_inner_loop(...)` (`loops/cli.py`).
+- Module entry `python -m loops.inner_loop` resolves run directory from `LOOPS_RUN_DIR` and calls `run_inner_loop(...)`.
+- Outer-loop launched process invokes the same inner-loop command with `LOOPS_RUN_DIR`, task metadata, and handoff/log env vars set (`loops/outer_loop.py`).
+
+## Call path
+
+### Runtime path
+
+#### Sudocode (inner-loop state machine)
+
+Source: `loops/inner_loop.py`, `loops/run_record.py`, `loops/logging_utils.py`
+
+```ts
+function run_inner_loop(run_dir):
+  load run.json + defaults + approval settings
+  resolve handoff handler and codex command
+
+  while iteration <= max_iterations:
+    run_record = read_run_record(run_json)
+    run_record = apply_pending_signals(run_dir, run_record)
+    state = derive_run_state(run_record.pr, run_record.needs_user_input)
+
+    if state == DONE:
+      return run_record
+    if state == NEEDS_INPUT:
+      handle handoff; either wait/backoff or clear needs_input and continue
+    if state == RUNNING:
+      run codex turn; write run.json updates and append run.log/agent.log
+    if state == WAITING_ON_REVIEW:
+      poll PR; react to changes requested/approval/idle thresholds
+    if state == PR_APPROVED:
+      run cleanup prompt once, poll merge state until DONE
+
+  force NEEDS_INPUT and return
+```
+
+## State, config, and gates
+
+- Core state is derived each iteration from `run.json` (`pr`, `needs_user_input`), not from cached in-memory state.
+- Transition gates include: review freshness (`latest_review_submitted_at > review_addressed_at`), idle polling threshold escalation, and max-iteration fallback.
+- Runtime config comes from CLI/env + run-scoped files (`inner_loop_approval_config.json`, optional prompt file).
+- In sync-mode launches, outer loop sets `LOOPS_STREAM_LOGS_STDOUT=1`, which causes inner-loop `run.log` appends to be mirrored to stdout.
+
+## Sequence diagram
+
+```mermaid
+sequenceDiagram
+    participant O as Outer loop launcher
+    participant I as Inner loop
+    participant C as Codex subprocess
+    participant G as GitHub (gh pr view)
+    participant FS as Run files
+
+    O->>I: start process (LOOPS_RUN_DIR + env)
+    loop each iteration
+        I->>FS: read run.json + apply pending signals
+        I->>I: derive state
+        alt RUNNING / review feedback
+            I->>C: run codex turn
+            C-->>I: stdout/stderr
+            I->>FS: append agent.log + run.log
+            I->>FS: write run.json updates
+        else WAITING_ON_REVIEW / PR_APPROVED
+            I->>G: gh pr view
+            G-->>I: PR status payload
+            I->>FS: write run.json updates
+        else NEEDS_INPUT
+            I->>I: invoke configured handoff handler
+            I->>FS: write run.json updates or wait/backoff
+        end
+    end
+```
+
 ## Config
 
 ### Statsig
@@ -37,6 +116,7 @@ None identified.
 | `LOOPS_PROMPT_FILE` | `loops/inner_loop.py:489` | unset | Optional base prompt prepended to generated prompts. |
 | `CODEX_PROMPT_FILE` | `loops/inner_loop.py:489` | unset | Secondary fallback prompt file when `LOOPS_PROMPT_FILE` is unset. |
 | `LOOPS_HANDOFF_HANDLER` | `loops/inner_loop.py` handoff resolver | `stdin_handler` | Selects built-in NEEDS_INPUT handoff strategy (`stdin_handler` or `gh_comment_handler`). |
+| `LOOPS_STREAM_LOGS_STDOUT` | `loops/logging_utils.py` | unset | When set to truthy values (for example `1`), inner-loop `run.log` writes are mirrored to stdout. |
 | `GITHUB_TOKEN` / `GH_TOKEN` | Read by `gh` subprocess invoked from `loops/inner_loop.py:767` | environment-dependent | Determines whether PR status polling via `gh pr view` succeeds in review/merge polling states. |
 
 ### Other User-Settable Inputs
@@ -281,6 +361,7 @@ Key logs and emit sites:
 - Signal accepted (producer): `loops/state_signal.py:75`.
 - Signal applied/ignored (consumer): `loops/inner_loop.py:952`, `loops/inner_loop.py:956`, `loops/inner_loop.py:960`.
 - Agent streamed output destination: `agent.log` (also mirrored to `run.log`).
+- In sync mode (via outer-loop-injected `LOOPS_STREAM_LOGS_STDOUT=1`), each `run.log` line is also emitted to stdout.
 
 ## FAQ
 
@@ -309,3 +390,4 @@ A: Inner loop only. Signal producers append to queue; they do not mutate `run.js
 - 2026-02-17: Updated flow to use run-scoped `inner_loop_approval_config.json` transport instead of env-based approval settings. (019c68ed-a6c5-78e0-891a-6b70a1a1450c)
 - 2026-02-17: Updated inner-loop pseudocode to reflect run-scoped approval config loading and context-aware PR polling path. (019c68ed-a6c5-78e0-891a-6b70a1a1450c)
 - 2026-02-19: Added built-in handoff handler flow (`stdin_handler` and `gh_comment_handler`) including GitHub issue comment handoff state tracking. (019c747a-a05e-7be1-b09d-66c5debb37c4)
+- 2026-02-28: Documented `LOOPS_STREAM_LOGS_STDOUT` behavior for sync-mode mirroring of inner-loop `run.log` lines to stdout. (019ca579-eb69-7883-a6a5-ff48348ca2ab)

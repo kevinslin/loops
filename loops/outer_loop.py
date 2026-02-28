@@ -28,6 +28,7 @@ from loops.handoff_handlers import (
     validate_handoff_handler_name,
     validate_handoff_handler_provider_compatibility,
 )
+from loops.logging_utils import STREAM_LOGS_STDOUT_ENV
 from loops.provider_types import LoopsProviderConfig, SecretRequirement
 from loops.providers.registry import get_provider_definition
 from loops.run_record import RunRecord, Task, write_run_record
@@ -193,6 +194,7 @@ class OuterLoopRunner:
             f"emit_on_first_run={self.config.emit_on_first_run} "
             f"force={self.config.force} "
             f"ready_status={self.config.task_ready_status!r}",
+            stream_to_stdout=self.config.sync_mode,
         )
 
         polled_tasks = self.provider.poll(poll_limit)
@@ -204,6 +206,7 @@ class OuterLoopRunner:
                 "run_once.forced_task_selected "
                 f"key={_task_key(selected_task)} "
                 f"url={selected_task.url}",
+                stream_to_stdout=self.config.sync_mode,
             )
         else:
             ready_tasks = [task for task in polled_tasks if _is_ready(task, self.config)]
@@ -213,6 +216,7 @@ class OuterLoopRunner:
             "run_once.poll "
             f"polled={len(polled_tasks)} "
             f"ready={len(ready_tasks)}",
+            stream_to_stdout=self.config.sync_mode,
         )
         now_iso = _now_iso()
         emit_tasks: list[Task] = []
@@ -242,16 +246,22 @@ class OuterLoopRunner:
             f"skipped_not_emitting={skipped_not_emitting_count} "
             f"skipped_seen={skipped_seen_count} "
             f"emit={len(emit_tasks)}",
+            stream_to_stdout=self.config.sync_mode,
         )
 
         if emit_tasks and self.inner_loop_launcher is None:
             _log(
                 self.log_path,
                 "run_once.error reason=missing_inner_loop_launcher",
+                stream_to_stdout=self.config.sync_mode,
             )
             raise RuntimeError("inner_loop_launcher is required to launch tasks")
         if not emit_tasks:
-            _log(self.log_path, "no task ready to be scheduled")
+            _log(
+                self.log_path,
+                "no task ready to be scheduled",
+                stream_to_stdout=self.config.sync_mode,
+            )
         to_launch: list[tuple[Path, Task]] = []
         for task in emit_tasks:
             run_dir = create_run_dir(task, self.loops_root)
@@ -261,6 +271,7 @@ class OuterLoopRunner:
                 f"key={_task_key(task)} "
                 f"url={task.url} "
                 f"run_dir={run_dir}",
+                stream_to_stdout=self.config.sync_mode,
             )
             record = RunRecord(
                 task=task,
@@ -287,6 +298,7 @@ class OuterLoopRunner:
             "run_once.launch "
             f"prepared={len(to_launch)} "
             f"tasks={_task_keys_preview([task for _, task in to_launch])}",
+            stream_to_stdout=self.config.sync_mode,
         )
 
         launch_error: str | None = None
@@ -300,12 +312,17 @@ class OuterLoopRunner:
             state.initialized = True
             state.updated_at = now_iso
             write_outer_state(self.state_path, state)
-            _log(self.log_path, _format_log_line(len(ready_tasks), len(to_launch)))
+            _log(
+                self.log_path,
+                _format_log_line(len(ready_tasks), len(to_launch)),
+                stream_to_stdout=self.config.sync_mode,
+            )
             _log(
                 self.log_path,
                 "run_once.done "
                 f"state_tasks={len(state.tasks)} "
                 f"launch_error={launch_error or 'none'}",
+                stream_to_stdout=self.config.sync_mode,
             )
         return [run_dir for run_dir, _ in to_launch]
 
@@ -454,6 +471,8 @@ def build_inner_loop_launcher(
         env["LOOPS_TASK_URL"] = task.url
         env["LOOPS_TASK_PROVIDER"] = task.provider_id
         env["LOOPS_HANDOFF_HANDLER"] = config.loop_config.handoff_handler
+        if sync_mode:
+            env[STREAM_LOGS_STDOUT_ENV] = "1"
         if inner_loop.env:
             env.update(inner_loop.env)
         command = list(inner_loop.command)
@@ -768,13 +787,17 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _log(path: Path, message: str) -> None:
+def _log(path: Path, message: str, *, stream_to_stdout: bool = False) -> None:
     """Append a log message to the outer loop log."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
     timestamp = _now_iso()
+    rendered_line = f"{timestamp} {message}"
     with path.open("a", encoding="utf-8") as handle:
-        handle.write(f"{timestamp} {message}\n")
+        handle.write(f"{rendered_line}\n")
+
+    if stream_to_stdout:
+        print(rendered_line, flush=True)
 
 
 def _format_log_line(ready_count: int, processed_count: int) -> str:

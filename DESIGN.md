@@ -245,6 +245,7 @@ Notes:
 - `LOOPS_PROMPT_FILE` / `CODEX_PROMPT_FILE`: optional base prompt file path.
 - `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`: task metadata injected by the outer loop launcher.
 - `LOOPS_HANDOFF_HANDLER`: selected built-in handoff handler injected by outer loop from `loop_config.handoff_handler`.
+- `LOOPS_STREAM_LOGS_STDOUT`: set to `1` by the outer loop when `sync_mode=true` so inner-loop log writes are also mirrored to stdout.
 
 ## 4. Architecture
 
@@ -271,6 +272,7 @@ Task provider (GitHub Projects V2)
 - Filters tasks by `task_ready_status` and ignores tasks already started unless `force=true`.
 - Starts an inner loop per task (detached by default; foreground when `sync_mode=true`).
 - Persists a minimal outer loop ledger to avoid re-processing completed tasks.
+- In `sync_mode=true`, mirrors outer-loop log lines to stdout in addition to `oloops.log`.
 
 #### Inner loop
 - Runs a small state model derived from PR status plus a single flag (`needs_user_input`).
@@ -279,6 +281,7 @@ Task provider (GitHub Projects V2)
 - Consumes model-authored signals from a run-local queue and applies validated state changes to `run.json`.
 - Writes inner-loop orchestration logs to `[INNER_LOOP_ROOT]/run.log` and appends Codex output there.
 - Streams Codex/agent output to `[INNER_LOOP_ROOT]/agent.log`.
+- In `sync_mode=true`, also mirrors inner-loop `run.log` lines to stdout.
 - Supports a manual `--reset` operation to clear orchestration/session/input fields in `run.json` while preserving task metadata and existing PR link identity.
 
 #### Task provider
@@ -501,6 +504,7 @@ Task: [task]
 - Outer loop per-task scheduling entries include the created inner-loop run directory path.
 - Inner loop orchestration logs + Codex output mirror: `[INNER_LOOP_ROOT]/run.log`.
 - Agent/Codex logs: `[INNER_LOOP_ROOT]/agent.log`.
+- In `sync_mode=true`, outer-loop and inner-loop log lines are mirrored to stdout while still being persisted to files.
 
 ### Metrics (optional)
 - Task pickup latency, time-to-PR, time-in-review, retries.

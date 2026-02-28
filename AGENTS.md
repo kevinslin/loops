@@ -19,3 +19,27 @@ Document expectations and configuration for coding agents working in this repo.
 ## Additional Notes
 - this project does not use statsig. ignore all statsig related directives
 - when making changes, use $dev.research to understand flow docs and search over all related flow docs. if the current change has changed the design of a flow doc - trigger:update-flow-doc to update it
+
+<!-- ag-ledger:begin -->
+## ag-ledger
+
+Use `$ag-ledger` and the `ag-ledger` CLI for activity tracking.
+Always log these moments:
+- Session start
+- Notable change
+- Session end
+
+Run:
+- `ag-ledger append-current "session start: <plan>"`
+- `ag-ledger append-current "notable change: <what changed>"`
+- `ag-ledger append-current "session end: <outcome>"`
+- `ag-ledger session-id` (prints `CODEX_THREAD_ID`)
+
+Manual fallback (non-Codex or explicit session ids):
+- `ag-ledger append <session-id> "session start: <plan>"`
+- `ag-ledger append <session-id> "notable change: <what changed>"`
+- `ag-ledger append <session-id> "session end: <outcome>"`
+
+If `ag-ledger` is not on PATH, run:
+- `/Users/kevinlin/code/skills/active/ag-ledger/scripts/ag-ledger`
+<!-- ag-ledger:end -->

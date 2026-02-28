@@ -164,6 +164,7 @@ Notes:
 
 - Outer loop filters tasks by `loop_config.task_ready_status`.
 - With `loop_config.sync_mode=true`, inner loop runs in the foreground and can prompt for user input in the same terminal.
+- With `loop_config.sync_mode=true`, outer-loop logs (`oloops.log`) and inner-loop orchestration logs (`run.log`) are also mirrored to stdout.
 - With `emit_on_first_run=false`, first run initializes dedupe state but does not launch tasks.
 - `--task-url` does not change `provider_config.url`; it selects one task after polling by URL match and runs only that task.
 - `--task-url` forces foreground execution for that run (`sync_mode=true`) so targeted runs are interactive and deterministic.
@@ -215,6 +216,7 @@ Behavior summary:
 - Reads and writes `run.json` as the authoritative state file.
 - Writes inner-loop orchestration logs to `run.log` and appends Codex output there.
 - Streams Codex/agent output to `agent.log`.
+- If `LOOPS_STREAM_LOGS_STDOUT=1` (set automatically by outer loop in `sync_mode=true`), also mirrors `run.log` lines to stdout.
 - Uses `CODEX_CMD` if set; default command is `codex exec --yolo`.
 - Polls PR state with `gh pr view` when a PR is present.
 - In review polling, Loops treats a PR as approved if `reviewDecision=APPROVED` or if a matching approval comment from `loop_config.approval_comment_usernames` is newer than the latest `CHANGES_REQUESTED` review.
