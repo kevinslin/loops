@@ -194,7 +194,7 @@ From any non-DONE state:
 - [x] Add guardrails (max iterations, idle poll escalation to `NEEDS_INPUT`, structured logs).
 
 ### Phase 4: Add explicit retry/crash recovery
-- [ ] Ensure RUNNING state detects existing session and resumes with `"continue"` prompt.
+- [x] Ensure RUNNING follow-up turns reuse existing `codex_session.id` via resume-capable invocation.
 - [ ] Ensure NEEDS_INPUT retry re-enters wait without re-sending signal.
 - [ ] Ensure WAITING_ON_REVIEW retry continues polling without side effects.
 - [ ] Ensure PR_APPROVED retry re-runs trigger:merge-pr idempotently.
@@ -203,8 +203,8 @@ From any non-DONE state:
 ### Phase 5: Verification and docs
 - [x] Add integration tests for lifecycle transitions to `DONE`.
 - [x] Add resume test starting from `WAITING_ON_REVIEW`.
-- [ ] Update DESIGN.md with retry semantics and trigger descriptions.
-- [ ] Run full test suite and capture results.
+- [x] Update DESIGN.md with retry semantics and trigger descriptions.
+- [x] Run full test suite and capture results.
 
 **Dependencies between phases:**
 - Phase 2 depends on Phase 1 schema changes.
@@ -220,7 +220,8 @@ From any non-DONE state:
 - `python -m pytest`
 
 Result:
-- 42 passed (full suite), 0 failed.
+- 106 passed (full suite), 0 failed.
+- 25 passed in targeted inner-loop regression run (`python -m pytest tests/test_inner_loop.py -q`).
 
 ---
 

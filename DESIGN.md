@@ -276,7 +276,7 @@ Task provider (GitHub Projects V2)
 
 #### Inner loop
 - Runs a small state model derived from PR status plus a single flag (`needs_user_input`).
-- Uses `codex exec` to execute the single prompt and records a session id for resuming.
+- Uses `codex exec` for the first turn, then `codex exec resume <session_id>` for subsequent turns when `codex_session.id` is available.
 - Is the single writer for `[INNER_LOOP_ROOT]/run.json`.
 - Consumes model-authored signals from a run-local queue and applies validated state changes to `run.json`.
 - Writes inner-loop orchestration logs to `[INNER_LOOP_ROOT]/run.log` and appends Codex output there.
@@ -386,7 +386,7 @@ Precedence rule: `NEEDS_INPUT` has priority over `DONE`; if `needs_user_input=tr
 
 **Initial entry (no state file):**
 - LLM: start with prompt tagged `<state>RUNNING</state>`.
-- Retry: resume session ID with prompt `"continue"` when a prior session is recorded.
+- Retry: resume the prior session ID and send the next state-tagged prompt through `codex exec resume <session_id>` when a prior session is recorded.
 
 **Loop** (read `run.json`, derive state, dispatch):
 
@@ -433,7 +433,7 @@ From any non-DONE state:
 | State | On crash / restart | Action |
 |-------|--------------------|--------|
 | `RUNNING` (no state file) | State file missing | Start fresh with prompt |
-| `RUNNING` (session recorded) | Resume existing session | Resume session ID with prompt `"continue"` |
+| `RUNNING` (session recorded) | Resume existing session | Resume session ID and send the next state-tagged prompt |
 | `NEEDS_INPUT` | Still waiting | Re-enter wait; do not re-send signal |
 | `WAITING_ON_REVIEW` | Polling interrupted | Continue polling PR status |
 | `PR_APPROVED` | Merge may be partial | Re-run trigger:merge-pr (idempotent) |
@@ -466,7 +466,7 @@ From any non-DONE state:
 - Direct module callers still work (`python -m loops.inner_loop`, `python -m loops.state_signal`).
 
 ### Prompt
-Single prompt used for initial run and all resumes:
+Single prompt template used for initial run and resume turns:
 
 ```text
 Use dev.do to implement the task, open a PR, wait for review, address feedback, and cleanup when approved.

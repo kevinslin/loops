@@ -58,6 +58,7 @@ def _write_codex_stub(path: Path) -> None:
     path.write_text(
         "\n".join(
             [
+                "#!/usr/bin/env python3",
                 "import json",
                 "import os",
                 "import sys",
@@ -70,6 +71,18 @@ def _write_codex_stub(path: Path) -> None:
                 "        handle.write(stdin.replace('\\n', '\\\\n'))",
                 "        handle.write('\\n')",
                 "",
+                "args_log = os.environ.get('STUB_ARGS_LOG')",
+                "if args_log:",
+                "    with Path(args_log).open('a', encoding='utf-8') as handle:",
+                "        handle.write(' '.join(sys.argv[1:]))",
+                "        handle.write('\\n')",
+                "",
+                "resume_session = None",
+                "if 'resume' in sys.argv:",
+                "    idx = sys.argv.index('resume')",
+                "    if idx + 1 < len(sys.argv):",
+                "        resume_session = sys.argv[idx + 1]",
+                "",
                 "counter_path = Path(os.environ['STUB_COUNTER_PATH'])",
                 "if counter_path.exists():",
                 "    count = int(counter_path.read_text())",
@@ -78,7 +91,10 @@ def _write_codex_stub(path: Path) -> None:
                 "count += 1",
                 "counter_path.write_text(str(count))",
                 "",
-                "print(json.dumps({'session_id': f'session-{count}'}))",
+                "if resume_session is not None:",
+                "    print(json.dumps({'session_id': resume_session}))",
+                "else:",
+                "    print(json.dumps({'session_id': f'session-{count}'}))",
                 "if count == 1:",
                 "    print('Opened PR https://github.com/acme/api/pull/42')",
                 "else:",
@@ -90,20 +106,27 @@ def _write_codex_stub(path: Path) -> None:
     )
 
 
+def _write_codex_cli_stub(path: Path) -> None:
+    _write_codex_stub(path)
+    path.chmod(0o755)
+
+
 def test_inner_loop_reaches_done_lifecycle(tmp_path, monkeypatch) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     _write_run_record(run_dir)
 
-    stub = tmp_path / "codex_stub.py"
-    _write_codex_stub(stub)
+    stub = tmp_path / "codex"
+    _write_codex_cli_stub(stub)
     counter_path = tmp_path / "counter.txt"
     prompt_log_path = tmp_path / "prompts.log"
+    args_log_path = tmp_path / "args.log"
     monkeypatch.setenv("STUB_COUNTER_PATH", str(counter_path))
     monkeypatch.setenv("STUB_PROMPT_LOG", str(prompt_log_path))
+    monkeypatch.setenv("STUB_ARGS_LOG", str(args_log_path))
     monkeypatch.setenv(
         "CODEX_CMD",
-        f"{shlex.quote(sys.executable)} {shlex.quote(str(stub))}",
+        f"{shlex.quote(str(stub))} exec",
     )
 
     poll_calls = {"count": 0}
@@ -154,6 +177,8 @@ def test_inner_loop_reaches_done_lifecycle(tmp_path, monkeypatch) -> None:
     prompts = prompt_log_path.read_text()
     assert "<state>RUNNING</state>" in prompts
     assert "<state>PR_APPROVED</state>" in prompts
+    args = [line.strip() for line in args_log_path.read_text().splitlines() if line]
+    assert args == ["exec", "exec resume session-1"]
 
 
 def test_inner_loop_sets_needs_user_input_on_nonzero_codex_exit(
@@ -820,6 +845,29 @@ def test_inner_loop_gh_comment_handler_requires_github_provider(
             sleep_fn=lambda _seconds: None,
             max_iterations=1,
         )
+
+
+def test_build_codex_turn_command_adds_resume_for_codex_exec() -> None:
+    session = inner_loop_module.CodexSession(id="session-123")
+    command, strategy = inner_loop_module._build_codex_turn_command(
+        ["codex", "exec", "--json"],
+        codex_session=session,
+    )
+
+    assert strategy == "resume"
+    assert command == ["codex", "exec", "--json", "resume", "session-123"]
+
+
+def test_build_codex_turn_command_keeps_non_codex_base_command() -> None:
+    session = inner_loop_module.CodexSession(id="session-123")
+    base_command = [sys.executable, "codex_stub.py"]
+    command, strategy = inner_loop_module._build_codex_turn_command(
+        base_command,
+        codex_session=session,
+    )
+
+    assert strategy == "resume_unsupported"
+    assert command == base_command
 
 
 def test_run_codex_streams_output_to_agent_log_while_running(tmp_path) -> None:

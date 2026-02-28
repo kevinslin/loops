@@ -69,6 +69,8 @@ UserHandoffHandler = Callable[[dict[str, Any]], HandoffResult | str | None]
 PRStatusFetcher = Callable[[RunPR], RunPR]
 SleepFn = Callable[[float], None]
 GH_PR_VIEW_JSON_FIELDS = "reviewDecision,mergedAt,url,number,latestReviews,comments"
+CODEX_EXEC_SUBCOMMANDS = {"exec", "e"}
+CODEX_LAUNCHER_SUBCOMMANDS = {"uv", "uvx"}
 
 
 @dataclass(frozen=True)
@@ -473,7 +475,14 @@ def run_inner_loop(
             # Run cleanup once for a given PR URL, then only poll until merged.
             if cleanup_executed_for_pr != run_record.pr.url:
                 cleanup_prompt = _build_cleanup_prompt(run_record.task.url, base_prompt)
-                output, exit_code = _run_codex(command, cleanup_prompt, agent_log)
+                output, exit_code = _invoke_codex(
+                    base_command=command,
+                    prompt=cleanup_prompt,
+                    agent_log=agent_log,
+                    run_log=run_log,
+                    codex_session=run_record.codex_session,
+                    turn_label="cleanup turn",
+                )
                 append_log(run_log, output)
                 if exit_code != 0:
                     run_record = _force_needs_input(
@@ -644,6 +653,53 @@ def _resolve_codex_command() -> list[str]:
     return command
 
 
+def _build_codex_turn_command(
+    base_command: list[str],
+    *,
+    codex_session: Optional[CodexSession],
+) -> tuple[list[str], str]:
+    if codex_session is None:
+        return list(base_command), "new"
+    resume_command = _inject_codex_resume_command(base_command, codex_session.id)
+    if resume_command is None:
+        return list(base_command), "resume_unsupported"
+    return resume_command, "resume"
+
+
+def _inject_codex_resume_command(
+    base_command: list[str],
+    session_id: str,
+) -> Optional[list[str]]:
+    command = list(base_command)
+    codex_index = _find_codex_token_index(command)
+    if codex_index is None:
+        return None
+    exec_index = codex_index + 1
+    if len(command) <= exec_index or command[exec_index] not in CODEX_EXEC_SUBCOMMANDS:
+        return None
+    if "resume" in command[exec_index + 1 :]:
+        return command
+    return [*command, "resume", session_id]
+
+
+def _find_codex_token_index(command: list[str]) -> Optional[int]:
+    if not command:
+        return None
+    first = Path(command[0]).name.lower()
+    if first == "codex":
+        return 0
+    if (
+        first in CODEX_LAUNCHER_SUBCOMMANDS
+        and len(command) > 1
+        and Path(command[1]).name.lower() == "codex"
+    ):
+        return 1
+    if first.startswith("python") and len(command) > 2:
+        if command[1] == "-m" and command[2] == "codex":
+            return 2
+    return None
+
+
 def _load_prompt_file(prompt_file: Optional[Path]) -> Optional[str]:
     if prompt_file is None:
         prompt_path = os.environ.get("LOOPS_PROMPT_FILE") or os.environ.get(
@@ -739,6 +795,37 @@ def _run_codex(command: list[str], prompt: str, agent_log: Path) -> tuple[str, i
         return message, 1
 
 
+def _invoke_codex(
+    *,
+    base_command: list[str],
+    prompt: str,
+    agent_log: Path,
+    run_log: Path,
+    codex_session: Optional[CodexSession],
+    turn_label: str,
+) -> tuple[str, int]:
+    command, strategy = _build_codex_turn_command(
+        base_command,
+        codex_session=codex_session,
+    )
+    if strategy == "resume":
+        append_log(
+            run_log,
+            f"[loops] {turn_label}: resuming codex session {codex_session.id}",
+        )
+    elif strategy == "resume_unsupported":
+        append_log(
+            run_log,
+            (
+                f"[loops] {turn_label}: session id present but CODEX_CMD does not "
+                "support automatic resume; running base command"
+            ),
+        )
+    else:
+        append_log(run_log, f"[loops] {turn_label}: starting new codex session")
+    return _run_codex(command, prompt, agent_log)
+
+
 def _extract_session_id(output: str) -> Optional[str]:
     for line in output.splitlines():
         try:
@@ -784,14 +871,21 @@ def _run_codex_turn(
             user_response=user_response,
         )
 
-    output, exit_code = _run_codex(command, prompt, agent_log)
+    output, exit_code = _invoke_codex(
+        base_command=command,
+        prompt=prompt,
+        agent_log=agent_log,
+        run_log=run_log,
+        codex_session=run_record.codex_session,
+        turn_label="codex turn",
+    )
     append_log(run_log, output)
 
     session_id = _extract_session_id(output)
     codex_session = run_record.codex_session
     if session_id is not None:
         codex_session = CodexSession(id=session_id, last_prompt=prompt)
-    elif exit_code == 0:
+    elif exit_code == 0 and codex_session is None:
         append_log(run_log, "[loops] warning: no session id detected in codex output")
 
     discovered_pr = _extract_pr_from_output(output)
