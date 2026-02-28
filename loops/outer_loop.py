@@ -34,9 +34,6 @@ from loops.providers.registry import get_provider_definition
 from loops.run_record import RunRecord, Task, write_run_record
 from loops.task_provider import TaskProvider
 
-DEFAULT_POLL_INTERVAL_SECONDS = 30
-DEFAULT_PARALLEL_TASKS_LIMIT = 5
-DEFAULT_TASK_READY_STATUS = "Ready"
 INNER_LOOP_RUNS_DIR_NAME = "jobs"
 LATEST_LOOPS_CONFIG_VERSION = 1
 
@@ -45,13 +42,13 @@ LATEST_LOOPS_CONFIG_VERSION = 1
 class OuterLoopConfig:
     """Configuration for the outer loop polling and dispatch behavior."""
 
-    poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS
+    poll_interval_seconds: int = 30
     parallel_tasks: bool = False
-    parallel_tasks_limit: int = DEFAULT_PARALLEL_TASKS_LIMIT
+    parallel_tasks_limit: int = 5
     sync_mode: bool = False
     emit_on_first_run: bool = False
     force: bool = False
-    task_ready_status: str = DEFAULT_TASK_READY_STATUS
+    task_ready_status: str = "Ready"
     approval_comment_usernames: tuple[str, ...] = ()
     approval_comment_pattern: str = DEFAULT_APPROVAL_COMMENT_PATTERN
     handoff_handler: str = DEFAULT_HANDOFF_HANDLER
