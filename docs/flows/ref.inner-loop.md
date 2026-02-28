@@ -112,7 +112,7 @@ None identified.
 | Name | Where Read | Default | Effect on Flow |
 |---|---|---|---|
 | `LOOPS_RUN_DIR` | `loops/inner_loop.py:973`, `loops/cli.py:223` | Required when `--run-dir` is omitted | Selects the run directory that provides `run.json` and runtime logs. |
-| `CODEX_CMD` | `loops/inner_loop.py:481` | `codex exec --yolo` | Controls the command used for Codex turns and cleanup turns. |
+| `CODEX_CMD` | `loops/inner_loop.py` command resolver | `codex exec --yolo` | Defines the base Codex command; when `codex_session.id` exists and command shape is `codex exec`, the loop appends `resume <session_id>` for subsequent turns. |
 | `LOOPS_PROMPT_FILE` | `loops/inner_loop.py:489` | unset | Optional base prompt prepended to generated prompts. |
 | `CODEX_PROMPT_FILE` | `loops/inner_loop.py:489` | unset | Secondary fallback prompt file when `LOOPS_PROMPT_FILE` is unset. |
 | `LOOPS_HANDOFF_HANDLER` | `loops/inner_loop.py` handoff resolver | `stdin_handler` | Selects built-in NEEDS_INPUT handoff strategy (`stdin_handler` or `gh_comment_handler`). |
@@ -148,7 +148,7 @@ None identified.
 | `pr.review_status` | Updated from Codex output or PR poll (`loops/inner_loop.py:635`, `loops/inner_loop.py:259`, `loops/inner_loop.py:392`) | Reloaded each iteration (`loops/inner_loop.py:87`) | Branches into `WAITING_ON_REVIEW`/`PR_APPROVED` (`loops/inner_loop.py:208`, `loops/inner_loop.py:325`) | Yes |
 | `pr.merged_at` | Written by PR status poll (`loops/inner_loop.py:767`, persisted at `loops/inner_loop.py:392`) | Reloaded each iteration (`loops/inner_loop.py:87`) | Triggers `DONE` via `derive_run_state` (`loops/run_record.py:142`) | Yes |
 | `pr.latest_review_submitted_at` and `pr.review_addressed_at` | Written in gh fetch + review-feedback codex completion (`loops/inner_loop.py:767`, `loops/inner_loop.py:659`) | Reloaded each iteration (`loops/inner_loop.py:87`) | Checked by `_is_new_review` gate (`loops/inner_loop.py:727`) | Yes |
-| `codex_session.id` | Extracted and persisted after Codex turn (`loops/inner_loop.py:628`, `loops/inner_loop.py:664`) | Reloaded each iteration (`loops/inner_loop.py:87`) | Used for durable session metadata and diagnostics | Yes |
+| `codex_session.id` | Extracted and persisted after Codex turn (`loops/inner_loop.py`) | Reloaded each iteration (`loops/inner_loop.py:87`) | Drives `codex exec resume <session_id>` for follow-up turns and remains durable session metadata | Yes |
 | `handoff_gh_comment_state.json` | Written by `gh_comment_handler` after prompt/reply detection | Reloaded on each NEEDS_INPUT iteration when handler is `gh_comment_handler` | Enforces idempotent prompt posting and reply de-duplication | Yes |
 | Signal queue offset (`state_signals.offset`) | Written after successful signal consume (`loops/inner_loop.py:923`, `loops/inner_loop.py:941`) | Read before queue consume (`loops/inner_loop.py:878`) | Prevents duplicate signal application (`loops/inner_loop.py:945`) | Yes |
 
@@ -276,6 +276,7 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
 
 - Codex turn behavior (`loops/inner_loop.py:601`):
   - Builds prompt (standard vs review-feedback path).
+  - Selects invocation strategy (new session vs `resume <session_id>`) from `run_record.codex_session`.
   - Streams stdout/stderr into `agent.log` and appends the same output to `run.log`.
   - Extracts session id and PR URL from output.
   - Sets `needs_user_input=true` on non-zero exits or successful turns with no PR detected.
@@ -371,6 +372,9 @@ A: If exit code is zero but no PR is detected in output, the loop requests manua
 Q: Why does review feedback not always re-trigger Codex?
 A: The loop only resumes Codex on `changes_requested` when `_is_new_review` is true, using review timestamps to avoid duplicate rework (`loops/inner_loop.py:263`, `loops/inner_loop.py:727`).
 
+Q: When does inner loop reuse the same Codex session?
+A: After the first successful turn stores `codex_session.id`, follow-up turns (review-feedback turns and PR-approved cleanup turns) attempt `codex exec resume <session_id>`; if `CODEX_CMD` is not codex-shaped, the loop logs fallback and runs the base command.
+
 Q: Can a PR move to `PR_APPROVED` without `reviewDecision=APPROVED`?
 A: Yes. If configured allowlisted usernames post a matching approval comment and it is newer than the latest `CHANGES_REQUESTED` review, polling treats the PR as approved.
 
@@ -391,3 +395,4 @@ A: Inner loop only. Signal producers append to queue; they do not mutate `run.js
 - 2026-02-17: Updated inner-loop pseudocode to reflect run-scoped approval config loading and context-aware PR polling path. (019c68ed-a6c5-78e0-891a-6b70a1a1450c)
 - 2026-02-19: Added built-in handoff handler flow (`stdin_handler` and `gh_comment_handler`) including GitHub issue comment handoff state tracking. (019c747a-a05e-7be1-b09d-66c5debb37c4)
 - 2026-02-28: Documented `LOOPS_STREAM_LOGS_STDOUT` behavior for sync-mode mirroring of inner-loop `run.log` lines to stdout. (019ca579-eb69-7883-a6a5-ff48348ca2ab)
+- 2026-02-28: Documented Codex session continuity contract (`codex exec resume <session_id>` on follow-up turns when supported by `CODEX_CMD`). (019ca57b-2249-72f2-b89a-13a186f6c753)
