@@ -227,6 +227,7 @@ Notes:
 - `loops doctor` upgrades `config.json` to the latest supported version and fills missing `loop_config` keys with defaults.
 - `provider_id` currently supports only `"github_projects_v2"`.
 - `provider_config` is validated by the provider's Pydantic model.
+- `provider_config` init defaults are emitted from provider-owned canonical builders (for `github_projects_v2`, from `loops.providers.github_projects_v2`).
 - `provider_config.filters` supports provider-side `key=value` filters for GitHub Projects V2 (`repository`, `tag`).
 - Required provider secrets are validated from environment variables before provider construction.
 - `loop_config` is optional; omitted keys fall back to defaults.
@@ -235,7 +236,7 @@ Notes:
 - `loop_config.approval_comment_pattern` controls which comment bodies count as approval signals.
 - `loop_config.handoff_handler` selects built-in NEEDS_INPUT handoff behavior (`stdin_handler` default, `gh_comment_handler` for issue-comment handoff).
 - `inner_loop` is optional when running via the CLI; if omitted, the CLI uses
-  `python -m loops.inner_loop` with `append_task_url=false`.
+  a canonical default builder for `python -m loops.inner_loop` with `append_task_url=false`.
 - `python -m loops run --task-url <task-url>` targets exactly one task from the provider poll, implies `run-once`, `force=true`, and `sync_mode=true`, and does not mutate `provider_config.url`.
 - Installed package entrypoint `loops` is equivalent to `python -m loops` and uses the same argv normalization.
 

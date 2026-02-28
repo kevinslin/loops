@@ -17,6 +17,7 @@ from loops.outer_loop import (
     build_default_loop_config_payload,
     load_config,
 )
+from loops.providers.github_projects_v2 import build_default_provider_config_payload
 from loops.run_record import RunPR, RunRecord, Task, read_run_record, write_run_record
 
 
@@ -35,7 +36,9 @@ def test_init_creates_default_loops_structure(tmp_path: Path) -> None:
     config_payload = json.loads((loops_root / "config.json").read_text())
     assert config_payload["version"] == LATEST_LOOPS_CONFIG_VERSION
     assert config_payload["provider_id"] == "github_projects_v2"
+    assert config_payload["provider_config"] == build_default_provider_config_payload()
     assert config_payload["loop_config"] == build_default_loop_config_payload()
+    assert config_payload["inner_loop"] == cli_module._build_default_inner_loop_payload()
     assert config_payload["loop_config"]["sync_mode"] is False
     assert config_payload["loop_config"]["approval_comment_usernames"] == []
     assert config_payload["loop_config"]["approval_comment_pattern"] == r"^\s*/approve\b"
@@ -448,3 +451,9 @@ def test_loop_config_defaults_are_consistent_across_entrypoints(tmp_path: Path) 
         loaded_defaults["approval_comment_usernames"]
     )
     assert loaded_defaults == expected_defaults
+
+
+def test_default_provider_and_inner_loop_payloads_are_canonical() -> None:
+    default_config = cli_module._build_default_config()
+    assert default_config["provider_config"] == build_default_provider_config_payload()
+    assert default_config["inner_loop"] == cli_module._build_default_inner_loop_payload()
