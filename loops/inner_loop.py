@@ -475,7 +475,7 @@ def run_inner_loop(
             # Run cleanup once for a given PR URL, then only poll until merged.
             if cleanup_executed_for_pr != run_record.pr.url:
                 cleanup_prompt = _build_cleanup_prompt(run_record.task.url, base_prompt)
-                output, exit_code = _invoke_codex(
+                output, exit_code, _resume_fallback_used = _invoke_codex(
                     base_command=command,
                     prompt=cleanup_prompt,
                     agent_log=agent_log,
@@ -803,7 +803,7 @@ def _invoke_codex(
     run_log: Path,
     codex_session: Optional[CodexSession],
     turn_label: str,
-) -> tuple[str, int]:
+) -> tuple[str, int, bool]:
     command, strategy = _build_codex_turn_command(
         base_command,
         codex_session=codex_session,
@@ -823,10 +823,40 @@ def _invoke_codex(
         )
     else:
         append_log(run_log, f"[loops] {turn_label}: starting new codex session")
-    return _run_codex(command, prompt, agent_log)
+    output, exit_code = _run_codex(command, prompt, agent_log)
+    if strategy != "resume" or exit_code == 0:
+        return output, exit_code, False
+
+    append_log(
+        run_log,
+        (
+            f"[loops] {turn_label}: resume command failed "
+            f"(exit_code={exit_code}); retrying without resume"
+        ),
+    )
+    fallback_output, fallback_exit_code = _run_codex(list(base_command), prompt, agent_log)
+    if fallback_exit_code == 0:
+        append_log(
+            run_log,
+            f"[loops] {turn_label}: fallback without resume succeeded",
+        )
+    else:
+        append_log(
+            run_log,
+            (
+                f"[loops] {turn_label}: fallback without resume failed "
+                f"(exit_code={fallback_exit_code})"
+            ),
+        )
+    merged_output = output
+    if merged_output and not merged_output.endswith("\n"):
+        merged_output += "\n"
+    merged_output += fallback_output
+    return merged_output, fallback_exit_code, True
 
 
 def _extract_session_id(output: str) -> Optional[str]:
+    json_session_id: Optional[str] = None
     for line in output.splitlines():
         try:
             payload = json.loads(line)
@@ -834,15 +864,17 @@ def _extract_session_id(output: str) -> Optional[str]:
             continue
         if isinstance(payload, dict):
             if "session_id" in payload:
-                return str(payload["session_id"])
+                json_session_id = str(payload["session_id"])
             if "session" in payload:
-                return str(payload["session"])
-    match = SESSION_ID_PATTERN.search(output)
-    if match:
-        return match.group(1)
-    match = UUID_PATTERN.search(output)
-    if match:
-        return match.group(0)
+                json_session_id = str(payload["session"])
+    if json_session_id is not None:
+        return json_session_id
+    session_id_matches = list(SESSION_ID_PATTERN.finditer(output))
+    if session_id_matches:
+        return session_id_matches[-1].group(1)
+    uuid_matches = list(UUID_PATTERN.finditer(output))
+    if uuid_matches:
+        return uuid_matches[-1].group(0)
     return None
 
 
@@ -871,7 +903,7 @@ def _run_codex_turn(
             user_response=user_response,
         )
 
-    output, exit_code = _invoke_codex(
+    output, exit_code, resume_fallback_used = _invoke_codex(
         base_command=command,
         prompt=prompt,
         agent_log=agent_log,
@@ -885,6 +917,9 @@ def _run_codex_turn(
     codex_session = run_record.codex_session
     if session_id is not None:
         codex_session = CodexSession(id=session_id, last_prompt=prompt)
+    elif resume_fallback_used:
+        # Drop stale session ids when resume failed and no replacement was emitted.
+        codex_session = None
     elif exit_code == 0 and codex_session is None:
         append_log(run_log, "[loops] warning: no session id detected in codex output")
 

@@ -39,13 +39,14 @@ def _write_run_record(
     run_dir: Path,
     *,
     pr: RunPR | None = None,
+    codex_session: inner_loop_module.CodexSession | None = None,
     needs_user_input: bool = False,
     needs_user_input_payload: dict[str, object] | None = None,
 ) -> None:
     record = RunRecord(
         task=_task(),
         pr=pr,
-        codex_session=None,
+        codex_session=codex_session,
         needs_user_input=needs_user_input,
         needs_user_input_payload=needs_user_input_payload,
         last_state="NEEDS_INPUT" if needs_user_input else "RUNNING",
@@ -868,6 +869,84 @@ def test_build_codex_turn_command_keeps_non_codex_base_command() -> None:
 
     assert strategy == "resume_unsupported"
     assert command == base_command
+
+
+def test_invoke_codex_retries_without_resume_on_resume_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run_codex(command: list[str], _prompt: str, _agent_log: Path) -> tuple[str, int]:
+        calls.append(command)
+        if len(calls) == 1:
+            return "resume failed", 17
+        return (
+            json.dumps({"session_id": "session-fresh"})
+            + "\nOpened PR https://github.com/acme/api/pull/99\n",
+            0,
+        )
+
+    monkeypatch.setattr(inner_loop_module, "_run_codex", fake_run_codex)
+    output, exit_code, resume_fallback_used = inner_loop_module._invoke_codex(
+        base_command=["codex", "exec"],
+        prompt="prompt",
+        agent_log=tmp_path / "agent.log",
+        run_log=tmp_path / "run.log",
+        codex_session=inner_loop_module.CodexSession(id="stale-session"),
+        turn_label="codex turn",
+    )
+
+    assert resume_fallback_used is True
+    assert exit_code == 0
+    assert calls == [
+        ["codex", "exec", "resume", "stale-session"],
+        ["codex", "exec"],
+    ]
+    assert inner_loop_module._extract_session_id(output) == "session-fresh"
+
+
+def test_run_codex_turn_clears_stale_session_after_failed_resume_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        codex_session=inner_loop_module.CodexSession(id="stale-session"),
+    )
+
+    def fake_invoke_codex(
+        *,
+        base_command: list[str],
+        prompt: str,
+        agent_log: Path,
+        run_log: Path,
+        codex_session: inner_loop_module.CodexSession | None,
+        turn_label: str,
+    ) -> tuple[str, int, bool]:
+        del base_command, prompt, agent_log, run_log, codex_session, turn_label
+        return "resume failed\nfallback failed\n", 17, True
+
+    monkeypatch.setattr(inner_loop_module, "_invoke_codex", fake_invoke_codex)
+    run_json_path = run_dir / "run.json"
+    updated = inner_loop_module._run_codex_turn(
+        run_json_path=run_json_path,
+        run_log=run_dir / "run.log",
+        agent_log=run_dir / "agent.log",
+        run_record=read_run_record(run_json_path),
+        command=["codex", "exec"],
+        base_prompt=None,
+        review_feedback=False,
+    )
+
+    assert updated.codex_session is None
+    assert updated.needs_user_input is True
+    assert updated.needs_user_input_payload == {
+        "message": "Codex exited with a non-zero status. Provide guidance.",
+        "context": {"exit_code": 17},
+    }
 
 
 def test_run_codex_streams_output_to_agent_log_while_running(tmp_path) -> None:
