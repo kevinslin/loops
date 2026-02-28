@@ -74,6 +74,7 @@ GH_PR_VIEW_JSON_FIELDS = (
 )
 CODEX_EXEC_SUBCOMMANDS = {"exec", "e"}
 CODEX_LAUNCHER_SUBCOMMANDS = {"uv", "uvx"}
+APPROVAL_REVIEW_STATES = {"COMMENTED", "APPROVED"}
 
 
 @dataclass(frozen=True)
@@ -1315,6 +1316,45 @@ def _extract_latest_allowlisted_approval_comment(
     return latest
 
 
+def _extract_latest_allowlisted_approval_review(
+    payload: dict[str, Any],
+    comment_approval: CommentApprovalSettings,
+) -> tuple[str, str] | None:
+    if not comment_approval.enabled:
+        return None
+    reviews = payload.get("reviews")
+    if not isinstance(reviews, list) or not reviews:
+        return None
+    latest: tuple[str, str] | None = None
+    for review in reviews:
+        if not isinstance(review, dict):
+            continue
+        review_state = str(review.get("state", "")).upper()
+        if review_state not in APPROVAL_REVIEW_STATES:
+            continue
+        author_payload = review.get("author")
+        author_login = (
+            author_payload.get("login")
+            if isinstance(author_payload, dict)
+            else None
+        )
+        if not isinstance(author_login, str):
+            continue
+        if author_login.casefold() not in comment_approval.allowed_usernames:
+            continue
+        body = review.get("body")
+        if not isinstance(body, str):
+            continue
+        if comment_approval.approval_regex.search(body) is None:
+            continue
+        submitted_at = review.get("submittedAt")
+        if not isinstance(submitted_at, str):
+            continue
+        if latest is None or submitted_at > latest[0]:
+            latest = (submitted_at, author_login)
+    return latest
+
+
 def _extract_latest_plain_comment_feedback(
     payload: dict[str, Any],
 ) -> tuple[str, str] | None:
@@ -1391,6 +1431,29 @@ def _select_newer_feedback_signal(
         )
         if latest is None or plain_feedback[0] > latest[0]:
             latest = plain_feedback
+    return latest
+
+
+def _select_newer_approval_signal(
+    *,
+    approval_comment: tuple[str, str] | None,
+    approval_review: tuple[str, str] | None,
+) -> tuple[str, str, str] | None:
+    latest: tuple[str, str, str] | None = None
+    if approval_comment is not None:
+        latest = (
+            approval_comment[0],
+            approval_comment[1],
+            "comment",
+        )
+    if approval_review is not None:
+        review_signal = (
+            approval_review[0],
+            approval_review[1],
+            "review",
+        )
+        if latest is None or review_signal[0] > latest[0]:
+            latest = review_signal
     return latest
 
 
@@ -1494,23 +1557,32 @@ def _fetch_pr_status_with_gh_with_context(
             payload,
             comment_approval,
         )
-        if latest_approval_comment is not None:
-            comment_timestamp, approval_author = latest_approval_comment
+        latest_approval_review = _extract_latest_allowlisted_approval_review(
+            payload,
+            comment_approval,
+        )
+        latest_approval_signal = _select_newer_approval_signal(
+            approval_comment=latest_approval_comment,
+            approval_review=latest_approval_review,
+        )
+        if latest_approval_signal is not None:
+            approval_timestamp, approval_author, approval_source = latest_approval_signal
             if (
                 latest_changes_requested_at is None
-                or comment_timestamp > latest_changes_requested_at
+                or approval_timestamp > latest_changes_requested_at
             ):
                 review_status = "approved"
                 approved_by_comment = True
                 approved_by = approval_author
-                latest_review_submitted_at = comment_timestamp
+                latest_review_submitted_at = approval_timestamp
             else:
                 _log(
                     (
-                        "[loops] ignoring allowlisted approval comment because a newer "
+                        "[loops] ignoring allowlisted approval "
+                        f"{approval_source} because a newer "
                         "changes_requested review exists: "
                         f"pr_url={pr.url} "
-                        f"approval_comment_at={comment_timestamp} "
+                        f"approval_signal_at={approval_timestamp} "
                         f"latest_changes_requested_at={latest_changes_requested_at}"
                     )
                 )

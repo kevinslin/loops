@@ -169,7 +169,7 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
     prStatusFetcher = (pr) => {
       [updatedPr, approvedByComment, approver] = pollPrWithGhAndContext(pr, commentApproval)
       if (approvedByComment) {
-        log(`[loops] treating PR as approved via allowlisted approval comment by ${approver}`)
+        log(`[loops] treating PR as approved via allowlisted approval signal by ${approver}`)
       }
       return updatedPr
     }
@@ -294,7 +294,7 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
 - Review polling behavior (`loops/inner_loop.py:767`):
   - Loads comment-approval settings once per run from `inner_loop_approval_config.json` and compiles approval pattern with safe fallback.
   - Calls `gh pr view ... --json reviewDecision,mergedAt,url,number,latestReviews,reviews,comments`.
-  - Maps decision into `review_status`, captures latest relevant review timestamp, and may override to approved when an allowlisted approval comment matches pattern and is newer than latest `CHANGES_REQUESTED` review.
+  - Maps decision into `review_status`, captures latest relevant review timestamp, and may override to approved when the newest allowlisted approval signal (plain PR comment or `COMMENTED`/`APPROVED` review body matching pattern) is newer than latest `CHANGES_REQUESTED` review.
   - When review status remains open, chooses the newest timestamp between the latest `COMMENTED` PR review and plain PR discussion comment and uses that as the feedback signal.
 
 - Approved-state merge polling behavior (`loops/inner_loop.py`):
@@ -391,7 +391,7 @@ Q: When does inner loop reuse the same Codex session?
 A: After the first successful turn stores `codex_session.id`, follow-up turns (review-feedback turns and PR-approved cleanup turns) attempt `codex exec resume <session_id>`; if `CODEX_CMD` is not codex-shaped, the loop logs fallback and runs the base command.
 
 Q: Can a PR move to `PR_APPROVED` without `reviewDecision=APPROVED`?
-A: Yes. If configured allowlisted usernames post a matching approval comment and it is newer than the latest `CHANGES_REQUESTED` review, polling treats the PR as approved.
+A: Yes. If configured allowlisted usernames post matching approval text in either a plain PR comment or a `COMMENTED`/`APPROVED` review body, and that signal is newer than the latest `CHANGES_REQUESTED` review, polling treats the PR as approved.
 
 Q: How does `gh_comment_handler` know which comment to consume?
 A: It only accepts comments that start with `/loops-reply` and are newer than the current prompt comment, tracked with run-local handoff state.
@@ -413,4 +413,5 @@ A: Inner loop only. Signal producers append to queue; they do not mutate `run.js
 - 2026-02-28: Documented `LOOPS_STREAM_LOGS_STDOUT` behavior for sync-mode mirroring of inner-loop `run.log` lines to stdout. (019ca579-eb69-7883-a6a5-ff48348ca2ab)
 - 2026-02-28: Updated review-feedback flow to include new plain PR comment signals in `WAITING_ON_REVIEW` resume logic. (019ca579-eb69-7883-a6a5-ff48348ca2ab)
 - 2026-02-28: Updated review-feedback flow to select the newest feedback timestamp across `COMMENTED` PR reviews and plain PR comments. (019ca579-eb69-7883-a6a5-ff48348ca2ab)
+- 2026-02-28: Expanded allowlisted approval-pattern matching to include `COMMENTED`/`APPROVED` review bodies in addition to plain PR comments. (019ca579-eb69-7883-a6a5-ff48348ca2ab)
 - 2026-02-28: Documented Codex session continuity contract (`codex exec resume <session_id>` on follow-up turns when supported by `CODEX_CMD`). (019ca57b-2249-72f2-b89a-13a186f6c753)

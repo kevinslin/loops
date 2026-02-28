@@ -21,6 +21,7 @@ The initial inner loop executed Codex once and only toggled `needs_user_input` o
 - `loops/state_signal.py` provides a validated signal queue entrypoint.
 - `loops/inner_loop.py` now runs a multi-state orchestrator until derived `DONE`.
 - Review-feedback Codex turns now include queued user handoff responses from `NEEDS_INPUT`.
+- Allowlisted approval-pattern overrides now accept matching text in both plain PR comments and `COMMENTED`/`APPROVED` review bodies.
 - Integration tests validate lifecycle transitions, handoff, and resume behavior.
 
 ### Constraints

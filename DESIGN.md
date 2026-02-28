@@ -51,9 +51,9 @@ type OuterLoopConfig = {
     force: boolean
     // status of the task that is ready to be processed
     task_ready_status: string
-    // allowlisted usernames whose approval comments can mark PR approved
+    // allowlisted usernames whose approval signals can mark PR approved
     approval_comment_usernames: string[]
-    // regex pattern for approval comments from allowlisted usernames
+    // regex pattern for approval text in comments/reviews from allowlisted usernames
     approval_comment_pattern: string
     // NEEDS_INPUT handoff strategy
     // stdin_handler | gh_comment_handler
@@ -484,7 +484,7 @@ Task: [task]
 - The inner loop polls PR status and updates `pr.review_status`.
 - When a review requests changes, the inner loop records `latest_review_submitted_at` (the review's `submittedAt` timestamp from GitHub) and invokes Codex to address the feedback. After Codex runs, `review_addressed_at` is set to `latest_review_submitted_at`. On subsequent polls, the loop only re-invokes Codex if `latest_review_submitted_at > review_addressed_at`, indicating a genuinely new review event. This prevents duplicate fix attempts when the reviewer has not yet re-reviewed.
 - When status is still open (no formal review decision), the inner loop uses the newest timestamp between `COMMENTED` PR review and plain PR discussion comment events as its feedback signal. It uses the same `latest_review_submitted_at > review_addressed_at` guard to decide whether to resume Codex.
-- When approval is detected (GitHub review decision or allowlisted approval comment newer than latest `CHANGES_REQUESTED` review), the inner loop runs cleanup immediately and appends `<state>PR_APPROVED</state>` to that cleanup prompt; if cleanup fails it sets `needs_user_input=true`.
+- When approval is detected (GitHub review decision or an allowlisted approval signal newer than latest `CHANGES_REQUESTED` review), the inner loop runs cleanup immediately and appends `<state>PR_APPROVED</state>` to that cleanup prompt; if cleanup fails it sets `needs_user_input=true`. Allowlisted approval signals are matched against both plain PR comments and `COMMENTED`/`APPROVED` review bodies.
 
 ## 8. Error handling and recovery
 
