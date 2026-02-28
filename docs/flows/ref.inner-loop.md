@@ -59,7 +59,7 @@ function run_inner_loop(run_dir):
     if state == WAITING_ON_REVIEW:
       poll PR; react to changes requested/approval/idle thresholds
     if state == PR_APPROVED:
-      run cleanup prompt once, poll merge state until DONE
+      run cleanup prompt once, poll merge state until DONE or idle-escalate to NEEDS_INPUT
 
   force NEEDS_INPUT and return
 ```
@@ -229,7 +229,10 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
         continue
       }
 
-      if (record.pr.reviewStatus === "changes_requested" && isNewReview(record.pr)) {
+      if (
+        (record.pr.reviewStatus === "changes_requested" && isNewReview(record.pr)) ||
+        (record.pr.reviewStatus === "open" && hasNewFeedbackEvent(record.pr))
+      ) {
         record = runCodexTurn(record, basePrompt, nextUserResponse, reviewFeedback=true)
         nextUserResponse = null
         cleanupExecutedForPr = null
@@ -261,8 +264,15 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
       updatedPr = prStatusFetcher(record.pr)
       record = writeRunRecord({ ...record, pr: updatedPr })
     } catch {
+      maybeEscalateIfMergePollingErrors()
       sleepWithBackoff()
       continue
+    }
+
+    if (deriveRunState(record.pr, record.needsUserInput) === "PR_APPROVED") {
+      maybeEscalateIfStaleApprovedState()
+    } else {
+      resetBackoffAndIdlePolls()
     }
 
     sleepWithBackoff()
@@ -283,8 +293,13 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
 
 - Review polling behavior (`loops/inner_loop.py:767`):
   - Loads comment-approval settings once per run from `inner_loop_approval_config.json` and compiles approval pattern with safe fallback.
-  - Calls `gh pr view ... --json reviewDecision,mergedAt,url,number,repository,latestReviews,comments`.
+  - Calls `gh pr view ... --json reviewDecision,mergedAt,url,number,latestReviews,reviews,comments`.
   - Maps decision into `review_status`, captures latest relevant review timestamp, and may override to approved when an allowlisted approval comment matches pattern and is newer than latest `CHANGES_REQUESTED` review.
+  - When review status remains open, chooses the newest timestamp between the latest `COMMENTED` PR review and plain PR discussion comment and uses that as the feedback signal.
+
+- Approved-state merge polling behavior (`loops/inner_loop.py`):
+  - Runs cleanup once per PR URL, then polls merge status.
+  - Uses the same idle-poll threshold gate as review polling: repeated poll errors or no merge progress force `NEEDS_INPUT` with manual guidance.
 
 - Signal consumption behavior (`loops/inner_loop.py:941`):
   - Reads unread JSONL entries from queue offset.
@@ -301,7 +316,7 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
 
 - Inner loop exits normally only when derived state is `DONE` (`loops/inner_loop.py:99`).
 - It can return early in non-interactive `NEEDS_INPUT` mode to hand control back to caller (`loops/inner_loop.py:119`).
-- It escalates to `NEEDS_INPUT` on repeated polling idleness or iteration cap (`loops/inner_loop.py:233`, `loops/inner_loop.py:409`).
+- It escalates to `NEEDS_INPUT` on repeated polling idleness (both review and approved states) or iteration cap (`loops/inner_loop.py:233`, `loops/inner_loop.py:409`).
 
 **File(s)**: `loops/inner_loop.py`, `loops/run_record.py`, `loops/state_signal.py`, `loops/outer_loop.py`, `loops/cli.py`
 
@@ -370,7 +385,7 @@ Q: Why can a successful Codex turn still transition to `NEEDS_INPUT`?
 A: If exit code is zero but no PR is detected in output, the loop requests manual guidance (`loops/inner_loop.py:647`).
 
 Q: Why does review feedback not always re-trigger Codex?
-A: The loop only resumes Codex on `changes_requested` when `_is_new_review` is true, using review timestamps to avoid duplicate rework (`loops/inner_loop.py:263`, `loops/inner_loop.py:727`).
+A: The loop resumes Codex only for new feedback events (`latest_review_submitted_at > review_addressed_at`): new `changes_requested` reviews, or new open-state feedback where the newest timestamp between `COMMENTED` PR review events and plain PR discussion comments has advanced. Duplicate events with unchanged timestamps are skipped.
 
 Q: When does inner loop reuse the same Codex session?
 A: After the first successful turn stores `codex_session.id`, follow-up turns (review-feedback turns and PR-approved cleanup turns) attempt `codex exec resume <session_id>`; if `CODEX_CMD` is not codex-shaped, the loop logs fallback and runs the base command.
@@ -389,10 +404,13 @@ A: Inner loop only. Signal producers append to queue; they do not mutate `run.js
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+- 2026-02-28: Documented bounded idle escalation in `PR_APPROVED` merge polling and aligned pseudocode with the runtime guardrail. (019ca583-faf1-7f72-95c8-b8e9cdd16046)
 - 2026-02-16: Created inner-loop flow doc for runtime state-machine behavior and integration points. (019c6863-d581-7f83-9809-fabbefa042e8)
 - 2026-02-17: Documented allowlisted comment-based approval detection and ordering guard against newer changes-requested reviews. (019c68ed-a6c5-78e0-891a-6b70a1a1450c)
 - 2026-02-17: Updated flow to use run-scoped `inner_loop_approval_config.json` transport instead of env-based approval settings. (019c68ed-a6c5-78e0-891a-6b70a1a1450c)
 - 2026-02-17: Updated inner-loop pseudocode to reflect run-scoped approval config loading and context-aware PR polling path. (019c68ed-a6c5-78e0-891a-6b70a1a1450c)
 - 2026-02-19: Added built-in handoff handler flow (`stdin_handler` and `gh_comment_handler`) including GitHub issue comment handoff state tracking. (019c747a-a05e-7be1-b09d-66c5debb37c4)
 - 2026-02-28: Documented `LOOPS_STREAM_LOGS_STDOUT` behavior for sync-mode mirroring of inner-loop `run.log` lines to stdout. (019ca579-eb69-7883-a6a5-ff48348ca2ab)
+- 2026-02-28: Updated review-feedback flow to include new plain PR comment signals in `WAITING_ON_REVIEW` resume logic. (019ca579-eb69-7883-a6a5-ff48348ca2ab)
+- 2026-02-28: Updated review-feedback flow to select the newest feedback timestamp across `COMMENTED` PR reviews and plain PR comments. (019ca579-eb69-7883-a6a5-ff48348ca2ab)
 - 2026-02-28: Documented Codex session continuity contract (`codex exec resume <session_id>` on follow-up turns when supported by `CODEX_CMD`). (019ca57b-2249-72f2-b89a-13a186f6c753)

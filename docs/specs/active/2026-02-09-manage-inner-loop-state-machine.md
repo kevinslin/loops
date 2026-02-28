@@ -77,9 +77,10 @@ The inner loop reads `run.json`, derives state, and dispatches to the matching h
 
 ##### If PR submitted → `WAITING_ON_REVIEW`
 - Set **S:WAITING_ON_REVIEW**.
-- Run poll script to check PR review status (fetches `latestReviews` from GitHub to get `latest_review_submitted_at`).
+- Run poll script to check PR review status (fetches `latestReviews`, `reviews`, and `comments` from GitHub to get `latest_review_submitted_at`).
 - If reviewer requested changes AND `latest_review_submitted_at > review_addressed_at` (new review event): exec **trigger:fix-pr** (resume Codex to address feedback), then record `review_addressed_at = latest_review_submitted_at`.
 - If reviewer requested changes but `latest_review_submitted_at <= review_addressed_at`: skip re-invocation, continue polling with backoff (already addressed this review round).
+- If status is open but feedback exists in either plain PR discussion comments or commented PR reviews, use whichever event has the newest timestamp (`latest_review_submitted_at > review_addressed_at`) to resume review fixes.
 - If reviewer approved: transition to `PR_APPROVED`.
 - **Retry** (crash while polling): Continue polling. State file already says `WAITING_ON_REVIEW`.
 
@@ -87,6 +88,7 @@ The inner loop reads `run.json`, derives state, and dispatches to the matching h
 - Set **S:PR_APPROVED**.
 - Run **trigger:merge-pr** (merge the PR and run post-merge cleanup).
 - On success: derive `DONE` from `pr.merged_at`.
+- If merge polling errors repeatedly or merge state remains unchanged for `max_idle_polls` polls (default: `20`), escalate to `NEEDS_INPUT` with manual guidance.
 - **Retry** (crash during cleanup): Continue. Re-run merge trigger (idempotent).
 
 ### State transition diagram
@@ -165,7 +167,7 @@ From any non-DONE state:
 ### Important Context
 - `_handle_state` behavior is encoded in explicit state branches inside `run_inner_loop`.
 - `NEEDS_INPUT` blocks until handoff returns a non-empty response.
-- `PR_APPROVED` runs trigger:merge-pr once per PR URL, then continues polling for merge.
+- `PR_APPROVED` runs trigger:merge-pr once per PR URL, then polls for merge with bounded idle escalation to `NEEDS_INPUT`.
 - Default inner-loop prompt includes: `If needing input from user, use "$needs_input" skill to request user input.`
 
 ---
@@ -247,7 +249,7 @@ Result:
 |------|--------|-------------|---------------------|
 | Handoff can block indefinitely waiting for user response | High | Med | Escalation path via persisted `NEEDS_INPUT` + heartbeat logging |
 | Invalid model payloads | Med | Med | Strict payload validation in run record and signal script |
-| Busy-looping in review wait state | Med | Med | Backoff + max idle polls + escalation to `NEEDS_INPUT` |
+| Busy-looping in review/approved wait states | Med | Med | Backoff + max idle polls + escalation to `NEEDS_INPUT` |
 | Premature terminal state from model text | High | Low | `DONE` derived only from persisted merged PR metadata |
 | Crash during cleanup leaves partial merge | Med | Low | trigger:merge-pr is idempotent; retry re-runs safely |
 
@@ -278,6 +280,7 @@ Result:
 - [x] Inner loop is sole writer of `run.json`.
 - [x] `NEEDS_INPUT` blocks until user response.
 - [x] Review waiting uses polling/backoff (no tight Codex loop).
+- [x] `PR_APPROVED` merge waiting uses bounded polling/backoff and escalates to `NEEDS_INPUT` when stalled.
 - [x] No direct model-declared `DONE` path exists.
 - [x] Integration tests cover lifecycle, handoff, and restart paths.
 - [ ] Each state has defined, tested retry/crash recovery behavior.

@@ -391,8 +391,9 @@ Precedence rule: `NEEDS_INPUT` has priority over `DONE`; if `needs_user_input=tr
 **Loop** (read `run.json`, derive state, dispatch):
 
 - **If `NEEDS_INPUT`**: send signal S:NEEDS_INPUT, payload: `{ questions }`. Block until user responds. Clear flag, persist answer, resume LLM. Retry: still wait for input.
-- **If PR submitted → `WAITING_ON_REVIEW`**: set S:WAITING_ON_REVIEW. Run poll script. If changes requested AND `latest_review_submitted_at > review_addressed_at` (new review event), exec trigger:fix-pr and record `review_addressed_at`. If approved, transition to PR_APPROVED. Retry: continue polling.
+- **If PR submitted → `WAITING_ON_REVIEW`**: set S:WAITING_ON_REVIEW. Run poll script. If changes requested AND `latest_review_submitted_at > review_addressed_at` (new review event), exec trigger:fix-pr and record `review_addressed_at`. Also, if status is open but a new feedback event is observed (`latest_review_submitted_at > review_addressed_at`) from the newest timestamp between `COMMENTED` PR review events and plain PR discussion comments, resume trigger:fix-pr and record `review_addressed_at` so the same feedback is not reprocessed. If approved, transition to PR_APPROVED. Retry: continue polling.
 - **If PR approved → `PR_APPROVED`**: set S:PR_APPROVED. Run trigger:merge-pr. On success, derive DONE from `pr.merged_at`. Retry: re-run trigger (idempotent).
+- **Bounded wait guardrail (review + approved states)**: both `WAITING_ON_REVIEW` and `PR_APPROVED` use idle-poll escalation. If status polling fails repeatedly or the state does not progress for `max_idle_polls` consecutive polls (default `20`), force `NEEDS_INPUT` with a manual-guidance payload. Poll backoff grows from `initial_poll_seconds` (default `5s`) up to `max_poll_seconds` (default `60s`).
 
 ### State transitions (ASCII)
 
@@ -436,7 +437,7 @@ From any non-DONE state:
 | `RUNNING` (session recorded) | Resume existing session | Resume session ID and send the next state-tagged prompt |
 | `NEEDS_INPUT` | Still waiting | Re-enter wait; do not re-send signal |
 | `WAITING_ON_REVIEW` | Polling interrupted | Continue polling PR status |
-| `PR_APPROVED` | Merge may be partial | Re-run trigger:merge-pr (idempotent) |
+| `PR_APPROVED` | Merge may be partial | Re-run trigger:merge-pr (idempotent); if merge remains stalled past idle threshold, escalate to `NEEDS_INPUT` |
 | `DONE` | Terminal | Exit immediately |
 
 ### Signal handling
@@ -482,6 +483,7 @@ Task: [task]
 - When a PR is opened, the inner loop records it in `run.json`.
 - The inner loop polls PR status and updates `pr.review_status`.
 - When a review requests changes, the inner loop records `latest_review_submitted_at` (the review's `submittedAt` timestamp from GitHub) and invokes Codex to address the feedback. After Codex runs, `review_addressed_at` is set to `latest_review_submitted_at`. On subsequent polls, the loop only re-invokes Codex if `latest_review_submitted_at > review_addressed_at`, indicating a genuinely new review event. This prevents duplicate fix attempts when the reviewer has not yet re-reviewed.
+- When status is still open (no formal review decision), the inner loop uses the newest timestamp between `COMMENTED` PR review and plain PR discussion comment events as its feedback signal. It uses the same `latest_review_submitted_at > review_addressed_at` guard to decide whether to resume Codex.
 - When approval is detected (GitHub review decision or allowlisted approval comment newer than latest `CHANGES_REQUESTED` review), the inner loop runs cleanup immediately and appends `<state>PR_APPROVED</state>` to that cleanup prompt; if cleanup fails it sets `needs_user_input=true`.
 
 ## 8. Error handling and recovery
@@ -489,6 +491,7 @@ Task: [task]
 - Non-fatal errors set `needs_user_input=true` and write the error message to `run.log`.
 - Fatal errors still write to `run.json` and terminate the run.
 - On restart, the inner loop recomputes derived state from `run.json` and resumes accordingly.
+- Repeated polling idleness in `WAITING_ON_REVIEW` or `PR_APPROVED` forces `NEEDS_INPUT` after the configured idle threshold.
 
 ## 9. Observability
 
