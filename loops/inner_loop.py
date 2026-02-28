@@ -361,6 +361,10 @@ def run_inner_loop(
                 updated_pr = pr_status_fetcher(run_record.pr)
             except Exception as exc:
                 append_log(run_log, f"[loops] failed to poll PR status: {exc}")
+                previous_state = derive_run_state(
+                    run_record.pr,
+                    run_record.needs_user_input,
+                )
                 run_record, idle_polls = _increment_idle_polls(
                     run_json_path=run_json_path,
                     run_record=run_record,
@@ -376,6 +380,19 @@ def run_inner_loop(
                     run_record.needs_user_input,
                 )
                 if next_state not in WAITING_STATES:
+                    _log_iteration_exit(
+                        run_log,
+                        iteration=iteration,
+                        next_state=next_state,
+                        run_record=run_record,
+                        action="review_poll_error",
+                        backoff_seconds=backoff_seconds,
+                        idle_polls=idle_polls,
+                    )
+                    continue
+                if previous_state != next_state:
+                    backoff_seconds = initial_poll_seconds
+                    idle_polls = 0
                     _log_iteration_exit(
                         run_log,
                         iteration=iteration,
@@ -439,6 +456,7 @@ def run_inner_loop(
                 derive_run_state(run_record.pr, run_record.needs_user_input)
                 == "WAITING_ON_REVIEW"
             ):
+                previous_state = "WAITING_ON_REVIEW"
                 run_record, idle_polls = _increment_idle_polls(
                     run_json_path=run_json_path,
                     run_record=run_record,
@@ -454,6 +472,19 @@ def run_inner_loop(
                     run_record.needs_user_input,
                 )
                 if next_state not in WAITING_STATES:
+                    _log_iteration_exit(
+                        run_log,
+                        iteration=iteration,
+                        next_state=next_state,
+                        run_record=run_record,
+                        action="review_poll",
+                        backoff_seconds=backoff_seconds,
+                        idle_polls=idle_polls,
+                    )
+                    continue
+                if previous_state != next_state:
+                    backoff_seconds = initial_poll_seconds
+                    idle_polls = 0
                     _log_iteration_exit(
                         run_log,
                         iteration=iteration,
@@ -540,6 +571,10 @@ def run_inner_loop(
                 updated_pr = pr_status_fetcher(run_record.pr)
             except Exception as exc:
                 append_log(run_log, f"[loops] failed to poll merge status: {exc}")
+                previous_state = derive_run_state(
+                    run_record.pr,
+                    run_record.needs_user_input,
+                )
                 run_record, idle_polls = _increment_idle_polls(
                     run_json_path=run_json_path,
                     run_record=run_record,
@@ -555,6 +590,19 @@ def run_inner_loop(
                     run_record.needs_user_input,
                 )
                 if next_state not in WAITING_STATES:
+                    _log_iteration_exit(
+                        run_log,
+                        iteration=iteration,
+                        next_state=next_state,
+                        run_record=run_record,
+                        action="merge_poll_error",
+                        backoff_seconds=backoff_seconds,
+                        idle_polls=idle_polls,
+                    )
+                    continue
+                if previous_state != next_state and next_state in WAITING_STATES:
+                    backoff_seconds = initial_poll_seconds
+                    idle_polls = 0
                     _log_iteration_exit(
                         run_log,
                         iteration=iteration,
@@ -581,6 +629,10 @@ def run_inner_loop(
             run_record = write_run_record(
                 run_json_path,
                 replace(run_record, pr=updated_pr),
+            )
+            previous_state = derive_run_state(
+                run_record.pr,
+                run_record.needs_user_input,
             )
             if (
                 derive_run_state(run_record.pr, run_record.needs_user_input)
@@ -613,6 +665,23 @@ def run_inner_loop(
                     continue
 
             next_state = derive_run_state(run_record.pr, run_record.needs_user_input)
+            if (
+                previous_state == "PR_APPROVED"
+                and next_state in WAITING_STATES
+                and next_state != previous_state
+            ):
+                backoff_seconds = initial_poll_seconds
+                idle_polls = 0
+                _log_iteration_exit(
+                    run_log,
+                    iteration=iteration,
+                    next_state=next_state,
+                    run_record=run_record,
+                    action="approved_poll",
+                    backoff_seconds=backoff_seconds,
+                    idle_polls=idle_polls,
+                )
+                continue
             if next_state not in WAITING_STATES:
                 _log_iteration_exit(
                     run_log,
@@ -1302,6 +1371,29 @@ def _extract_latest_commented_review_feedback(
     return latest
 
 
+def _select_newer_feedback_signal(
+    *,
+    commented_review_feedback: tuple[str, str] | None,
+    plain_comment_feedback: tuple[str, str] | None,
+) -> tuple[str, str, str] | None:
+    latest: tuple[str, str, str] | None = None
+    if commented_review_feedback is not None:
+        latest = (
+            commented_review_feedback[0],
+            commented_review_feedback[1],
+            "commented_review",
+        )
+    if plain_comment_feedback is not None:
+        plain_feedback = (
+            plain_comment_feedback[0],
+            plain_comment_feedback[1],
+            "plain_comment",
+        )
+        if latest is None or plain_feedback[0] > latest[0]:
+            latest = plain_feedback
+    return latest
+
+
 def _should_resume_review_feedback(pr: RunPR) -> bool:
     if pr.review_status == "changes_requested":
         return _is_new_review(pr)
@@ -1422,38 +1514,36 @@ def _fetch_pr_status_with_gh_with_context(
                         f"latest_changes_requested_at={latest_changes_requested_at}"
                     )
                 )
-        if (
-            review_status == "open"
-            and latest_review_submitted_at is None
-        ):
+        if review_status == "open":
             latest_commented_review = _extract_latest_commented_review_feedback(payload)
-            if latest_commented_review is not None:
-                comment_timestamp, comment_author = latest_commented_review
-                latest_review_submitted_at = comment_timestamp
-                _log(
-                    (
-                        "[loops] using latest COMMENTED review as feedback signal: "
-                        f"pr_url={pr.url} "
-                        f"comment_author={comment_author} "
-                        f"comment_timestamp={comment_timestamp}"
-                    )
-                )
-        if (
-            review_status == "open"
-            and latest_review_submitted_at is None
-        ):
             latest_plain_comment = _extract_latest_plain_comment_feedback(payload)
-            if latest_plain_comment is not None:
-                comment_timestamp, comment_author = latest_plain_comment
-                latest_review_submitted_at = comment_timestamp
-                _log(
-                    (
-                        "[loops] using latest plain PR comment as feedback signal: "
-                        f"pr_url={pr.url} "
-                        f"comment_author={comment_author} "
-                        f"comment_timestamp={comment_timestamp}"
-                    )
+            latest_feedback_signal = _select_newer_feedback_signal(
+                commented_review_feedback=latest_commented_review,
+                plain_comment_feedback=latest_plain_comment,
+            )
+            if latest_feedback_signal is not None:
+                comment_timestamp, comment_author, feedback_type = (
+                    latest_feedback_signal
                 )
+                latest_review_submitted_at = comment_timestamp
+                if feedback_type == "commented_review":
+                    _log(
+                        (
+                            "[loops] using latest COMMENTED review as feedback signal: "
+                            f"pr_url={pr.url} "
+                            f"comment_author={comment_author} "
+                            f"comment_timestamp={comment_timestamp}"
+                        )
+                    )
+                else:
+                    _log(
+                        (
+                            "[loops] using latest plain PR comment as feedback signal: "
+                            f"pr_url={pr.url} "
+                            f"comment_author={comment_author} "
+                            f"comment_timestamp={comment_timestamp}"
+                        )
+                    )
 
     updated_pr = RunPR(
         url=pr_url,

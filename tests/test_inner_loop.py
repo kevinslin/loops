@@ -1354,7 +1354,7 @@ def test_fetch_pr_status_uses_commented_review_as_feedback_signal(monkeypatch) -
     )
 
 
-def test_fetch_pr_status_prefers_commented_review_over_plain_comment_signal(
+def test_fetch_pr_status_prefers_newest_timestamp_across_feedback_sources(
     monkeypatch,
 ) -> None:
     payload = {
@@ -1403,14 +1403,14 @@ def test_fetch_pr_status_prefers_commented_review_over_plain_comment_signal(
     )
 
     assert updated.review_status == "open"
-    assert updated.latest_review_submitted_at == "2026-02-09T02:00:00Z"
+    assert updated.latest_review_submitted_at == "2026-02-09T03:00:00Z"
     assert approved_by_comment is False
     assert approved_by == ""
-    assert any(
+    assert not any(
         "using latest COMMENTED review as feedback signal" in message
         for message in messages
     )
-    assert not any(
+    assert any(
         "using latest plain PR comment as feedback signal" in message
         for message in messages
     )

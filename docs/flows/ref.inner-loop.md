@@ -295,7 +295,7 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
   - Loads comment-approval settings once per run from `inner_loop_approval_config.json` and compiles approval pattern with safe fallback.
   - Calls `gh pr view ... --json reviewDecision,mergedAt,url,number,latestReviews,reviews,comments`.
   - Maps decision into `review_status`, captures latest relevant review timestamp, and may override to approved when an allowlisted approval comment matches pattern and is newer than latest `CHANGES_REQUESTED` review.
-  - When review status remains open, uses the latest `COMMENTED` PR review timestamp as a feedback signal; if missing, falls back to the latest plain PR discussion comment timestamp.
+  - When review status remains open, chooses the newest timestamp between the latest `COMMENTED` PR review and plain PR discussion comment and uses that as the feedback signal.
 
 - Approved-state merge polling behavior (`loops/inner_loop.py`):
   - Runs cleanup once per PR URL, then polls merge status.
@@ -385,7 +385,7 @@ Q: Why can a successful Codex turn still transition to `NEEDS_INPUT`?
 A: If exit code is zero but no PR is detected in output, the loop requests manual guidance (`loops/inner_loop.py:647`).
 
 Q: Why does review feedback not always re-trigger Codex?
-A: The loop resumes Codex only for new feedback events (`latest_review_submitted_at > review_addressed_at`): new `changes_requested` reviews, open-state `COMMENTED` reviews, or (fallback) new plain PR comments. Duplicate events with unchanged timestamps are skipped.
+A: The loop resumes Codex only for new feedback events (`latest_review_submitted_at > review_addressed_at`): new `changes_requested` reviews, or new open-state feedback where the newest timestamp between `COMMENTED` PR review events and plain PR discussion comments has advanced. Duplicate events with unchanged timestamps are skipped.
 
 Q: When does inner loop reuse the same Codex session?
 A: After the first successful turn stores `codex_session.id`, follow-up turns (review-feedback turns and PR-approved cleanup turns) attempt `codex exec resume <session_id>`; if `CODEX_CMD` is not codex-shaped, the loop logs fallback and runs the base command.
@@ -412,5 +412,5 @@ A: Inner loop only. Signal producers append to queue; they do not mutate `run.js
 - 2026-02-19: Added built-in handoff handler flow (`stdin_handler` and `gh_comment_handler`) including GitHub issue comment handoff state tracking. (019c747a-a05e-7be1-b09d-66c5debb37c4)
 - 2026-02-28: Documented `LOOPS_STREAM_LOGS_STDOUT` behavior for sync-mode mirroring of inner-loop `run.log` lines to stdout. (019ca579-eb69-7883-a6a5-ff48348ca2ab)
 - 2026-02-28: Updated review-feedback flow to include new plain PR comment signals in `WAITING_ON_REVIEW` resume logic. (019ca579-eb69-7883-a6a5-ff48348ca2ab)
-- 2026-02-28: Updated review-feedback flow to prioritize `COMMENTED` PR review events as feedback signals before plain PR comments. (019ca579-eb69-7883-a6a5-ff48348ca2ab)
+- 2026-02-28: Updated review-feedback flow to select the newest feedback timestamp across `COMMENTED` PR reviews and plain PR comments. (019ca579-eb69-7883-a6a5-ff48348ca2ab)
 - 2026-02-28: Documented Codex session continuity contract (`codex exec resume <session_id>` on follow-up turns when supported by `CODEX_CMD`). (019ca57b-2249-72f2-b89a-13a186f6c753)
