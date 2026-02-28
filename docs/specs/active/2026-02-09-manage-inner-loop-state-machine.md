@@ -50,7 +50,7 @@ When the inner loop starts and encounters an existing state file, it is resuming
 
 | State | Description |
 |-------|-------------|
-| `START` | LLM has been launched with the initial prompt. Session is being established. |
+| `RUNNING` | LLM is executing the task with the current prompt context. |
 | `NEEDS_INPUT` | LLM needs input from a human before it can continue. |
 | `WAITING_ON_REVIEW` | A PR has been submitted. Polling for reviewer feedback. |
 | `PR_APPROVED` | PR has been approved. Running merge and post-merge cleanup. |
@@ -62,7 +62,7 @@ When the inner loop starts and encounters an existing state file, it is resuming
 
 When no state file exists, this is a fresh start.
 
-- **LLM**: Start with prompt. Send signal to set **S:START**, payload: `{ sessionID }`.
+- **LLM**: Start with prompt tagged `<state>RUNNING</state>`.
 - **Retry** (crash during start): Resume session ID with prompt `"continue"`.
 
 #### Loop
@@ -96,13 +96,6 @@ The inner loop reads `run.json`, derives state, and dispatches to the matching h
                                |
                                v
                         +--------------+
-                        |    START     |
-                        +--------------+
-                               |
-                               | LLM sends signal S:START
-                               | payload: { sessionID }
-                               v
-                        +--------------+
                         |   RUNNING    |  (LLM executing task)
                         +--------------+
                           |          |
@@ -134,8 +127,8 @@ From any non-DONE state:
 
 | State | On crash / restart | Action |
 |-------|--------------------|--------|
-| `START` (no state file) | State file missing | Start fresh with prompt |
-| `START` (state file exists, session recorded) | Resume existing session | Resume session ID with prompt `"continue"` |
+| `RUNNING` (no state file) | State file missing | Start fresh with prompt |
+| `RUNNING` (state file exists, session recorded) | Resume existing session | Resume session ID with prompt `"continue"` |
 | `NEEDS_INPUT` | Still waiting for input | Re-enter wait; do not re-send signal |
 | `WAITING_ON_REVIEW` | Polling was interrupted | Continue polling PR status |
 | `PR_APPROVED` | Merge may be partial | Re-run trigger:merge-pr (idempotent) |
@@ -194,14 +187,14 @@ From any non-DONE state:
 ### Phase 3: Implement inner-loop orchestrator + handlers
 - [x] Refactor `run_inner_loop` into a persistent state loop.
 - [x] Ensure `PROMPT_TEMPLATE` includes explicit `$needs_input` instruction.
-- [x] `RUNNING` / `START`: invoke Codex, persist session/output-derived PR metadata.
+- [x] `RUNNING`: invoke Codex, persist session/output-derived PR metadata.
 - [x] `WAITING_ON_REVIEW`: poll PR status with backoff and persist changes.
 - [x] `NEEDS_INPUT`: block for user handoff, persist response, clear input flag.
 - [x] `PR_APPROVED`: run trigger:merge-pr and continue polling for merged state.
 - [x] Add guardrails (max iterations, idle poll escalation to `NEEDS_INPUT`, structured logs).
 
 ### Phase 4: Add explicit retry/crash recovery
-- [ ] Ensure START state detects existing session and resumes with `"continue"` prompt.
+- [ ] Ensure RUNNING state detects existing session and resumes with `"continue"` prompt.
 - [ ] Ensure NEEDS_INPUT retry re-enters wait without re-sending signal.
 - [ ] Ensure WAITING_ON_REVIEW retry continues polling without side effects.
 - [ ] Ensure PR_APPROVED retry re-runs trigger:merge-pr idempotently.
@@ -266,7 +259,7 @@ Result:
 - [x] `run.json` ownership model: single writer (inner loop only).
 - [x] Signal scope: `NEEDS_INPUT` only for MVP.
 - [x] Payload field name: `needs_user_input_payload`.
-- [ ] START state: explicit state vs. derived from absence of session. Current impl derives RUNNING; consider adding explicit START.
+- [x] Initial state taxonomy: standardize on `RUNNING`; no separate initial-only state.
 
 ### Clarifications Required
 - [x] Payload schema: `{ "message": string, "context"?: object }`.

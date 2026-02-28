@@ -365,7 +365,7 @@ The outer loop uses `outer_state.json` as a dedupe ledger to avoid re-processing
 
 | State | Description |
 |-------|-------------|
-| `START` | LLM launched with initial prompt. Session being established. |
+| `RUNNING` | LLM executing the task with the current prompt context. |
 | `NEEDS_INPUT` | LLM needs human input before continuing. |
 | `WAITING_ON_REVIEW` | PR submitted. Polling for reviewer feedback. |
 | `PR_APPROVED` | PR approved. Running merge and post-merge cleanup. |
@@ -376,7 +376,7 @@ The outer loop uses `outer_state.json` as a dedupe ledger to avoid re-processing
 - `DONE` if a PR exists and `merged_at` is set (merged).
 - `PR_APPROVED` if a PR exists, `review_status` is approved, and `needs_user_input == false`.
 - `WAITING_ON_REVIEW` if a PR exists and `review_status` is not approved.
-- `START` / `RUNNING` otherwise.
+- `RUNNING` otherwise.
 
 State derivation uses only PR status plus the single `needs_user_input` flag; `last_state` is cached in `run.json`.
 
@@ -385,8 +385,8 @@ Precedence rule: `NEEDS_INPUT` has priority over `DONE`; if `needs_user_input=tr
 #### Logic
 
 **Initial entry (no state file):**
-- LLM: start with prompt. Send signal to set S:START, payload: `{ sessionID }`.
-- Retry: resume session ID with prompt `"continue"`.
+- LLM: start with prompt tagged `<state>RUNNING</state>`.
+- Retry: resume session ID with prompt `"continue"` when a prior session is recorded.
 
 **Loop** (read `run.json`, derive state, dispatch):
 
@@ -399,13 +399,6 @@ Precedence rule: `NEEDS_INPUT` has priority over `DONE`; if `needs_user_input=tr
 ```text
                          (no state file)
                                |
-                               v
-                        +--------------+
-                        |    START     |
-                        +--------------+
-                               |
-                               | LLM sends signal S:START
-                               | payload: { sessionID }
                                v
                         +--------------+
                         |   RUNNING    |  (LLM executing task)
@@ -439,8 +432,8 @@ From any non-DONE state:
 
 | State | On crash / restart | Action |
 |-------|--------------------|--------|
-| `START` (no state file) | State file missing | Start fresh with prompt |
-| `START` (session recorded) | Resume existing session | Resume session ID with prompt `"continue"` |
+| `RUNNING` (no state file) | State file missing | Start fresh with prompt |
+| `RUNNING` (session recorded) | Resume existing session | Resume session ID with prompt `"continue"` |
 | `NEEDS_INPUT` | Still waiting | Re-enter wait; do not re-send signal |
 | `WAITING_ON_REVIEW` | Polling interrupted | Continue polling PR status |
 | `PR_APPROVED` | Merge may be partial | Re-run trigger:merge-pr (idempotent) |
@@ -478,10 +471,10 @@ Single prompt used for initial run and all resumes:
 ```text
 Use dev.do to implement the task, open a PR, wait for review, address feedback, and cleanup when approved.
 If needing input from user, use "$needs_input" skill to request user input.
-The current inner-loop state is passed via a trailing <state>...</state> tag; initial state is <state>START</state>.
+The current inner-loop state is passed via a trailing <state>...</state> tag; initial state is <state>RUNNING</state>.
 Do not merge until the state is exactly <state>PR_APPROVED</state>.
 Task: [task]
-<state>START</state>
+<state>RUNNING</state>
 ```
 
 ## 7. PR review handling

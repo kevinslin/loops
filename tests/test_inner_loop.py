@@ -152,7 +152,7 @@ def test_inner_loop_reaches_done_lifecycle(tmp_path, monkeypatch) -> None:
     assert "iteration 1 enter: state=RUNNING" in run_log
     assert "exit: next_state=DONE action=done_exit" in run_log
     prompts = prompt_log_path.read_text()
-    assert "<state>START</state>" in prompts
+    assert "<state>RUNNING</state>" in prompts
     assert "<state>PR_APPROVED</state>" in prompts
 
 
@@ -256,7 +256,7 @@ def test_inner_loop_consumes_signal_and_uses_user_response_in_prompt(
     )
     assert "Do not merge until the state is exactly <state>PR_APPROVED</state>." in prompts
     assert "User input:\\nack: Need user decision" in prompts
-    assert "<state>START</state>" in prompts
+    assert "<state>RUNNING</state>" in prompts
 
 
 def test_inner_loop_uses_user_response_for_review_feedback_turn(
