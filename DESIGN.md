@@ -466,17 +466,47 @@ From any non-DONE state:
 - `python -m loops signal` enqueues a run-local signal (MVP: `NEEDS_INPUT`).
 - Direct module callers still work (`python -m loops.inner_loop`, `python -m loops.state_signal`).
 
-### Prompt
-Single prompt template used for initial run and resume turns:
+### Prompt catalog
+
+The inner loop builds prompts in `loops/inner_loop.py` from a shared base template plus a state-specific suffix.
+
+Base template (always present in Codex turns):
 
 ```text
-Use dev.do to implement the task, open a PR, wait for review, address feedback, and cleanup when approved.
+Use dev.do to implement the task, open a PR, wait for review, address feedback, and trigger:merge-pr when the state is exactly <state>PR_APPROVED</state>.
 If needing input from user, use "$needs_input" skill to request user input.
 The current inner-loop state is passed via a trailing <state>...</state> tag; initial state is <state>RUNNING</state>.
 Do not merge until the state is exactly <state>PR_APPROVED</state>.
-Task: [task]
-<state>RUNNING</state>
+Task: [task_url]
 ```
+
+Optional user-response block (added when a NEEDS_INPUT handoff response is available):
+
+```text
+User input:
+[user_response]
+```
+
+State-to-prompt mapping:
+
+| Derived state | Prompt text added after base template | Final state tag |
+|---|---|---|
+| `RUNNING` | No additional suffix. | `<state>RUNNING</state>` |
+| `WAITING_ON_REVIEW` (changes requested review) | `PR [pr_url] has changes requested. Address review feedback, update the PR, and summarize what changed.` | `<state>WAITING_ON_REVIEW</state>` |
+| `WAITING_ON_REVIEW` (new discussion comments) | `PR [pr_url] has new discussion comments. Review the feedback, address requested changes, update the PR, and summarize what changed.` | `<state>WAITING_ON_REVIEW</state>` |
+| `PR_APPROVED` | `PR is approved. Run cleanup now and report completion.` | `<state>PR_APPROVED</state>` |
+| `NEEDS_INPUT` | No Codex prompt is built while waiting. The handoff handler shows `needs_user_input_payload.message` to the user instead. | N/A |
+| `DONE` | No prompt; loop exits. | N/A |
+
+Prompt-related configuration and runtime inputs:
+
+- `loops inner-loop --prompt-file PATH`: prepend file contents to every Codex prompt for the run.
+- `LOOPS_PROMPT_FILE`: env fallback prompt file when `--prompt-file` is unset.
+- `CODEX_PROMPT_FILE`: second env fallback when `LOOPS_PROMPT_FILE` is unset.
+- `loop_config.handoff_handler` (`stdin_handler` or `gh_comment_handler`): changes where NEEDS_INPUT prompt messages are delivered.
+- `loops signal --message/--context`: sets `needs_user_input_payload` used by NEEDS_INPUT handoff prompts.
+- `task.url` in `run.json`: inserted into `Task: [task_url]`.
+- Handoff response text: appended as `User input:` in the next Codex prompt.
 
 ## 7. PR review handling
 

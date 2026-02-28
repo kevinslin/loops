@@ -2,9 +2,8 @@ from __future__ import annotations
 
 """Signal channel for requesting inner-loop state transitions."""
 
-import argparse
 import json
-import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -17,27 +16,6 @@ SIGNAL_QUEUE_FILE = "state_signals.jsonl"
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _resolve_run_dir(run_dir: str | None) -> Path:
-    if run_dir:
-        return Path(run_dir)
-    env_run_dir = os.environ.get("LOOPS_RUN_DIR")
-    if env_run_dir:
-        return Path(env_run_dir)
-    raise SystemExit("LOOPS_RUN_DIR is required (or pass --run-dir)")
-
-
-def _parse_context(raw_context: str) -> dict[str, Any]:
-    if not raw_context.strip():
-        return {}
-    try:
-        parsed = json.loads(raw_context)
-    except json.JSONDecodeError as exc:
-        raise ValueError("--context must be valid JSON") from exc
-    if not isinstance(parsed, dict):
-        raise ValueError("--context JSON must be an object")
-    return parsed
 
 
 def enqueue_state_signal(
@@ -71,42 +49,14 @@ def enqueue_state_signal(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Enqueue an inner-loop state signal.")
-    parser.add_argument(
-        "--run-dir",
-        type=str,
-        default=None,
-        help="Path to run directory (defaults to LOOPS_RUN_DIR).",
-    )
-    parser.add_argument(
-        "--state",
-        type=str,
-        default="NEEDS_INPUT",
-        help="Signal state to enqueue.",
-    )
-    parser.add_argument(
-        "--message",
-        type=str,
-        required=True,
-        help="Prompt message to show when user input is required.",
-    )
-    parser.add_argument(
-        "--context",
-        type=str,
-        default="",
-        help="Optional JSON object context for the signal payload.",
-    )
-    args = parser.parse_args()
+    from loops.cli import main as cli_main
 
-    run_dir = _resolve_run_dir(args.run_dir)
-    context = _parse_context(args.context)
-    signal = enqueue_state_signal(
-        run_dir,
-        state=args.state,
-        message=args.message,
-        context=context,
+    args = sys.argv[1:]
+    cli_main.main(
+        args=["signal", *args],
+        prog_name="loops",
+        standalone_mode=True,
     )
-    print(json.dumps({"accepted": True, "signal": signal}, ensure_ascii=True))
 
 
 if __name__ == "__main__":

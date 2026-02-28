@@ -226,6 +226,7 @@ Behavior summary:
   - `gh_comment_handler`: comment on task issue and wait for `/loops-reply ...`.
 - `--reset` keeps task metadata and preserves an existing PR link (`pr.url`/`number`/`repo`) when present; non-link PR status fields are cleared.
 - If `run.json` is missing, task fields fall back to `LOOPS_TASK_*` env vars (or defaults).
+- Exact state-mapped prompt strings are documented in `DESIGN.md` under `### Prompt catalog`.
 
 ### `loops signal`
 

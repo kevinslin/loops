@@ -2,7 +2,6 @@ from __future__ import annotations
 
 """Inner loop runner for executing Codex with the unified prompt."""
 
-import argparse
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import json
@@ -1846,15 +1845,6 @@ def _apply_pending_signals(run_dir: Path, run_record: RunRecord) -> RunRecord:
     return written
 
 
-def _resolve_run_dir(run_dir: Optional[str]) -> Path:
-    if run_dir:
-        return Path(run_dir)
-    env_run_dir = os.environ.get("LOOPS_RUN_DIR")
-    if env_run_dir:
-        return Path(env_run_dir)
-    raise SystemExit("LOOPS_RUN_DIR is required (or pass --run-dir)")
-
-
 def _resolve_configured_handoff_handler_name() -> str:
     raw_handler = os.environ.get("LOOPS_HANDOFF_HANDLER", DEFAULT_HANDOFF_HANDLER)
     if not isinstance(raw_handler, str):
@@ -1862,32 +1852,21 @@ def _resolve_configured_handoff_handler_name() -> str:
     return validate_handoff_handler_name(raw_handler)
 
 
+def _run_legacy_cli_entrypoint(argv: list[str] | None = None) -> None:
+    """Run the canonical click-based inner-loop CLI from module entrypoint."""
+
+    from loops.cli import main as cli_main
+
+    args = sys.argv[1:] if argv is None else argv
+    cli_main.main(
+        args=["inner-loop", *args],
+        prog_name="loops",
+        standalone_mode=True,
+    )
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run a Loops inner loop task.")
-    parser.add_argument(
-        "--run-dir",
-        type=str,
-        default=None,
-        help="Path to the run directory (defaults to LOOPS_RUN_DIR).",
-    )
-    parser.add_argument(
-        "--prompt-file",
-        type=str,
-        default=None,
-        help="Optional path to a base prompt file.",
-    )
-    parser.add_argument(
-        "--reset",
-        action="store_true",
-        help="Reset run.json to initial state and exit.",
-    )
-    args = parser.parse_args()
-    run_dir = _resolve_run_dir(args.run_dir)
-    prompt_file = Path(args.prompt_file) if args.prompt_file else None
-    if args.reset:
-        reset_run_record(run_dir)
-        return
-    run_inner_loop(run_dir, prompt_file=prompt_file)
+    _run_legacy_cli_entrypoint()
 
 
 if __name__ == "__main__":

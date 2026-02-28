@@ -5,9 +5,12 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
+from loops import state_signal as state_signal_module
+from loops import cli as cli_module
 from loops.state_signal import SIGNAL_QUEUE_FILE, enqueue_state_signal
 
 
@@ -69,3 +72,41 @@ def test_state_signal_cli_rejects_invalid_context(tmp_path) -> None:
     )
 
     assert result.returncode != 0
+
+
+def test_state_signal_module_main_delegates_to_click_command(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    captured: dict[str, object] = {}
+
+    def fake_signal_command(
+        run_dir: Path | None,
+        state: str,
+        message: str,
+        context: str,
+    ) -> None:
+        captured["run_dir"] = run_dir
+        captured["state"] = state
+        captured["message"] = message
+        captured["context"] = context
+
+    signal_command = cli_module.main.commands["signal"]
+    monkeypatch.setattr(signal_command, "callback", fake_signal_command)
+    monkeypatch.setenv("LOOPS_RUN_DIR", str(run_dir))
+    monkeypatch.setattr(state_signal_module.sys, "argv", [
+        "loops.state_signal",
+        "--message",
+        "Need help",
+    ])
+
+    with pytest.raises(SystemExit) as exc_info:
+        state_signal_module.main()
+    assert exc_info.value.code == 0
+
+    assert captured["run_dir"] is None
+    assert captured["state"] == "NEEDS_INPUT"
+    assert captured["message"] == "Need help"
+    assert captured["context"] == ""

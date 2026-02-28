@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import pytest
 import re
 import shlex
 import subprocess
@@ -19,6 +20,7 @@ from loops.approval_config import (
 from loops.handoff_handlers import HandoffResult
 from loops import inner_loop as inner_loop_module
 from loops.inner_loop import run_inner_loop
+from loops import cli as cli_module
 from loops.run_record import RunPR, RunRecord, Task, read_run_record, write_run_record
 from loops.state_signal import enqueue_state_signal
 
@@ -1787,3 +1789,35 @@ def test_load_comment_approval_settings_invalid_pattern_falls_back(tmp_path) -> 
     assert settings.allowed_usernames == ("maintainer",)
     assert settings.used_default_pattern is True
     assert settings.pattern_text == DEFAULT_APPROVAL_COMMENT_PATTERN
+
+
+def test_inner_loop_module_main_delegates_to_click_command(tmp_path, monkeypatch) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    captured: dict[str, object] = {}
+
+    def fake_inner_loop_command(
+        run_dir: Path | None,
+        prompt_file: Path | None,
+        reset: bool,
+    ) -> None:
+        captured["run_dir"] = run_dir
+        captured["prompt_file"] = prompt_file
+        captured["reset"] = reset
+
+    inner_loop_command = cli_module.main.commands["inner-loop"]
+    monkeypatch.setattr(inner_loop_command, "callback", fake_inner_loop_command)
+    monkeypatch.setattr(inner_loop_module.sys, "argv", [
+        "loops.inner_loop",
+        "--run-dir",
+        str(run_dir),
+        "--reset",
+    ])
+
+    with pytest.raises(SystemExit) as exc_info:
+        inner_loop_module.main()
+    assert exc_info.value.code == 0
+
+    assert captured["run_dir"] == run_dir
+    assert captured["prompt_file"] is None
+    assert captured["reset"] is True
