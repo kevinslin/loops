@@ -431,6 +431,12 @@ From any non-DONE state:
   needs_user_input = true  ->  NEEDS_INPUT
 ```
 
+Implementation note: `run_inner_loop` is a loop kernel that reads state, derives the
+current state, dispatches to explicit per-state handlers, persists updates, and
+schedules next poll timing. Handler boundaries in `loops/inner_loop.py` are:
+`_handle_running_state`, `_handle_needs_input_state`,
+`_handle_waiting_on_review_state`, and `_handle_pr_approved_state`.
+
 ### Retry behavior
 
 | State | On crash / restart | Action |

@@ -134,6 +134,188 @@ def _write_cleanup_stub(path: Path) -> None:
     )
 
 
+def _runtime_context(
+    run_dir: Path,
+    *,
+    user_handoff_handler=None,
+    pr_status_fetcher=None,
+    sleep_fn=None,
+    initial_poll_seconds: float = 5.0,
+    max_poll_seconds: float = 60.0,
+    max_idle_polls: int = 20,
+) -> inner_loop_module.InnerLoopRuntimeContext:
+    if user_handoff_handler is None:
+        user_handoff_handler = lambda _payload: HandoffResult.waiting()
+    if pr_status_fetcher is None:
+        pr_status_fetcher = lambda pr: pr
+    if sleep_fn is None:
+        sleep_fn = lambda _seconds: None
+    return inner_loop_module.InnerLoopRuntimeContext(
+        run_dir=run_dir,
+        run_json_path=run_dir / "run.json",
+        run_log=run_dir / "run.log",
+        agent_log=run_dir / "agent.log",
+        command=["codex", "exec"],
+        base_prompt=None,
+        user_handoff_handler=user_handoff_handler,
+        pr_status_fetcher=pr_status_fetcher,
+        sleep_fn=sleep_fn,
+        initial_poll_seconds=initial_poll_seconds,
+        max_poll_seconds=max_poll_seconds,
+        max_idle_polls=max_idle_polls,
+        non_interactive_default_handoff=False,
+    )
+
+
+def test_handle_running_state_resets_control_and_consumes_user_response(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(run_dir)
+    run_record = read_run_record(run_dir / "run.json")
+
+    control = inner_loop_module.LoopControlState(
+        backoff_seconds=17.0,
+        idle_polls=3,
+        next_user_response="keep this context",
+        cleanup_executed_for_pr="https://github.com/acme/api/pull/7",
+    )
+    runtime = _runtime_context(run_dir)
+    observed: dict[str, object] = {}
+
+    def fake_run_codex_turn(**kwargs):
+        observed.update(kwargs)
+        return kwargs["run_record"]
+
+    monkeypatch.setattr(inner_loop_module, "_run_codex_turn", fake_run_codex_turn)
+    result = inner_loop_module._handle_running_state(
+        run_record=run_record,
+        runtime=runtime,
+        control=control,
+    )
+
+    assert result.action == "codex_turn"
+    assert observed["user_response"] == "keep this context"
+    assert observed["review_feedback"] is False
+    assert control.next_user_response is None
+    assert control.cleanup_executed_for_pr is None
+    assert control.backoff_seconds == runtime.initial_poll_seconds
+    assert control.idle_polls == 0
+
+
+def test_handle_needs_input_state_clears_payload_and_sets_next_response(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        needs_user_input=True,
+        needs_user_input_payload={"message": "Need decision"},
+    )
+    run_record = read_run_record(run_dir / "run.json")
+    runtime = _runtime_context(
+        run_dir,
+        user_handoff_handler=lambda _payload: "  proceed with option A  ",
+    )
+    control = inner_loop_module.LoopControlState(backoff_seconds=23.0, idle_polls=5)
+
+    result = inner_loop_module._handle_needs_input_state(
+        run_record=run_record,
+        runtime=runtime,
+        control=control,
+    )
+
+    assert result.action == "needs_input_cleared"
+    assert control.next_user_response == "proceed with option A"
+    assert control.backoff_seconds == runtime.initial_poll_seconds
+    assert control.idle_polls == 0
+    persisted = read_run_record(run_dir / "run.json")
+    assert persisted.needs_user_input is False
+    assert persisted.needs_user_input_payload is None
+
+
+def test_handle_waiting_on_review_state_missing_pr_forces_needs_input(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(run_dir)
+    run_record = read_run_record(run_dir / "run.json")
+    runtime = _runtime_context(run_dir)
+    control = inner_loop_module.LoopControlState(backoff_seconds=9.0, idle_polls=2)
+
+    result = inner_loop_module._handle_waiting_on_review_state(
+        run_record=run_record,
+        runtime=runtime,
+        control=control,
+    )
+
+    assert result.action == "review_missing_pr"
+    assert result.run_record.needs_user_input is True
+    assert result.run_record.needs_user_input_payload == {
+        "message": "Run is waiting on review but no PR metadata exists.",
+    }
+
+
+def test_handle_pr_approved_state_runs_cleanup_once_per_pr_url(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        pr=RunPR(
+            url="https://github.com/acme/api/pull/42",
+            number=42,
+            repo="acme/api",
+            review_status="approved",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:00Z",
+        ),
+    )
+    run_record = read_run_record(run_dir / "run.json")
+    cleanup_calls: list[str] = []
+
+    def fake_invoke_codex(**kwargs):
+        cleanup_calls.append(kwargs["prompt"])
+        return "cleanup complete", 0, False
+
+    monkeypatch.setattr(inner_loop_module, "_invoke_codex", fake_invoke_codex)
+
+    def pr_status_fetcher(pr: RunPR) -> RunPR:
+        return RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="approved",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:05Z",
+        )
+
+    runtime = _runtime_context(run_dir, pr_status_fetcher=pr_status_fetcher)
+    control = inner_loop_module.LoopControlState(backoff_seconds=5.0)
+
+    first = inner_loop_module._handle_pr_approved_state(
+        run_record=run_record,
+        runtime=runtime,
+        control=control,
+    )
+    second = inner_loop_module._handle_pr_approved_state(
+        run_record=first.run_record,
+        runtime=runtime,
+        control=control,
+    )
+
+    assert first.action == "approved_poll"
+    assert second.action == "approved_poll"
+    assert len(cleanup_calls) == 1
+    assert control.cleanup_executed_for_pr == "https://github.com/acme/api/pull/42"
+
+
 def test_inner_loop_reaches_done_lifecycle(tmp_path, monkeypatch) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
