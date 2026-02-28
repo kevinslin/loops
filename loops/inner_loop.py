@@ -596,6 +596,22 @@ def run_inner_loop(
                         "Please provide manual guidance."
                     ),
                 )
+                next_state = derive_run_state(
+                    run_record.pr,
+                    run_record.needs_user_input,
+                )
+                if next_state not in WAITING_STATES:
+                    _log_iteration_exit(
+                        run_log,
+                        iteration=iteration,
+                        next_state=next_state,
+                        run_record=run_record,
+                        action="approved_poll",
+                        backoff_seconds=backoff_seconds,
+                        idle_polls=idle_polls,
+                    )
+                    continue
+
             next_state = derive_run_state(run_record.pr, run_record.needs_user_input)
             if next_state not in WAITING_STATES:
                 _log_iteration_exit(
@@ -608,7 +624,6 @@ def run_inner_loop(
                     idle_polls=idle_polls,
                 )
                 continue
-            backoff_seconds = initial_poll_seconds
             sleep_fn(min(backoff_seconds, max_poll_seconds))
             backoff_seconds = min(backoff_seconds * 2, max_poll_seconds)
             _log_iteration_exit(
