@@ -68,7 +68,9 @@ UUID_PATTERN = re.compile(
 UserHandoffHandler = Callable[[dict[str, Any]], HandoffResult | str | None]
 PRStatusFetcher = Callable[[RunPR], RunPR]
 SleepFn = Callable[[float], None]
-GH_PR_VIEW_JSON_FIELDS = "reviewDecision,mergedAt,url,number,latestReviews,comments"
+GH_PR_VIEW_JSON_FIELDS = (
+    "reviewDecision,mergedAt,url,number,latestReviews,reviews,comments"
+)
 CODEX_EXEC_SUBCOMMANDS = {"exec", "e"}
 CODEX_LAUNCHER_SUBCOMMANDS = {"uv", "uvx"}
 
@@ -388,12 +390,11 @@ def run_inner_loop(
                 run_json_path,
                 replace(run_record, pr=updated_pr),
             )
-            if (
-                run_record.pr is not None
-                and run_record.pr.review_status == "changes_requested"
-                and _is_new_review(run_record.pr)
-            ):
-                append_log(run_log, "[loops] review changes requested; resuming codex")
+            if run_record.pr is not None and _should_resume_review_feedback(run_record.pr):
+                if run_record.pr.review_status == "changes_requested":
+                    append_log(run_log, "[loops] review changes requested; resuming codex")
+                else:
+                    append_log(run_log, "[loops] new PR comment feedback detected; resuming codex")
                 run_record = _run_codex_turn(
                     run_json_path=run_json_path,
                     run_log=run_log,
@@ -792,6 +793,26 @@ def _build_review_feedback_prompt(
     return _append_state_tag(prompt, PROMPT_STATE_WAITING_ON_REVIEW)
 
 
+def _build_comment_feedback_prompt(
+    task_url: str,
+    base_prompt: Optional[str],
+    pr_url: str,
+    *,
+    user_response: Optional[str] = None,
+) -> str:
+    prompt = _build_prompt(
+        task_url,
+        base_prompt,
+        user_response=user_response,
+        state=None,
+    )
+    prompt += (
+        f"\nPR {pr_url} has new discussion comments. Review the feedback, address "
+        "requested changes, update the PR, and summarize what changed.\n"
+    )
+    return _append_state_tag(prompt, PROMPT_STATE_WAITING_ON_REVIEW)
+
+
 def _run_codex(command: list[str], prompt: str, agent_log: Path) -> tuple[str, int]:
     agent_log.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -928,12 +949,20 @@ def _run_codex_turn(
         )
 
     if review_feedback and run_record.pr is not None:
-        prompt = _build_review_feedback_prompt(
-            run_record.task.url,
-            base_prompt,
-            run_record.pr.url,
-            user_response=user_response,
-        )
+        if run_record.pr.review_status == "changes_requested":
+            prompt = _build_review_feedback_prompt(
+                run_record.task.url,
+                base_prompt,
+                run_record.pr.url,
+                user_response=user_response,
+            )
+        else:
+            prompt = _build_comment_feedback_prompt(
+                run_record.task.url,
+                base_prompt,
+                run_record.pr.url,
+                user_response=user_response,
+            )
     else:
         prompt = _build_prompt(
             run_record.task.url,
@@ -1154,6 +1183,70 @@ def _extract_latest_allowlisted_approval_comment(
     return latest
 
 
+def _extract_latest_plain_comment_feedback(
+    payload: dict[str, Any],
+) -> tuple[str, str] | None:
+    comments = payload.get("comments")
+    if not isinstance(comments, list) or not comments:
+        return None
+    latest: tuple[str, str] | None = None
+    for comment in comments:
+        if not isinstance(comment, dict):
+            continue
+        author_payload = comment.get("author")
+        author_login = (
+            author_payload.get("login")
+            if isinstance(author_payload, dict)
+            else None
+        )
+        if not isinstance(author_login, str) or not author_login.strip():
+            continue
+        created_at = comment.get("createdAt")
+        updated_at = comment.get("updatedAt")
+        comment_timestamp = updated_at if isinstance(updated_at, str) else created_at
+        if not isinstance(comment_timestamp, str):
+            continue
+        if latest is None or comment_timestamp > latest[0]:
+            latest = (comment_timestamp, author_login)
+    return latest
+
+
+def _extract_latest_commented_review_feedback(
+    payload: dict[str, Any],
+) -> tuple[str, str] | None:
+    reviews = payload.get("reviews")
+    if not isinstance(reviews, list) or not reviews:
+        return None
+    latest: tuple[str, str] | None = None
+    for review in reviews:
+        if not isinstance(review, dict):
+            continue
+        if str(review.get("state", "")).upper() != "COMMENTED":
+            continue
+        author_payload = review.get("author")
+        author_login = (
+            author_payload.get("login")
+            if isinstance(author_payload, dict)
+            else None
+        )
+        if not isinstance(author_login, str) or not author_login.strip():
+            continue
+        submitted_at = review.get("submittedAt")
+        if not isinstance(submitted_at, str):
+            continue
+        if latest is None or submitted_at > latest[0]:
+            latest = (submitted_at, author_login)
+    return latest
+
+
+def _should_resume_review_feedback(pr: RunPR) -> bool:
+    if pr.review_status == "changes_requested":
+        return _is_new_review(pr)
+    if pr.review_status == "open" and pr.latest_review_submitted_at is not None:
+        return _is_new_review(pr)
+    return False
+
+
 def _fetch_pr_status_with_gh_with_context(
     pr: RunPR,
     *,
@@ -1264,6 +1357,38 @@ def _fetch_pr_status_with_gh_with_context(
                         f"pr_url={pr.url} "
                         f"approval_comment_at={comment_timestamp} "
                         f"latest_changes_requested_at={latest_changes_requested_at}"
+                    )
+                )
+        if (
+            review_status == "open"
+            and latest_review_submitted_at is None
+        ):
+            latest_commented_review = _extract_latest_commented_review_feedback(payload)
+            if latest_commented_review is not None:
+                comment_timestamp, comment_author = latest_commented_review
+                latest_review_submitted_at = comment_timestamp
+                _log(
+                    (
+                        "[loops] using latest COMMENTED review as feedback signal: "
+                        f"pr_url={pr.url} "
+                        f"comment_author={comment_author} "
+                        f"comment_timestamp={comment_timestamp}"
+                    )
+                )
+        if (
+            review_status == "open"
+            and latest_review_submitted_at is None
+        ):
+            latest_plain_comment = _extract_latest_plain_comment_feedback(payload)
+            if latest_plain_comment is not None:
+                comment_timestamp, comment_author = latest_plain_comment
+                latest_review_submitted_at = comment_timestamp
+                _log(
+                    (
+                        "[loops] using latest plain PR comment as feedback signal: "
+                        f"pr_url={pr.url} "
+                        f"comment_author={comment_author} "
+                        f"comment_timestamp={comment_timestamp}"
                     )
                 )
 

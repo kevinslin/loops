@@ -602,6 +602,86 @@ def test_inner_loop_resumes_codex_when_review_changes_requested(
     assert counter_path.read_text() == "1"  # resumed once to address feedback
 
 
+def test_inner_loop_resumes_codex_when_new_plain_pr_comment_feedback(
+    tmp_path, monkeypatch
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        pr=RunPR(
+            url="https://github.com/acme/api/pull/42",
+            number=42,
+            repo="acme/api",
+            review_status="open",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:00Z",
+        ),
+    )
+
+    stub = tmp_path / "codex_stub.py"
+    _write_codex_stub(stub)
+    counter_path = tmp_path / "counter.txt"
+    prompt_log_path = tmp_path / "prompts.log"
+    monkeypatch.setenv("STUB_COUNTER_PATH", str(counter_path))
+    monkeypatch.setenv("STUB_PROMPT_LOG", str(prompt_log_path))
+    monkeypatch.setenv(
+        "CODEX_CMD",
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(stub))}",
+    )
+
+    poll_calls = {"count": 0}
+    comment_timestamp = "2026-02-09T00:00:01Z"
+
+    def pr_status_fetcher(pr: RunPR) -> RunPR:
+        poll_calls["count"] += 1
+        if poll_calls["count"] == 1:
+            return RunPR(
+                url=pr.url,
+                number=pr.number,
+                repo=pr.repo,
+                review_status="open",
+                merged_at=None,
+                last_checked_at="2026-02-09T00:00:01Z",
+                latest_review_submitted_at=comment_timestamp,
+                review_addressed_at=pr.review_addressed_at,
+            )
+        if poll_calls["count"] == 2:
+            return RunPR(
+                url=pr.url,
+                number=pr.number,
+                repo=pr.repo,
+                review_status="open",
+                merged_at=None,
+                last_checked_at="2026-02-09T00:00:02Z",
+                latest_review_submitted_at=comment_timestamp,
+                review_addressed_at=pr.review_addressed_at,
+            )
+        return RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="approved",
+            merged_at="2026-02-09T00:00:03Z",
+            last_checked_at="2026-02-09T00:00:03Z",
+            review_addressed_at=pr.review_addressed_at,
+        )
+
+    result = run_inner_loop(
+        run_dir,
+        pr_status_fetcher=pr_status_fetcher,
+        sleep_fn=lambda _seconds: None,
+        max_iterations=25,
+    )
+
+    assert result.last_state == "DONE"
+    assert counter_path.read_text() == "1"
+    prompts = prompt_log_path.read_text()
+    assert "has new discussion comments. Review the feedback" in prompts
+    run_log = (run_dir / "run.log").read_text()
+    assert "new PR comment feedback detected; resuming codex" in run_log
+
+
 def test_inner_loop_does_not_reinvoke_codex_for_same_review(
     tmp_path, monkeypatch
 ) -> None:
@@ -1167,6 +1247,167 @@ def test_fetch_pr_status_approves_from_allowlisted_comment(monkeypatch) -> None:
     assert updated.review_status == "approved"
     assert approved_by_comment is True
     assert approved_by == "maintainer"
+
+
+def test_fetch_pr_status_uses_plain_comment_as_feedback_signal(monkeypatch) -> None:
+    payload = {
+        "url": "https://github.com/acme/api/pull/42",
+        "number": 42,
+        "reviewDecision": "REVIEW_REQUIRED",
+        "mergedAt": None,
+        "latestReviews": [],
+        "comments": [
+            {
+                "author": {"login": "maintainer"},
+                "body": "please resolve conflicts",
+                "createdAt": "2026-02-09T01:00:00Z",
+            }
+        ],
+    }
+
+    def fake_subprocess_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess(
+            args=["gh", "pr", "view"],
+            returncode=0,
+            stdout=json.dumps(payload),
+            stderr="",
+        )
+
+    monkeypatch.setattr(inner_loop_module.subprocess, "run", fake_subprocess_run)
+    settings = inner_loop_module.CommentApprovalSettings(
+        allowed_usernames=("maintainer",),
+        pattern_text=r"^\s*/approve\b",
+        approval_regex=re.compile(r"^\s*/approve\b", re.IGNORECASE),
+    )
+    messages: list[str] = []
+    updated, approved_by_comment, approved_by = (
+        inner_loop_module._fetch_pr_status_with_gh_with_context(
+            RunPR(url="https://github.com/acme/api/pull/42"),
+            comment_approval=settings,
+            log_message=messages.append,
+        )
+    )
+
+    assert updated.review_status == "open"
+    assert updated.latest_review_submitted_at == "2026-02-09T01:00:00Z"
+    assert approved_by_comment is False
+    assert approved_by == ""
+    assert any(
+        "using latest plain PR comment as feedback signal" in message
+        for message in messages
+    )
+
+
+def test_fetch_pr_status_uses_commented_review_as_feedback_signal(monkeypatch) -> None:
+    payload = {
+        "url": "https://github.com/acme/api/pull/42",
+        "number": 42,
+        "reviewDecision": "REVIEW_REQUIRED",
+        "mergedAt": None,
+        "latestReviews": [],
+        "reviews": [
+            {
+                "author": {"login": "reviewer"},
+                "state": "COMMENTED",
+                "submittedAt": "2026-02-09T02:00:00Z",
+            }
+        ],
+        "comments": [],
+    }
+
+    def fake_subprocess_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess(
+            args=["gh", "pr", "view"],
+            returncode=0,
+            stdout=json.dumps(payload),
+            stderr="",
+        )
+
+    monkeypatch.setattr(inner_loop_module.subprocess, "run", fake_subprocess_run)
+    settings = inner_loop_module.CommentApprovalSettings(
+        allowed_usernames=(),
+        pattern_text=r"^\s*/approve\b",
+        approval_regex=re.compile(r"^\s*/approve\b", re.IGNORECASE),
+    )
+    messages: list[str] = []
+    updated, approved_by_comment, approved_by = (
+        inner_loop_module._fetch_pr_status_with_gh_with_context(
+            RunPR(url="https://github.com/acme/api/pull/42"),
+            comment_approval=settings,
+            log_message=messages.append,
+        )
+    )
+
+    assert updated.review_status == "open"
+    assert updated.latest_review_submitted_at == "2026-02-09T02:00:00Z"
+    assert approved_by_comment is False
+    assert approved_by == ""
+    assert any(
+        "using latest COMMENTED review as feedback signal" in message
+        for message in messages
+    )
+
+
+def test_fetch_pr_status_prefers_commented_review_over_plain_comment_signal(
+    monkeypatch,
+) -> None:
+    payload = {
+        "url": "https://github.com/acme/api/pull/42",
+        "number": 42,
+        "reviewDecision": "REVIEW_REQUIRED",
+        "mergedAt": None,
+        "latestReviews": [],
+        "reviews": [
+            {
+                "author": {"login": "reviewer"},
+                "state": "COMMENTED",
+                "submittedAt": "2026-02-09T02:00:00Z",
+            }
+        ],
+        "comments": [
+            {
+                "author": {"login": "maintainer"},
+                "body": "please resolve conflicts",
+                "createdAt": "2026-02-09T03:00:00Z",
+            }
+        ],
+    }
+
+    def fake_subprocess_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess(
+            args=["gh", "pr", "view"],
+            returncode=0,
+            stdout=json.dumps(payload),
+            stderr="",
+        )
+
+    monkeypatch.setattr(inner_loop_module.subprocess, "run", fake_subprocess_run)
+    settings = inner_loop_module.CommentApprovalSettings(
+        allowed_usernames=(),
+        pattern_text=r"^\s*/approve\b",
+        approval_regex=re.compile(r"^\s*/approve\b", re.IGNORECASE),
+    )
+    messages: list[str] = []
+    updated, approved_by_comment, approved_by = (
+        inner_loop_module._fetch_pr_status_with_gh_with_context(
+            RunPR(url="https://github.com/acme/api/pull/42"),
+            comment_approval=settings,
+            log_message=messages.append,
+        )
+    )
+
+    assert updated.review_status == "open"
+    assert updated.latest_review_submitted_at == "2026-02-09T02:00:00Z"
+    assert approved_by_comment is False
+    assert approved_by == ""
+    assert any(
+        "using latest COMMENTED review as feedback signal" in message
+        for message in messages
+    )
+    assert not any(
+        "using latest plain PR comment as feedback signal" in message
+        for message in messages
+    )
 
 
 def test_fetch_pr_status_logs_context_and_result(monkeypatch) -> None:
