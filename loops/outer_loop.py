@@ -422,7 +422,7 @@ def upgrade_config_payload(payload: Any) -> tuple[dict[str, Any], bool]:
     else:
         raise TypeError("loop_config must be an object")
 
-    for key, value in _default_loop_config_payload().items():
+    for key, value in build_default_loop_config_payload().items():
         if key not in loop_payload:
             loop_payload[key] = value
             changed = True
@@ -567,38 +567,72 @@ def _load_outer_loop_config(payload: Any) -> OuterLoopConfig:
     """Load outer loop configuration from JSON payload."""
 
     if payload is None:
-        return OuterLoopConfig()
-    if not isinstance(payload, dict):
+        raw_payload: dict[str, Any] = {}
+    elif isinstance(payload, dict):
+        raw_payload = payload
+    else:
         raise TypeError("loop_config must be an object")
-    poll_interval = _load_int(payload, "poll_interval_seconds", DEFAULT_POLL_INTERVAL_SECONDS)
+    defaults = build_default_loop_config_payload()
+    merged_payload = {**defaults, **raw_payload}
+    poll_interval = _load_int(
+        merged_payload,
+        "poll_interval_seconds",
+        defaults["poll_interval_seconds"],
+    )
     if poll_interval <= 0:
         raise ValueError("poll_interval_seconds must be positive")
-    parallel_limit = _load_int(payload, "parallel_tasks_limit", DEFAULT_PARALLEL_TASKS_LIMIT)
+    parallel_limit = _load_int(
+        merged_payload,
+        "parallel_tasks_limit",
+        defaults["parallel_tasks_limit"],
+    )
     if parallel_limit <= 0:
         raise ValueError("parallel_tasks_limit must be positive")
     return OuterLoopConfig(
         poll_interval_seconds=poll_interval,
-        parallel_tasks=_load_bool(payload, "parallel_tasks", False),
+        parallel_tasks=_load_bool(
+            merged_payload,
+            "parallel_tasks",
+            defaults["parallel_tasks"],
+        ),
         parallel_tasks_limit=parallel_limit,
-        sync_mode=_load_bool(payload, "sync_mode", False),
-        emit_on_first_run=_load_bool(payload, "emit_on_first_run", False),
-        force=_load_bool(payload, "force", False),
-        task_ready_status=_load_str(payload, "task_ready_status", DEFAULT_TASK_READY_STATUS),
+        sync_mode=_load_bool(merged_payload, "sync_mode", defaults["sync_mode"]),
+        emit_on_first_run=_load_bool(
+            merged_payload,
+            "emit_on_first_run",
+            defaults["emit_on_first_run"],
+        ),
+        force=_load_bool(merged_payload, "force", defaults["force"]),
+        task_ready_status=_load_str(
+            merged_payload,
+            "task_ready_status",
+            defaults["task_ready_status"],
+        ),
         approval_comment_usernames=normalize_approval_usernames(
-            _load_str_list(payload, "approval_comment_usernames", ())
+            _load_str_list(
+                merged_payload,
+                "approval_comment_usernames",
+                tuple(defaults["approval_comment_usernames"]),
+            )
         ),
         approval_comment_pattern=_load_str(
-            payload,
+            merged_payload,
             "approval_comment_pattern",
-            DEFAULT_APPROVAL_COMMENT_PATTERN,
+            defaults["approval_comment_pattern"],
         ),
         handoff_handler=validate_handoff_handler_name(
-            _load_str(payload, "handoff_handler", DEFAULT_HANDOFF_HANDLER)
+            _load_str(
+                merged_payload,
+                "handoff_handler",
+                defaults["handoff_handler"],
+            )
         ),
     )
 
 
-def _default_loop_config_payload() -> dict[str, Any]:
+def build_default_loop_config_payload() -> dict[str, Any]:
+    """Build the canonical loop_config defaults payload for JSON config files."""
+
     defaults = OuterLoopConfig()
     return {
         "poll_interval_seconds": defaults.poll_interval_seconds,

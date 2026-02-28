@@ -230,6 +230,7 @@ Notes:
 - `provider_config.filters` supports provider-side `key=value` filters for GitHub Projects V2 (`repository`, `tag`).
 - Required provider secrets are validated from environment variables before provider construction.
 - `loop_config` is optional; omitted keys fall back to defaults.
+- `loop_config` defaults are sourced from one canonical implementation in `loops.outer_loop` and reused by `loops init`, `loops doctor`, and runtime config loading.
 - `loop_config.approval_comment_usernames` allows comment-based PR approval overrides from specific usernames.
 - `loop_config.approval_comment_pattern` controls which comment bodies count as approval signals.
 - `loop_config.handoff_handler` selects built-in NEEDS_INPUT handoff behavior (`stdin_handler` default, `gh_comment_handler` for issue-comment handoff).
