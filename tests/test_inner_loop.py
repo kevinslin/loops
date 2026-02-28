@@ -316,6 +316,63 @@ def test_handle_pr_approved_state_runs_cleanup_once_per_pr_url(
     assert control.cleanup_executed_for_pr == "https://github.com/acme/api/pull/42"
 
 
+def test_handle_state_rejects_unknown_state(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(run_dir)
+    run_record = read_run_record(run_dir / "run.json")
+    runtime = _runtime_context(run_dir)
+    control = inner_loop_module.LoopControlState(backoff_seconds=5.0)
+
+    with pytest.raises(ValueError, match="unsupported state"):
+        inner_loop_module._handle_state(
+            state="UNEXPECTED",
+            run_record=run_record,
+            runtime=runtime,
+            control=control,
+        )
+
+
+def test_handle_pr_approved_state_sets_needs_input_when_cleanup_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        pr=RunPR(
+            url="https://github.com/acme/api/pull/42",
+            number=42,
+            repo="acme/api",
+            review_status="approved",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:00Z",
+        ),
+    )
+    run_record = read_run_record(run_dir / "run.json")
+
+    def fake_invoke_codex(**_kwargs):
+        return "cleanup failed", 17, False
+
+    monkeypatch.setattr(inner_loop_module, "_invoke_codex", fake_invoke_codex)
+    runtime = _runtime_context(run_dir)
+    control = inner_loop_module.LoopControlState(backoff_seconds=5.0)
+
+    result = inner_loop_module._handle_pr_approved_state(
+        run_record=run_record,
+        runtime=runtime,
+        control=control,
+    )
+
+    assert result.action == "cleanup_failed"
+    assert result.run_record.needs_user_input is True
+    assert result.run_record.needs_user_input_payload == {
+        "message": "Cleanup failed after PR approval. Please advise.",
+        "context": {"exit_code": 17},
+    }
+
+
 def test_inner_loop_reaches_done_lifecycle(tmp_path, monkeypatch) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
