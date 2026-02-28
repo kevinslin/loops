@@ -1,6 +1,6 @@
 # Outer Loop Flow
 
-Last updated: 2026-02-19
+Last updated: 2026-02-28
 
 ## Overview
 
@@ -22,6 +22,86 @@ It is intended as a fast context-recapture artifact for humans and LLM agents ch
 - `Run dir`: Per-task folder under `.loops/jobs/` created by `create_run_dir`.
 - `Launcher`: Callable that starts the configured inner-loop command with task/run env vars.
 - `Ready task`: Provider task whose status matches `loop_config.task_ready_status` (case-insensitive).
+- `Oldest-first provider order`: `github_projects_v2` returns matched tasks sorted by `task.created_at` ascending before `limit` is applied.
+
+## Purpose / Question Answered
+
+How does the outer loop convert provider tasks into inner-loop executions while preserving dedupe state, run-materialization ordering, and observable launch logs?
+
+## Entry points
+
+- CLI command `python -m loops run` (`loops/cli.py`) dispatches into `_run_outer_loop(...)`.
+- `_run_outer_loop(...)` constructs `OuterLoopRunner` and calls `run_once(...)` or `run_forever(...)`.
+- `OuterLoopRunner.run_once(...)` performs polling, selection, run-dir creation, and launch dispatch.
+
+## Call path
+
+#### Sudocode (outer-loop poll-and-dispatch)
+
+Source: `loops/cli.py`, `loops/outer_loop.py`
+
+```ts
+function run_outer_loop_cycle(config_path, limit, force, task_url)
+  config := load_config(config_path)
+  provider := build_provider(config)
+  launcher := build_inner_loop_launcher(config)
+  runner := OuterLoopRunner(provider, config.loop_config, loops_root, launcher)
+
+  created_run_dirs := runner.run_once(limit=limit, forced_task_url=task_url)
+  return created_run_dirs
+
+class OuterLoopRunner
+  function run_once(limit=None, forced_task_url=None)
+    state := read_outer_state(self.state_path)
+    polled_tasks := self.provider.poll(limit_or_none)
+    ready_tasks := select_ready_or_forced(polled_tasks, forced_task_url)
+    emit_tasks := apply_emit_and_dedupe_rules(ready_tasks, state, self.config)
+
+    for task in emit_tasks
+      run_dir := create_run_dir(task, self.loops_root)
+      _log(self.log_path, "run_once.schedule ... run_dir=<path>")
+      write_run_record(run_dir / "run.json", initial_running_record(task))
+      write_inner_loop_approval_config(run_dir, from_loop_config(self.config))
+      ensure_file_exists(run_dir / "run.log")
+      ensure_file_exists(run_dir / "agent.log")
+      queue_for_launch(run_dir, task)
+
+    launch_queued_tasks()
+    persist_outer_state_in_finally()
+```
+
+## State, config, and gates
+
+- Primary dedupe state lives in `.loops/outer_state.json` (`initialized`, `tasks`, `updated_at`).
+- Emission gate is `emit_on_first_run || force || !first_run`.
+- Dedupe gate skips already-seen tasks unless `force=true`.
+- Launch gate requires `inner_loop_launcher` whenever `emit_tasks` is non-empty.
+- Run materialization order is fixed: create run directory, log `run_once.schedule` with `run_dir`, write `run.json`, write approval config, touch logs, launch.
+- For GitHub Projects V2, poll ordering is oldest-first by task `created_at`; outer loop preserves provider order when scheduling.
+
+## Sequence diagram
+
+```mermaid
+sequenceDiagram
+    participant CLI as CLI
+    participant O as OuterLoopRunner
+    participant P as TaskProvider
+    participant FS as .loops filesystem
+    participant L as Inner-loop launcher
+
+    CLI->>O: run_once(limit, forced_task_url)
+    O->>FS: read outer_state.json
+    O->>P: poll(limit)
+    P-->>O: tasks
+    O->>O: ready filter + dedupe gates
+    loop each emitted task
+        O->>FS: create run_dir
+        O->>FS: append oloops.log run_once.schedule(run_dir)
+        O->>FS: write run.json + approval config + run/agent logs
+        O->>L: launch(run_dir, task)
+    end
+    O->>FS: write outer_state.json + cycle summary log
+```
 
 ## Config
 
@@ -43,7 +123,7 @@ None identified.
 |---|---|---|---|
 | `--config` | CLI option | `loops/cli.py:38`, consumed in `loops/cli.py:196` | Selects config file for provider/loop/inner-loop settings and loops root resolution. |
 | `--run-once/--run-forever` | CLI option | `loops/cli.py:46`, dispatched at `loops/cli.py:217` | Controls single-cycle execution vs continuous polling loop. |
-| `--limit` | CLI option | `loops/cli.py:51`, forwarded to provider poll | Caps tasks returned/considered in a cycle. |
+| `--limit` | CLI option | `loops/cli.py:51`, forwarded to provider poll | Caps tasks returned/considered in a cycle (for `github_projects_v2`, after oldest-first ordering). |
 | `--force` | CLI option | `loops/cli.py:57`, override at `loops/cli.py:198` | Reprocesses tasks even if previously seen in outer state. |
 | `provider_id` / `provider_config.*` | Config file fields | `loops/outer_loop.py:243`, `loops/outer_loop.py:274` | Chooses task provider and provider-specific polling behavior. |
 | `loop_config.*` | Config file fields | `loops/outer_loop.py:394` | Controls poll interval, ready filter, sync mode, emit-on-first-run, force, parallel launch behavior, comment-approval settings, and handoff handler propagated to inner loop. |
@@ -143,6 +223,7 @@ class OuterLoopRunner
     to_launch := []
     for task in emit_tasks
       run_dir := create_run_dir(task, self.loops_root)
+      _log(self.log_path, "run_once.schedule key=<provider:id> url=<task-url> run_dir=<path>")
       write_run_record(
         run_dir / "run.json",
         RunRecord(
@@ -273,6 +354,7 @@ Useful derived metrics:
 
 Key outer-loop logs and emit sites:
 
+- Per-task schedule log after run-dir allocation: `run_once.schedule key=<provider:id> url=<task-url> run_dir=<path>` (`loops/outer_loop.py`).
 - Per-cycle summary log: `_log(self.log_path, _format_log_line(...))` (`loops/outer_loop.py:206`).
 - Log format payload: `ready=<n> processed=<m>` (`loops/outer_loop.py:493`).
 - Log sink file: `.loops/oloops.log` (`loops/outer_loop.py:156`).
@@ -313,3 +395,4 @@ A: Outer loop injects `LOOPS_HANDOFF_HANDLER` from `loop_config.handoff_handler`
 - 2026-02-16: Switched run-forever pseudocode to keep the function call and inline its body at the call site. (019c6863-d581-7f83-9809-fabbefa042e8)
 - 2026-02-17: Documented OuterLoopConfig comment-approval fields and run-scoped approval-config file handoff to inner loop. (019c68ed-a6c5-78e0-891a-6b70a1a1450c)
 - 2026-02-19: Documented `loop_config.handoff_handler` and `LOOPS_HANDOFF_HANDLER` propagation into inner-loop runtime. (019c747a-a05e-7be1-b09d-66c5debb37c4)
+- 2026-02-28: Added schedule-log coverage noting per-task `run_once.schedule` entries include the created run directory path. (019ca550-9ae5-7393-b5e6-e5e68e6c959d)

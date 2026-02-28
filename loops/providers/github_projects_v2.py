@@ -222,17 +222,13 @@ class GithubProjectsV2TaskProvider:
         tasks: list[Task] = []
         after: str | None = None
         while True:
-            remaining = None if limit is None else max(limit - len(tasks), 0)
-            if remaining == 0:
-                return tasks
-            page_size = self._page_size(remaining, filtered=not self.filters.is_empty())
             response = _run_gh_graphql(
                 query=_select_query(locator.owner_type),
                 variables={
                     "login": locator.login,
                     "number": locator.number,
                     "after": after,
-                    "first": page_size,
+                    "first": self.config.page_size,
                     "statusField": self.config.status_field,
                 },
                 github_token=github_token,
@@ -246,21 +242,16 @@ class GithubProjectsV2TaskProvider:
                 if not _matches_filters(task, item, self.filters):
                     continue
                 tasks.append(task)
-                if limit is not None and len(tasks) >= limit:
-                    return tasks
             has_next_page = bool(page_info.get("hasNextPage"))
             if not has_next_page:
-                return tasks
+                break
             after = page_info.get("endCursor")
             if not after:
                 raise RuntimeError("Pagination missing endCursor while hasNextPage=true")
-
-    def _page_size(self, remaining: int | None, *, filtered: bool) -> int:
-        if remaining is None:
-            return self.config.page_size
-        if filtered:
-            return self.config.page_size
-        return min(self.config.page_size, remaining)
+        ordered_tasks = sorted(tasks, key=_task_oldest_first_key)
+        if limit is None:
+            return ordered_tasks
+        return ordered_tasks[:limit]
 
 
 def _select_query(owner_type: OwnerType) -> str:
@@ -477,3 +468,7 @@ def _map_item_to_task(item: dict[str, Any]) -> Task | None:
         updated_at=str(updated_at),
         repo=str(repo) if repo else None,
     )
+
+
+def _task_oldest_first_key(task: Task) -> tuple[str, str, str]:
+    return (task.created_at, task.updated_at, task.id)

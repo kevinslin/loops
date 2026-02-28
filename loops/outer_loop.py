@@ -254,8 +254,14 @@ class OuterLoopRunner:
             _log(self.log_path, "no task ready to be scheduled")
         to_launch: list[tuple[Path, Task]] = []
         for task in emit_tasks:
-            _log(self.log_path, f"scheduling task: {task.url}")
             run_dir = create_run_dir(task, self.loops_root)
+            _log(
+                self.log_path,
+                "run_once.schedule "
+                f"key={_task_key(task)} "
+                f"url={task.url} "
+                f"run_dir={run_dir}",
+            )
             record = RunRecord(
                 task=task,
                 pr=None,

@@ -584,6 +584,90 @@ def test_poll_filtered_limit_counts_only_matched_items(monkeypatch) -> None:
     assert calls == [(None, 50), ("cursor-1", 50)]
 
 
+def test_poll_orders_oldest_first_before_limit(monkeypatch) -> None:
+    first_page = {
+        "data": {
+            "organization": {
+                "projectV2": {
+                    "items": {
+                        "pageInfo": {"hasNextPage": True, "endCursor": "cursor-1"},
+                        "nodes": [
+                            {
+                                "id": "PVTI_2",
+                                "fieldValueByName": {
+                                    "__typename": "ProjectV2ItemFieldSingleSelectValue",
+                                    "name": "Ready",
+                                },
+                                "content": {
+                                    "__typename": "Issue",
+                                    "id": "ISSUE_2",
+                                    "title": "Newer",
+                                    "url": "https://github.com/acme/repo/issues/2",
+                                    "createdAt": "2026-02-05T00:00:00Z",
+                                    "updatedAt": "2026-02-05T01:00:00Z",
+                                    "repository": {"nameWithOwner": "acme/repo"},
+                                },
+                            }
+                        ],
+                    }
+                }
+            }
+        }
+    }
+    second_page = {
+        "data": {
+            "organization": {
+                "projectV2": {
+                    "items": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [
+                            {
+                                "id": "PVTI_1",
+                                "fieldValueByName": {
+                                    "__typename": "ProjectV2ItemFieldSingleSelectValue",
+                                    "name": "Ready",
+                                },
+                                "content": {
+                                    "__typename": "Issue",
+                                    "id": "ISSUE_1",
+                                    "title": "Older",
+                                    "url": "https://github.com/acme/repo/issues/1",
+                                    "createdAt": "2026-02-01T00:00:00Z",
+                                    "updatedAt": "2026-02-01T01:00:00Z",
+                                    "repository": {"nameWithOwner": "acme/repo"},
+                                },
+                            }
+                        ],
+                    }
+                }
+            }
+        }
+    }
+    calls: list[str | None] = []
+
+    def fake_run(*, query, variables, github_token, gh_bin):
+        calls.append(variables.get("after"))
+        if variables.get("after") is None:
+            return first_page
+        if variables.get("after") == "cursor-1":
+            return second_page
+        raise AssertionError("Unexpected pagination cursor")
+
+    from loops.providers import github_projects_v2
+
+    monkeypatch.setattr(github_projects_v2, "_run_gh_graphql", fake_run)
+
+    provider = GithubProjectsV2TaskProvider(
+        GithubProjectsV2TaskProviderConfig(
+            url="https://github.com/orgs/acme/projects/1",
+            github_token="token",
+        )
+    )
+    tasks = provider.poll(limit=1)
+    assert [task.title for task in tasks] == ["Older"]
+    assert calls == [None, "cursor-1"]
+
+
 def test_poll_missing_cursor_raises(monkeypatch) -> None:
     response = {
         "data": {

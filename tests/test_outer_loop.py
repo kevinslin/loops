@@ -265,15 +265,17 @@ def test_run_once_writes_detailed_logs(tmp_path: Path) -> None:
         inner_loop_launcher=lambda _run_dir, _task: None,
     )
 
-    runner.run_once(limit=3)
+    run_dirs = runner.run_once(limit=3)
 
     log_text = (loops_root / "oloops.log").read_text()
     assert "run_once.start" in log_text
     assert "run_once.poll" in log_text
     assert "run_once.select" in log_text
+    assert "run_once.schedule" in log_text
     assert "run_once.launch" in log_text
     assert "run_once.done" in log_text
     assert "ready=1 processed=1" in log_text
+    assert f"run_dir={run_dirs[0]}" in log_text
 
 
 def test_load_config_resolves_working_dir(tmp_path: Path) -> None:

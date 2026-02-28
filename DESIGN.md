@@ -133,7 +133,8 @@ type TaskProvider = {
     loop_config: OuterLoopConfig
     // source specific config
     provider_config: any
-    // get matching tasks
+    // get matching tasks.
+    // github_projects_v2 ordering: oldest task first by created_at, then limit
     poll(limit?: number): Promise<Task[]>
 } 
 
@@ -497,6 +498,7 @@ Task: [task]
 
 ### Logging
 - Outer loop logs: `[LOOPS_ROOT]/oloops.log`.
+- Outer loop per-task scheduling entries include the created inner-loop run directory path.
 - Inner loop orchestration logs + Codex output mirror: `[INNER_LOOP_ROOT]/run.log`.
 - Agent/Codex logs: `[INNER_LOOP_ROOT]/agent.log`.
 
