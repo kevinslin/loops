@@ -404,6 +404,8 @@ def test_inner_loop_consumes_signal_and_uses_user_response_in_prompt(
     assert "Do not merge until the state is exactly <state>PR_APPROVED</state>." in prompts
     assert "User input:\\nack: Need user decision" in prompts
     assert "<state>RUNNING</state>" in prompts
+    run_log = (run_dir / "run.log").read_text()
+    assert '[loops] user input for codex turn: "ack: Need user decision"' in run_log
 
 
 def test_inner_loop_uses_user_response_for_review_feedback_turn(
@@ -480,6 +482,8 @@ def test_inner_loop_uses_user_response_for_review_feedback_turn(
     assert "User input:\\nack: Need user decision" in prompts
     assert "has changes requested. Address review feedback" in prompts
     assert "<state>WAITING_ON_REVIEW</state>" in prompts
+    run_log = (run_dir / "run.log").read_text()
+    assert '[loops] user input for codex turn: "ack: Need user decision"' in run_log
 
 
 def test_inner_loop_resumes_from_waiting_on_review_without_codex(tmp_path, monkeypatch) -> None:

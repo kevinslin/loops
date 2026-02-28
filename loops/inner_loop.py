@@ -918,6 +918,15 @@ def _run_codex_turn(
     user_response: Optional[str] = None,
     review_feedback: bool,
 ) -> RunRecord:
+    if user_response is not None:
+        append_log(
+            run_log,
+            (
+                "[loops] user input for codex turn: "
+                f"{json.dumps(user_response, ensure_ascii=True)}"
+            ),
+        )
+
     if review_feedback and run_record.pr is not None:
         prompt = _build_review_feedback_prompt(
             run_record.task.url,
