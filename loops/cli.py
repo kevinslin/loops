@@ -17,16 +17,19 @@ from loops.outer_loop import (
     InnerLoopCommandConfig,
     INNER_LOOP_RUNS_DIR_NAME,
     LATEST_LOOPS_CONFIG_VERSION,
-    OuterLoopConfig,
     OuterLoopRunner,
     OuterLoopState,
+    build_default_loop_config_payload,
     build_inner_loop_launcher,
     build_provider,
     load_config,
     upgrade_config_payload,
     write_outer_state,
 )
-from loops.providers.github_projects_v2 import GITHUB_PROJECTS_V2_PROVIDER_ID
+from loops.providers.github_projects_v2 import (
+    GITHUB_PROJECTS_V2_PROVIDER_ID,
+    build_default_provider_config_payload,
+)
 from loops.state_signal import enqueue_state_signal
 
 
@@ -267,13 +270,7 @@ def _run_outer_loop(
         effective_loop_config = replace(effective_loop_config, force=force_override)
     config = replace(config, loop_config=effective_loop_config)
     if config.inner_loop is None:
-        config = replace(
-            config,
-            inner_loop=InnerLoopCommandConfig(
-                command=[sys.executable, "-m", "loops.inner_loop"],
-                append_task_url=False,
-            ),
-        )
+        config = replace(config, inner_loop=_build_default_inner_loop_config())
     provider = build_provider(config)
     launcher = build_inner_loop_launcher(config)
     loops_root = _resolve_loops_root(config_path)
@@ -318,31 +315,31 @@ def _parse_context_option(raw_context: str) -> dict[str, Any]:
 def _build_default_config() -> dict[str, Any]:
     """Build a default Loops config payload for `loops init`."""
 
-    defaults = OuterLoopConfig()
     return {
         "version": LATEST_LOOPS_CONFIG_VERSION,
         "provider_id": GITHUB_PROJECTS_V2_PROVIDER_ID,
-        "provider_config": {
-            "url": "https://github.com/orgs/YOUR_ORG/projects/1",
-            "status_field": "Status",
-            "page_size": 50,
-        },
-        "loop_config": {
-            "poll_interval_seconds": defaults.poll_interval_seconds,
-            "parallel_tasks": defaults.parallel_tasks,
-            "parallel_tasks_limit": defaults.parallel_tasks_limit,
-            "sync_mode": defaults.sync_mode,
-            "emit_on_first_run": defaults.emit_on_first_run,
-            "force": defaults.force,
-            "task_ready_status": defaults.task_ready_status,
-            "approval_comment_usernames": list(defaults.approval_comment_usernames),
-            "approval_comment_pattern": defaults.approval_comment_pattern,
-            "handoff_handler": defaults.handoff_handler,
-        },
-        "inner_loop": {
-            "command": [sys.executable, "-m", "loops.inner_loop"],
-            "append_task_url": False,
-        },
+        "provider_config": build_default_provider_config_payload(),
+        "loop_config": build_default_loop_config_payload(),
+        "inner_loop": _build_default_inner_loop_payload(),
+    }
+
+
+def _build_default_inner_loop_config() -> InnerLoopCommandConfig:
+    """Build the default runtime fallback InnerLoopCommandConfig."""
+
+    return InnerLoopCommandConfig(
+        command=[sys.executable, "-m", "loops.inner_loop"],
+        append_task_url=False,
+    )
+
+
+def _build_default_inner_loop_payload() -> dict[str, Any]:
+    """Build the default JSON payload for `inner_loop` config."""
+
+    defaults = _build_default_inner_loop_config()
+    return {
+        "command": defaults.command,
+        "append_task_url": defaults.append_task_url,
     }
 
 

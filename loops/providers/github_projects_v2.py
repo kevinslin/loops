@@ -13,6 +13,7 @@ from loops.provider_types import LoopsProviderConfig, SecretRequirement
 from loops.run_record import Task
 
 GITHUB_PROJECTS_V2_PROVIDER_ID = "github_projects_v2"
+DEFAULT_GITHUB_PROJECTS_V2_PROJECT_URL = "https://github.com/orgs/YOUR_ORG/projects/1"
 OwnerType = Literal["organization", "user"]
 GH_API_TIMEOUT_SECONDS = 30
 
@@ -42,6 +43,20 @@ GITHUB_PROJECTS_V2_PROVIDER_CONFIG = LoopsProviderConfig(
     ),
     provider_config_model=GithubProjectsV2TaskProviderConfig,
 )
+
+
+def build_default_provider_config_payload(
+    *,
+    project_url: str = DEFAULT_GITHUB_PROJECTS_V2_PROJECT_URL,
+) -> dict[str, Any]:
+    """Build a default JSON payload for GitHub Projects V2 provider_config."""
+
+    defaults = GithubProjectsV2TaskProviderConfig(url=project_url)
+    return {
+        "url": defaults.url,
+        "status_field": defaults.status_field,
+        "page_size": defaults.page_size,
+    }
 
 
 @dataclass(frozen=True)
