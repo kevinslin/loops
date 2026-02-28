@@ -393,6 +393,7 @@ Precedence rule: `NEEDS_INPUT` has priority over `DONE`; if `needs_user_input=tr
 - **If `NEEDS_INPUT`**: send signal S:NEEDS_INPUT, payload: `{ questions }`. Block until user responds. Clear flag, persist answer, resume LLM. Retry: still wait for input.
 - **If PR submitted → `WAITING_ON_REVIEW`**: set S:WAITING_ON_REVIEW. Run poll script. If changes requested AND `latest_review_submitted_at > review_addressed_at` (new review event), exec trigger:fix-pr and record `review_addressed_at`. If approved, transition to PR_APPROVED. Retry: continue polling.
 - **If PR approved → `PR_APPROVED`**: set S:PR_APPROVED. Run trigger:merge-pr. On success, derive DONE from `pr.merged_at`. Retry: re-run trigger (idempotent).
+- **Bounded wait guardrail (review + approved states)**: both `WAITING_ON_REVIEW` and `PR_APPROVED` use idle-poll escalation. If status polling fails repeatedly or the state does not progress for `max_idle_polls` consecutive polls (default `20`), force `NEEDS_INPUT` with a manual-guidance payload. Poll backoff grows from `initial_poll_seconds` (default `5s`) up to `max_poll_seconds` (default `60s`).
 
 ### State transitions (ASCII)
 
@@ -436,7 +437,7 @@ From any non-DONE state:
 | `RUNNING` (session recorded) | Resume existing session | Resume session ID and send the next state-tagged prompt |
 | `NEEDS_INPUT` | Still waiting | Re-enter wait; do not re-send signal |
 | `WAITING_ON_REVIEW` | Polling interrupted | Continue polling PR status |
-| `PR_APPROVED` | Merge may be partial | Re-run trigger:merge-pr (idempotent) |
+| `PR_APPROVED` | Merge may be partial | Re-run trigger:merge-pr (idempotent); if merge remains stalled past idle threshold, escalate to `NEEDS_INPUT` |
 | `DONE` | Terminal | Exit immediately |
 
 ### Signal handling
@@ -489,6 +490,7 @@ Task: [task]
 - Non-fatal errors set `needs_user_input=true` and write the error message to `run.log`.
 - Fatal errors still write to `run.json` and terminate the run.
 - On restart, the inner loop recomputes derived state from `run.json` and resumes accordingly.
+- Repeated polling idleness in `WAITING_ON_REVIEW` or `PR_APPROVED` forces `NEEDS_INPUT` after the configured idle threshold.
 
 ## 9. Observability
 

@@ -59,7 +59,7 @@ function run_inner_loop(run_dir):
     if state == WAITING_ON_REVIEW:
       poll PR; react to changes requested/approval/idle thresholds
     if state == PR_APPROVED:
-      run cleanup prompt once, poll merge state until DONE
+      run cleanup prompt once, poll merge state until DONE or idle-escalate to NEEDS_INPUT
 
   force NEEDS_INPUT and return
 ```
@@ -261,8 +261,15 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
       updatedPr = prStatusFetcher(record.pr)
       record = writeRunRecord({ ...record, pr: updatedPr })
     } catch {
+      maybeEscalateIfMergePollingErrors()
       sleepWithBackoff()
       continue
+    }
+
+    if (deriveRunState(record.pr, record.needsUserInput) === "PR_APPROVED") {
+      maybeEscalateIfStaleApprovedState()
+    } else {
+      resetBackoffAndIdlePolls()
     }
 
     sleepWithBackoff()
@@ -286,6 +293,10 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
   - Calls `gh pr view ... --json reviewDecision,mergedAt,url,number,repository,latestReviews,comments`.
   - Maps decision into `review_status`, captures latest relevant review timestamp, and may override to approved when an allowlisted approval comment matches pattern and is newer than latest `CHANGES_REQUESTED` review.
 
+- Approved-state merge polling behavior (`loops/inner_loop.py`):
+  - Runs cleanup once per PR URL, then polls merge status.
+  - Uses the same idle-poll threshold gate as review polling: repeated poll errors or no merge progress force `NEEDS_INPUT` with manual guidance.
+
 - Signal consumption behavior (`loops/inner_loop.py:941`):
   - Reads unread JSONL entries from queue offset.
   - Applies `NEEDS_INPUT` payloads to run record.
@@ -301,7 +312,7 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
 
 - Inner loop exits normally only when derived state is `DONE` (`loops/inner_loop.py:99`).
 - It can return early in non-interactive `NEEDS_INPUT` mode to hand control back to caller (`loops/inner_loop.py:119`).
-- It escalates to `NEEDS_INPUT` on repeated polling idleness or iteration cap (`loops/inner_loop.py:233`, `loops/inner_loop.py:409`).
+- It escalates to `NEEDS_INPUT` on repeated polling idleness (both review and approved states) or iteration cap (`loops/inner_loop.py:233`, `loops/inner_loop.py:409`).
 
 **File(s)**: `loops/inner_loop.py`, `loops/run_record.py`, `loops/state_signal.py`, `loops/outer_loop.py`, `loops/cli.py`
 
@@ -389,6 +400,7 @@ A: Inner loop only. Signal producers append to queue; they do not mutate `run.js
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+- 2026-02-28: Documented bounded idle escalation in `PR_APPROVED` merge polling and aligned pseudocode with the runtime guardrail. (019ca583-faf1-7f72-95c8-b8e9cdd16046)
 - 2026-02-16: Created inner-loop flow doc for runtime state-machine behavior and integration points. (019c6863-d581-7f83-9809-fabbefa042e8)
 - 2026-02-17: Documented allowlisted comment-based approval detection and ordering guard against newer changes-requested reviews. (019c68ed-a6c5-78e0-891a-6b70a1a1450c)
 - 2026-02-17: Updated flow to use run-scoped `inner_loop_approval_config.json` transport instead of env-based approval settings. (019c68ed-a6c5-78e0-891a-6b70a1a1450c)

@@ -111,6 +111,26 @@ def _write_codex_cli_stub(path: Path) -> None:
     _write_codex_stub(path)
     path.chmod(0o755)
 
+def _write_cleanup_stub(path: Path) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "import os",
+                "from pathlib import Path",
+                "",
+                "counter_path = Path(os.environ['STUB_COUNTER_PATH'])",
+                "if counter_path.exists():",
+                "    count = int(counter_path.read_text())",
+                "else:",
+                "    count = 0",
+                "count += 1",
+                "counter_path.write_text(str(count))",
+                "print('cleanup complete')",
+                "",
+            ]
+        )
+    )
+
 
 def test_inner_loop_reaches_done_lifecycle(tmp_path, monkeypatch) -> None:
     run_dir = tmp_path / "run"
@@ -180,6 +200,107 @@ def test_inner_loop_reaches_done_lifecycle(tmp_path, monkeypatch) -> None:
     assert "<state>PR_APPROVED</state>" in prompts
     args = [line.strip() for line in args_log_path.read_text().splitlines() if line]
     assert args == ["exec", "exec resume session-1"]
+
+
+def test_inner_loop_escalates_when_approved_pr_never_merges(tmp_path, monkeypatch) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        pr=RunPR(
+            url="https://github.com/acme/api/pull/42",
+            number=42,
+            repo="acme/api",
+            review_status="approved",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:00Z",
+        ),
+    )
+
+    cleanup_stub = tmp_path / "cleanup_stub.py"
+    _write_cleanup_stub(cleanup_stub)
+    counter_path = tmp_path / "counter.txt"
+    monkeypatch.setenv("STUB_COUNTER_PATH", str(counter_path))
+    monkeypatch.setenv(
+        "CODEX_CMD",
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(cleanup_stub))}",
+    )
+
+    def pr_status_fetcher(pr: RunPR) -> RunPR:
+        return RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="approved",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:01Z",
+        )
+
+    result = run_inner_loop(
+        run_dir,
+        pr_status_fetcher=pr_status_fetcher,
+        sleep_fn=lambda _seconds: None,
+        max_iterations=10,
+        max_idle_polls=3,
+    )
+
+    assert result.last_state == "NEEDS_INPUT"
+    assert result.needs_user_input is True
+    assert result.needs_user_input_payload == {
+        "message": (
+            "PR is still approved but not merged after repeated polls. "
+            "Please provide manual guidance."
+        ),
+    }
+    assert counter_path.read_text() == "1"  # cleanup runs once per PR URL
+
+
+def test_inner_loop_escalates_when_approved_merge_poll_errors(tmp_path, monkeypatch) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        pr=RunPR(
+            url="https://github.com/acme/api/pull/42",
+            number=42,
+            repo="acme/api",
+            review_status="approved",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:00Z",
+        ),
+    )
+
+    cleanup_stub = tmp_path / "cleanup_stub.py"
+    _write_cleanup_stub(cleanup_stub)
+    counter_path = tmp_path / "counter.txt"
+    monkeypatch.setenv("STUB_COUNTER_PATH", str(counter_path))
+    monkeypatch.setenv(
+        "CODEX_CMD",
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(cleanup_stub))}",
+    )
+
+    def pr_status_fetcher(_pr: RunPR) -> RunPR:
+        raise RuntimeError("gh unavailable")
+
+    result = run_inner_loop(
+        run_dir,
+        pr_status_fetcher=pr_status_fetcher,
+        sleep_fn=lambda _seconds: None,
+        max_iterations=10,
+        max_idle_polls=2,
+    )
+
+    assert result.last_state == "NEEDS_INPUT"
+    assert result.needs_user_input is True
+    assert result.needs_user_input_payload == {
+        "message": (
+            "Merge polling has been idle for too long. "
+            "Please check merge status manually."
+        ),
+    }
+    assert counter_path.read_text() == "1"  # cleanup runs once per PR URL
+    run_log = (run_dir / "run.log").read_text()
+    assert "failed to poll merge status: gh unavailable" in run_log
 
 
 def test_inner_loop_sets_needs_user_input_on_nonzero_codex_exit(

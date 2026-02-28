@@ -358,17 +358,16 @@ def run_inner_loop(
                 updated_pr = pr_status_fetcher(run_record.pr)
             except Exception as exc:
                 append_log(run_log, f"[loops] failed to poll PR status: {exc}")
-                idle_polls += 1
-                if idle_polls >= max_idle_polls:
-                    run_record = _force_needs_input(
-                        run_json_path,
-                        run_record,
-                        message=(
-                            "PR polling has been idle for too long. "
-                            "Please check review status manually."
-                        ),
-                    )
-                    idle_polls = 0
+                run_record, idle_polls = _increment_idle_polls(
+                    run_json_path=run_json_path,
+                    run_record=run_record,
+                    idle_polls=idle_polls,
+                    max_idle_polls=max_idle_polls,
+                    message=(
+                        "PR polling has been idle for too long. "
+                        "Please check review status manually."
+                    ),
+                )
                 sleep_fn(min(backoff_seconds, max_poll_seconds))
                 backoff_seconds = min(backoff_seconds * 2, max_poll_seconds)
                 _log_iteration_exit(
@@ -422,22 +421,24 @@ def run_inner_loop(
                     idle_polls=idle_polls,
                 )
                 continue
-            next_state = derive_run_state(run_record.pr, run_record.needs_user_input)
-            if next_state == "WAITING_ON_REVIEW":
-                idle_polls += 1
-                if idle_polls >= max_idle_polls:
-                    run_record = _force_needs_input(
-                        run_json_path,
-                        run_record,
-                        message=(
-                            "PR has not changed after repeated polls. "
-                            "Please provide manual guidance."
-                        ),
-                    )
-                    idle_polls = 0
+            if (
+                derive_run_state(run_record.pr, run_record.needs_user_input)
+                == "WAITING_ON_REVIEW"
+            ):
+                run_record, idle_polls = _increment_idle_polls(
+                    run_json_path=run_json_path,
+                    run_record=run_record,
+                    idle_polls=idle_polls,
+                    max_idle_polls=max_idle_polls,
+                    message=(
+                        "PR has not changed after repeated polls. "
+                        "Please provide manual guidance."
+                    ),
+                )
             else:
                 idle_polls = 0
                 backoff_seconds = initial_poll_seconds
+            next_state = derive_run_state(run_record.pr, run_record.needs_user_input)
             sleep_fn(min(backoff_seconds, max_poll_seconds))
             backoff_seconds = min(backoff_seconds * 2, max_poll_seconds)
             _log_iteration_exit(
@@ -510,6 +511,16 @@ def run_inner_loop(
                 updated_pr = pr_status_fetcher(run_record.pr)
             except Exception as exc:
                 append_log(run_log, f"[loops] failed to poll merge status: {exc}")
+                run_record, idle_polls = _increment_idle_polls(
+                    run_json_path=run_json_path,
+                    run_record=run_record,
+                    idle_polls=idle_polls,
+                    max_idle_polls=max_idle_polls,
+                    message=(
+                        "Merge polling has been idle for too long. "
+                        "Please check merge status manually."
+                    ),
+                )
                 sleep_fn(min(backoff_seconds, max_poll_seconds))
                 backoff_seconds = min(backoff_seconds * 2, max_poll_seconds)
                 _log_iteration_exit(
@@ -530,12 +541,30 @@ def run_inner_loop(
                 run_json_path,
                 replace(run_record, pr=updated_pr),
             )
+            if (
+                derive_run_state(run_record.pr, run_record.needs_user_input)
+                == "PR_APPROVED"
+            ):
+                run_record, idle_polls = _increment_idle_polls(
+                    run_json_path=run_json_path,
+                    run_record=run_record,
+                    idle_polls=idle_polls,
+                    max_idle_polls=max_idle_polls,
+                    message=(
+                        "PR is still approved but not merged after repeated polls. "
+                        "Please provide manual guidance."
+                    ),
+                )
+            else:
+                idle_polls = 0
+                backoff_seconds = initial_poll_seconds
+            next_state = derive_run_state(run_record.pr, run_record.needs_user_input)
             sleep_fn(min(backoff_seconds, max_poll_seconds))
             backoff_seconds = min(backoff_seconds * 2, max_poll_seconds)
             _log_iteration_exit(
                 run_log,
                 iteration=iteration,
-                next_state=derive_run_state(run_record.pr, run_record.needs_user_input),
+                next_state=next_state,
                 run_record=run_record,
                 action="approved_poll",
                 backoff_seconds=backoff_seconds,
@@ -1317,6 +1346,29 @@ def _normalize_handoff_result(
         return HandoffResult.from_response(stripped)
     raise TypeError(
         "expected HandoffResult, string, or null response from handoff handler"
+    )
+
+
+def _increment_idle_polls(
+    *,
+    run_json_path: Path,
+    run_record: RunRecord,
+    idle_polls: int,
+    max_idle_polls: int,
+    message: str,
+    context: Optional[dict[str, Any]] = None,
+) -> tuple[RunRecord, int]:
+    next_idle_polls = idle_polls + 1
+    if next_idle_polls < max_idle_polls:
+        return run_record, next_idle_polls
+    return (
+        _force_needs_input(
+            run_json_path,
+            run_record,
+            message=message,
+            context=context,
+        ),
+        0,
     )
 
 
