@@ -293,7 +293,7 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
 
 - Review polling behavior (`loops/inner_loop.py:767`):
   - Loads comment-approval settings once per run from `inner_loop_approval_config.json` and compiles approval pattern with safe fallback.
-  - Calls `gh pr view ... --json reviewDecision,mergedAt,url,number,repository,latestReviews,reviews,comments`.
+  - Calls `gh pr view ... --json reviewDecision,mergedAt,url,number,latestReviews,reviews,comments`.
   - Maps decision into `review_status`, captures latest relevant review timestamp, and may override to approved when an allowlisted approval comment matches pattern and is newer than latest `CHANGES_REQUESTED` review.
   - When review status remains open, uses the latest `COMMENTED` PR review timestamp as a feedback signal; if missing, falls back to the latest plain PR discussion comment timestamp.
 

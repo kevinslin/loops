@@ -56,6 +56,7 @@ DEFAULT_MAX_ITERATIONS = 200
 DEFAULT_REVIEW_POLL_SECONDS = 5.0
 DEFAULT_MAX_REVIEW_POLL_SECONDS = 60.0
 DEFAULT_MAX_IDLE_POLLS = 20
+WAITING_STATES = {"WAITING_ON_REVIEW", "PR_APPROVED"}
 GITHUB_PR_PATTERN = re.compile(
     r"https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([0-9]+)"
 )
@@ -370,15 +371,27 @@ def run_inner_loop(
                         "Please check review status manually."
                     ),
                 )
+                next_state = derive_run_state(
+                    run_record.pr,
+                    run_record.needs_user_input,
+                )
+                if next_state not in WAITING_STATES:
+                    _log_iteration_exit(
+                        run_log,
+                        iteration=iteration,
+                        next_state=next_state,
+                        run_record=run_record,
+                        action="review_poll_error",
+                        backoff_seconds=backoff_seconds,
+                        idle_polls=idle_polls,
+                    )
+                    continue
                 sleep_fn(min(backoff_seconds, max_poll_seconds))
                 backoff_seconds = min(backoff_seconds * 2, max_poll_seconds)
                 _log_iteration_exit(
                     run_log,
                     iteration=iteration,
-                    next_state=derive_run_state(
-                        run_record.pr,
-                        run_record.needs_user_input,
-                    ),
+                    next_state=next_state,
                     run_record=run_record,
                     action="review_poll_error",
                     backoff_seconds=backoff_seconds,
@@ -436,6 +449,21 @@ def run_inner_loop(
                         "Please provide manual guidance."
                     ),
                 )
+                next_state = derive_run_state(
+                    run_record.pr,
+                    run_record.needs_user_input,
+                )
+                if next_state not in WAITING_STATES:
+                    _log_iteration_exit(
+                        run_log,
+                        iteration=iteration,
+                        next_state=next_state,
+                        run_record=run_record,
+                        action="review_poll",
+                        backoff_seconds=backoff_seconds,
+                        idle_polls=idle_polls,
+                    )
+                    continue
             else:
                 idle_polls = 0
                 backoff_seconds = initial_poll_seconds
@@ -522,15 +550,27 @@ def run_inner_loop(
                         "Please check merge status manually."
                     ),
                 )
+                next_state = derive_run_state(
+                    run_record.pr,
+                    run_record.needs_user_input,
+                )
+                if next_state not in WAITING_STATES:
+                    _log_iteration_exit(
+                        run_log,
+                        iteration=iteration,
+                        next_state=next_state,
+                        run_record=run_record,
+                        action="merge_poll_error",
+                        backoff_seconds=backoff_seconds,
+                        idle_polls=idle_polls,
+                    )
+                    continue
                 sleep_fn(min(backoff_seconds, max_poll_seconds))
                 backoff_seconds = min(backoff_seconds * 2, max_poll_seconds)
                 _log_iteration_exit(
                     run_log,
                     iteration=iteration,
-                    next_state=derive_run_state(
-                        run_record.pr,
-                        run_record.needs_user_input,
-                    ),
+                    next_state=next_state,
                     run_record=run_record,
                     action="merge_poll_error",
                     backoff_seconds=backoff_seconds,
@@ -556,10 +596,19 @@ def run_inner_loop(
                         "Please provide manual guidance."
                     ),
                 )
-            else:
-                idle_polls = 0
-                backoff_seconds = initial_poll_seconds
             next_state = derive_run_state(run_record.pr, run_record.needs_user_input)
+            if next_state not in WAITING_STATES:
+                _log_iteration_exit(
+                    run_log,
+                    iteration=iteration,
+                    next_state=next_state,
+                    run_record=run_record,
+                    action="approved_poll",
+                    backoff_seconds=backoff_seconds,
+                    idle_polls=idle_polls,
+                )
+                continue
+            backoff_seconds = initial_poll_seconds
             sleep_fn(min(backoff_seconds, max_poll_seconds))
             backoff_seconds = min(backoff_seconds * 2, max_poll_seconds)
             _log_iteration_exit(
@@ -940,12 +989,11 @@ def _run_codex_turn(
     review_feedback: bool,
 ) -> RunRecord:
     if user_response is not None:
+        normalized_response = user_response.strip()
         append_log(
             run_log,
-            (
-                "[loops] user input for codex turn: "
-                f"{json.dumps(user_response, ensure_ascii=True)}"
-            ),
+            f"[loops] user input for codex turn: "
+            f"present={bool(normalized_response)} length={len(normalized_response)}",
         )
 
     if review_feedback and run_record.pr is not None:
