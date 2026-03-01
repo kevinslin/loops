@@ -108,6 +108,7 @@ class CommentApprovalSettings:
     allowed_usernames: tuple[str, ...]
     pattern_text: str
     approval_regex: re.Pattern[str]
+    review_actor_usernames: tuple[str, ...] = ()
     used_default_pattern: bool = False
     config_load_error: str | None = None
 
@@ -1499,6 +1500,162 @@ def _review_status_from_decision(decision: Any) -> str:
     return "open"
 
 
+def _extract_author_login(event: dict[str, Any]) -> str | None:
+    author_payload = event.get("author")
+    author_login = (
+        author_payload.get("login")
+        if isinstance(author_payload, dict)
+        else None
+    )
+    if not isinstance(author_login, str):
+        return None
+    normalized = author_login.strip()
+    if not normalized:
+        return None
+    return normalized
+
+
+def _filter_events_by_review_actor_allowlist(
+    events: Any,
+    review_actor_usernames: tuple[str, ...],
+) -> tuple[list[dict[str, Any]], int]:
+    if not isinstance(events, list):
+        return [], 0
+    if not review_actor_usernames:
+        return [], len(events)
+    if len(review_actor_usernames) == 1 and review_actor_usernames[0] == "*":
+        filtered: list[dict[str, Any]] = []
+        dropped = 0
+        for event in events:
+            if not isinstance(event, dict):
+                dropped += 1
+                continue
+            author_login = _extract_author_login(event)
+            if author_login is None:
+                dropped += 1
+                continue
+            filtered.append(event)
+        return filtered, dropped
+    filtered: list[dict[str, Any]] = []
+    dropped = 0
+    for event in events:
+        if not isinstance(event, dict):
+            dropped += 1
+            continue
+        author_login = _extract_author_login(event)
+        if author_login is None:
+            dropped += 1
+            continue
+        if author_login.casefold() not in review_actor_usernames:
+            dropped += 1
+            continue
+        filtered.append(event)
+    return filtered, dropped
+
+
+def _filter_review_payload_by_actor_allowlist(
+    payload: dict[str, Any],
+    review_actor_usernames: tuple[str, ...],
+) -> tuple[dict[str, Any], int, int, int]:
+    filtered_payload = dict(payload)
+    filtered_comments, dropped_comments = _filter_events_by_review_actor_allowlist(
+        payload.get("comments"),
+        review_actor_usernames,
+    )
+    filtered_reviews, dropped_reviews = _filter_events_by_review_actor_allowlist(
+        payload.get("reviews"),
+        review_actor_usernames,
+    )
+    filtered_latest_reviews, dropped_latest_reviews = (
+        _filter_events_by_review_actor_allowlist(
+            payload.get("latestReviews"),
+            review_actor_usernames,
+        )
+    )
+    filtered_payload["comments"] = filtered_comments
+    filtered_payload["reviews"] = filtered_reviews
+    filtered_payload["latestReviews"] = filtered_latest_reviews
+    return (
+        filtered_payload,
+        dropped_comments,
+        dropped_reviews,
+        dropped_latest_reviews,
+    )
+
+
+def _collect_review_states(reviews: Any) -> set[str]:
+    if not isinstance(reviews, list) or not reviews:
+        return set()
+    states: set[str] = set()
+    for review in reviews:
+        if not isinstance(review, dict):
+            continue
+        state = str(review.get("state") or "").upper()
+        if state:
+            states.add(state)
+    return states
+
+
+def _latest_reviews_from_reviews(reviews: Any) -> list[dict[str, Any]]:
+    if not isinstance(reviews, list) or not reviews:
+        return []
+    latest_by_author: dict[str, dict[str, Any]] = {}
+    for review in reviews:
+        if not isinstance(review, dict):
+            continue
+        author_login = _extract_author_login(review)
+        submitted_at = review.get("submittedAt")
+        if author_login is None or not isinstance(submitted_at, str):
+            continue
+        author_key = author_login.casefold()
+        existing = latest_by_author.get(author_key)
+        if existing is None:
+            latest_by_author[author_key] = review
+            continue
+        existing_submitted_at = existing.get("submittedAt")
+        if not isinstance(existing_submitted_at, str) or submitted_at > existing_submitted_at:
+            latest_by_author[author_key] = review
+    return list(latest_by_author.values())
+
+
+def _review_events_for_status(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    latest_reviews = payload.get("latestReviews")
+    if isinstance(latest_reviews, list) and latest_reviews:
+        return [review for review in latest_reviews if isinstance(review, dict)]
+    return _latest_reviews_from_reviews(payload.get("reviews"))
+
+
+def _extract_latest_review_submitted_at_from_reviews(
+    reviews: Any,
+    target_state: str,
+) -> Optional[str]:
+    if not isinstance(reviews, list) or not reviews:
+        return None
+    normalized_target_state = target_state.upper()
+    best_timestamp: Optional[str] = None
+    for review in reviews:
+        if not isinstance(review, dict):
+            continue
+        state = str(review.get("state", "")).upper()
+        if state != normalized_target_state:
+            continue
+        submitted_at = review.get("submittedAt")
+        if not isinstance(submitted_at, str):
+            continue
+        if best_timestamp is None or submitted_at > best_timestamp:
+            best_timestamp = submitted_at
+    return best_timestamp
+
+
+def _derive_review_status_from_reviews(payload: dict[str, Any]) -> str:
+    states = _collect_review_states(_review_events_for_status(payload))
+    if "CHANGES_REQUESTED" in states:
+        return "changes_requested"
+    if "APPROVED" in states:
+        return "approved"
+    return "open"
+
+
 def _ci_status_from_rollup(payload: dict[str, Any]) -> str:
     rollup = payload.get("statusCheckRollup")
     if not isinstance(rollup, list) or not rollup:
@@ -1562,6 +1719,7 @@ def _load_comment_approval_settings(run_dir: Path) -> CommentApprovalSettings:
         used_default_pattern = True
     return CommentApprovalSettings(
         allowed_usernames=allowed_usernames,
+        review_actor_usernames=config.review_actor_usernames,
         pattern_text=pattern_text,
         approval_regex=approval_regex,
         used_default_pattern=used_default_pattern,
@@ -1582,13 +1740,8 @@ def _extract_latest_allowlisted_approval_comment(
     for comment in comments:
         if not isinstance(comment, dict):
             continue
-        author_payload = comment.get("author")
-        author_login = (
-            author_payload.get("login")
-            if isinstance(author_payload, dict)
-            else None
-        )
-        if not isinstance(author_login, str):
+        author_login = _extract_author_login(comment)
+        if author_login is None:
             continue
         if author_login.casefold() not in comment_approval.allowed_usernames:
             continue
@@ -1623,13 +1776,8 @@ def _extract_latest_allowlisted_approval_review(
         review_state = str(review.get("state", "")).upper()
         if review_state not in APPROVAL_REVIEW_STATES:
             continue
-        author_payload = review.get("author")
-        author_login = (
-            author_payload.get("login")
-            if isinstance(author_payload, dict)
-            else None
-        )
-        if not isinstance(author_login, str):
+        author_login = _extract_author_login(review)
+        if author_login is None:
             continue
         if author_login.casefold() not in comment_approval.allowed_usernames:
             continue
@@ -1656,13 +1804,8 @@ def _extract_latest_plain_comment_feedback(
     for comment in comments:
         if not isinstance(comment, dict):
             continue
-        author_payload = comment.get("author")
-        author_login = (
-            author_payload.get("login")
-            if isinstance(author_payload, dict)
-            else None
-        )
-        if not isinstance(author_login, str) or not author_login.strip():
+        author_login = _extract_author_login(comment)
+        if author_login is None:
             continue
         created_at = comment.get("createdAt")
         updated_at = comment.get("updatedAt")
@@ -1686,13 +1829,8 @@ def _extract_latest_commented_review_feedback(
             continue
         if str(review.get("state", "")).upper() != "COMMENTED":
             continue
-        author_payload = review.get("author")
-        author_login = (
-            author_payload.get("login")
-            if isinstance(author_payload, dict)
-            else None
-        )
-        if not isinstance(author_login, str) or not author_login.strip():
+        author_login = _extract_author_login(review)
+        if author_login is None:
             continue
         submitted_at = review.get("submittedAt")
         if not isinstance(submitted_at, str):
@@ -1772,7 +1910,9 @@ def _fetch_pr_status_with_gh_with_context(
             "[loops] polling PR status via gh: "
             f"pr_url={pr.url} "
             f"comment_approval_enabled={'yes' if comment_approval.enabled else 'no'} "
-            f"allowlisted_usernames={len(comment_approval.allowed_usernames)}"
+            f"approval_allowlisted_usernames={len(comment_approval.allowed_usernames)} "
+            "review_actor_allowlisted_usernames="
+            f"{len(comment_approval.review_actor_usernames)}"
         )
     )
     result = subprocess.run(
@@ -1835,23 +1975,73 @@ def _fetch_pr_status_with_gh_with_context(
     ci_status = _ci_status_from_rollup(payload)
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     review_decision_raw = payload.get("reviewDecision")
-    review_status = _review_status_from_decision(review_decision_raw)
-    latest_review_submitted_at = _extract_latest_review_submitted_at(
-        payload, str(review_decision_raw or "")
+    latest_changes_requested_at: Optional[str]
+    (
+        effective_payload,
+        dropped_comments,
+        dropped_reviews,
+        dropped_latest_reviews,
+    ) = _filter_review_payload_by_actor_allowlist(
+        payload,
+        comment_approval.review_actor_usernames,
     )
-    approved_by_comment = False
-    approved_by = ""
-    if review_status != "approved":
+    _log(
+        (
+            "[loops] applying review actor allowlist: "
+            f"pr_url={pr.url} "
+            f"allowlisted_usernames={len(comment_approval.review_actor_usernames)} "
+            f"dropped_comments={dropped_comments} "
+            f"dropped_reviews={dropped_reviews} "
+            f"dropped_latest_reviews={dropped_latest_reviews}"
+        )
+    )
+    wildcard_review_actor_allowlist = (
+        len(comment_approval.review_actor_usernames) == 1
+        and comment_approval.review_actor_usernames[0] == "*"
+    )
+    review_events = _review_events_for_status(effective_payload)
+    review_status = _derive_review_status_from_reviews(effective_payload)
+    latest_changes_requested_at = _extract_latest_review_submitted_at_from_reviews(
+        review_events,
+        "CHANGES_REQUESTED",
+    )
+    if latest_changes_requested_at is None and wildcard_review_actor_allowlist:
         latest_changes_requested_at = _extract_latest_review_submitted_at(
             payload,
             "CHANGES_REQUESTED",
         )
+    if review_status == "open" and not review_events:
+        if wildcard_review_actor_allowlist:
+            review_status = _review_status_from_decision(review_decision_raw)
+            latest_review_submitted_at = _extract_latest_review_submitted_at(
+                payload, str(review_decision_raw or "")
+            )
+        else:
+            latest_review_submitted_at = None
+    else:
+        review_state = (
+            "APPROVED"
+            if review_status == "approved"
+            else "CHANGES_REQUESTED"
+            if review_status == "changes_requested"
+            else ""
+        )
+        if review_state:
+            latest_review_submitted_at = _extract_latest_review_submitted_at_from_reviews(
+                review_events,
+                review_state,
+            )
+        else:
+            latest_review_submitted_at = None
+    approved_by_comment = False
+    approved_by = ""
+    if review_status != "approved":
         latest_approval_comment = _extract_latest_allowlisted_approval_comment(
-            payload,
+            effective_payload,
             comment_approval,
         )
         latest_approval_review = _extract_latest_allowlisted_approval_review(
-            payload,
+            effective_payload,
             comment_approval,
         )
         latest_approval_signal = _select_newer_approval_signal(
@@ -1880,8 +2070,12 @@ def _fetch_pr_status_with_gh_with_context(
                     )
                 )
         if review_status == "open":
-            latest_commented_review = _extract_latest_commented_review_feedback(payload)
-            latest_plain_comment = _extract_latest_plain_comment_feedback(payload)
+            latest_commented_review = _extract_latest_commented_review_feedback(
+                effective_payload
+            )
+            latest_plain_comment = _extract_latest_plain_comment_feedback(
+                effective_payload
+            )
             latest_feedback_signal = _select_newer_feedback_signal(
                 commented_review_feedback=latest_commented_review,
                 plain_comment_feedback=latest_plain_comment,

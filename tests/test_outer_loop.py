@@ -394,6 +394,46 @@ def test_load_config_reads_comment_approval_config(tmp_path: Path) -> None:
     assert config.loop_config.approval_comment_pattern == r"^\s*/shipit\b"
 
 
+def test_load_config_backfills_github_provider_defaults(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    payload = {
+        "provider_id": "github_projects_v2",
+        "provider_config": {"url": "https://github.com/orgs/acme/projects/1"},
+    }
+    config_path.write_text(json.dumps(payload))
+
+    config = load_config(config_path)
+    assert config.provider_config == {
+        "allowlist": [],
+        "page_size": 50,
+        "status_field": "Status",
+        "url": "https://github.com/orgs/acme/projects/1",
+    }
+
+
+def test_load_config_does_not_backfill_missing_github_provider_url(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    payload = {
+        "provider_id": "github_projects_v2",
+        "provider_config": {},
+    }
+    config_path.write_text(json.dumps(payload))
+
+    config = load_config(config_path)
+    assert config.provider_config == {
+        "allowlist": [],
+        "page_size": 50,
+        "status_field": "Status",
+    }
+
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    with pytest.raises(ValueError, match="provider_config is invalid"):
+        build_provider(config)
+
+
 def test_load_config_rejects_invalid_comment_approval_usernames(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     payload = {
@@ -636,6 +676,7 @@ def test_run_once_writes_custom_comment_approval_config(tmp_path: Path) -> None:
     assert payload == {
         "approval_comment_pattern": r"^\s*/shipit\b",
         "approval_comment_usernames": ["maintainer", "review-bot"],
+        "review_actor_usernames": [],
     }
 
 
@@ -656,4 +697,23 @@ def test_run_once_writes_default_comment_approval_config(tmp_path: Path) -> None
     assert payload == {
         "approval_comment_pattern": DEFAULT_APPROVAL_COMMENT_PATTERN,
         "approval_comment_usernames": [],
+        "review_actor_usernames": [],
     }
+
+
+def test_run_once_writes_provider_review_actor_allowlist(tmp_path: Path) -> None:
+    task = make_task("1", "Ship it")
+    provider = StubProvider([task])
+    provider.review_actor_allowlist = ("Maintainer", "review-bot", "maintainer")
+    loops_root = tmp_path / ".loops"
+    runner = OuterLoopRunner(
+        provider,
+        OuterLoopConfig(task_ready_status="Ready", emit_on_first_run=True),
+        loops_root=loops_root,
+        inner_loop_launcher=lambda _run_dir, _task: None,
+    )
+
+    run_dirs = runner.run_once()
+    assert len(run_dirs) == 1
+    payload = json.loads((run_dirs[0] / INNER_LOOP_APPROVAL_CONFIG_FILE).read_text())
+    assert payload["review_actor_usernames"] == ["maintainer", "review-bot"]

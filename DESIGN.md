@@ -263,6 +263,8 @@ type GithubProjectsV2TaskProviderConfig = {
     status_field: "Status"
     page_size?: number
     github_token?: string
+    // usernames allowed to contribute review-phase PR comments/review signals
+    allowlist?: string[]
     // provider-side key=value filters. supported keys:
     // repository=<owner>/<repo> (OR across repository entries)
     // tag=<label-name> (AND across tag entries)
@@ -276,7 +278,9 @@ Notes:
 - `provider_id` currently supports only `"github_projects_v2"`.
 - `provider_config` is validated by the provider's Pydantic model.
 - `provider_config` init defaults are emitted from provider-owned canonical builders (for `github_projects_v2`, from `loops.providers.github_projects_v2`).
+- `loops doctor` also backfills missing GitHub `provider_config` defaults (`status_field`, `page_size`, `allowlist`) without overwriting existing values.
 - `provider_config.filters` supports provider-side `key=value` filters for GitHub Projects V2 (`repository`, `tag`).
+- `provider_config.allowlist` (GitHub provider) restricts review-phase PR comment/review signals to listed usernames; non-allowlisted actors are ignored during review polling.
 - Required provider secrets are validated from environment variables before provider construction.
 - `loop_config` is optional; omitted keys fall back to defaults.
 - `loop_config` defaults are sourced from one canonical implementation in `loops.outer_loop` and reused by `loops init`, `loops doctor`, and runtime config loading.
@@ -616,7 +620,7 @@ Prompt-related configuration and runtime inputs:
 - When a review requests changes, the inner loop records `latest_review_submitted_at` (the review's `submittedAt` timestamp from GitHub) and invokes Codex to address the feedback. After Codex runs, `review_addressed_at` is set to `latest_review_submitted_at`. On subsequent polls, the loop only re-invokes Codex if `latest_review_submitted_at > review_addressed_at`, indicating a genuinely new review event. This prevents duplicate fix attempts when the reviewer has not yet re-reviewed.
 - When status is still open (no formal review decision), the inner loop uses the newest timestamp between `COMMENTED` PR review and plain PR discussion comment events as its feedback signal. It uses the same `latest_review_submitted_at > review_addressed_at` guard to decide whether to resume Codex.
 - Codex prompts must not ask the agent to wait for human review/comments inside a turn; the harness handles review polling/comment monitoring and re-invokes Codex when new feedback appears. The only in-turn waiting allowed is for the critical `a-review` subagent.
-- When approval is detected (GitHub review decision or an allowlisted approval signal newer than latest `CHANGES_REQUESTED` review), the loop derives `PR_APPROVED` via the existing manual path.
+- When approval is detected (GitHub review decision or an allowlisted approval signal newer than latest `CHANGES_REQUESTED` review), the loop derives `PR_APPROVED` via the existing manual path. If `provider_config.allowlist` is set, review polling first filters PR comments/reviews to allowlisted actors.
 - If review is not already approved, CI is green, and `auto_approve_enabled=true` with no stored judgement on `RunRecord.auto_approve`, the loop runs `trigger:auto-approve-eval` once (`$ag-judge`, judge book fixed to `references/jb.coding.md`) and stores verdict/scores on `RunRecord`.
 - In that additional path, `auto_approve.verdict == APPROVE` allows transition to `PR_APPROVED`; `REJECT`/`ESCALATE` keep the run blocked in `WAITING_ON_REVIEW` with no auto re-run (single evaluation per conversation).
 

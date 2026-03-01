@@ -496,7 +496,12 @@ def test_doctor_upgrades_legacy_config(tmp_path: Path) -> None:
     assert "Upgraded config to version" in result.output
     payload = json.loads(config_path.read_text())
     assert payload["version"] == LATEST_LOOPS_CONFIG_VERSION
-    assert payload["provider_config"]["url"] == "https://github.com/orgs/acme/projects/7"
+    assert payload["provider_config"] == {
+        "allowlist": [],
+        "page_size": 50,
+        "status_field": "Status",
+        "url": "https://github.com/orgs/acme/projects/7",
+    }
     assert payload["loop_config"]["task_ready_status"] == "Todo"
     assert payload["loop_config"]["parallel_tasks"] is False
     assert payload["loop_config"]["approval_comment_usernames"] == []
@@ -513,6 +518,29 @@ def test_doctor_reports_when_config_is_up_to_date(tmp_path: Path) -> None:
 
     assert result.exit_code == 0, result.output
     assert "Config already up to date" in result.output
+
+
+def test_doctor_does_not_synthesize_missing_github_provider_url(tmp_path: Path) -> None:
+    runner = CliRunner()
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "provider_id": "github_projects_v2",
+                "provider_config": {},
+            }
+        )
+    )
+
+    result = runner.invoke(main, ["doctor", "--config", str(config_path)])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(config_path.read_text())
+    assert payload["provider_config"] == {
+        "allowlist": [],
+        "page_size": 50,
+        "status_field": "Status",
+    }
 
 
 def test_loop_config_defaults_are_consistent_across_entrypoints(tmp_path: Path) -> None:
