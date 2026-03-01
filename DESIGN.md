@@ -279,6 +279,7 @@ Notes:
 - `task_provider_config` is validated by the provider's Pydantic model.
 - `task_provider_config` init defaults are emitted from provider-owned canonical builders (for `github_projects_v2`, from `loops.providers.github_projects_v2`).
 - `loops doctor` also backfills missing GitHub `task_provider_config` defaults (`status_field`, `page_size`, `allowlist`) without overwriting existing values.
+- During migration, when both legacy `provider_config` and `task_provider_config` exist, legacy provider keys are used as fallback values for missing `task_provider_config` keys before default backfill.
 - `task_provider_config.filters` supports provider-side `key=value` filters for GitHub Projects V2 (`repository`, `tag`).
 - `task_provider_config.allowlist` (GitHub provider) restricts review-phase PR comment/review signals to listed usernames; non-allowlisted actors are ignored during review polling.
 - Required provider secrets are validated from environment variables before provider construction.
