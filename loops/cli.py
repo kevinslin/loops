@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 import os
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from loops.outer_loop import (
     LATEST_LOOPS_CONFIG_VERSION,
     OuterLoopRunner,
     OuterLoopState,
+    SyncModeInterruptedError,
     build_default_loop_config_payload,
     build_inner_loop_launcher,
     build_provider,
@@ -281,10 +283,38 @@ def _run_outer_loop(
         inner_loop_launcher=launcher,
     )
     effective_run_once = run_once or task_url is not None
-    if effective_run_once:
-        runner.run_once(limit=limit, forced_task_url=task_url)
-    else:
-        runner.run_forever(limit=limit)
+    try:
+        if effective_run_once:
+            runner.run_once(limit=limit, forced_task_url=task_url)
+        else:
+            runner.run_forever(limit=limit)
+    except KeyboardInterrupt as exc:
+        if config.loop_config.sync_mode:
+            interrupted_run_dir: Path | None = None
+            if isinstance(exc, SyncModeInterruptedError):
+                interrupted_run_dir = exc.run_dir
+            _print_sync_resume_instructions(
+                loops_root=loops_root,
+                run_dir=interrupted_run_dir,
+            )
+        raise click.Abort() from exc
+
+
+def _print_sync_resume_instructions(*, loops_root: Path, run_dir: Path | None) -> None:
+    """Print instructions for resuming an interrupted sync-mode inner loop."""
+
+    if run_dir is not None:
+        click.echo(
+            "Sync mode interrupted. Resume this run with:\n"
+            f"loops inner-loop --run-dir {shlex.quote(str(run_dir))}"
+        )
+        return
+    jobs_root = loops_root / INNER_LOOP_RUNS_DIR_NAME
+    click.echo(
+        "Sync mode interrupted. Resume the latest run with:\n"
+        "loops inner-loop --run-dir <RUN_DIR>\n"
+        f"Run directories are under: {jobs_root}"
+    )
 
 
 def _resolve_run_dir_option(run_dir: Optional[Path]) -> Path:

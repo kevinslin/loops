@@ -5,7 +5,9 @@ import json
 import sys
 from pathlib import Path
 
+import click
 from click.testing import CliRunner
+import pytest
 import loops.cli as cli_module
 
 from loops.__main__ import _normalize_argv, entrypoint
@@ -14,6 +16,7 @@ from loops.outer_loop import (
     LATEST_LOOPS_CONFIG_VERSION,
     LoopsConfig,
     OuterLoopConfig,
+    SyncModeInterruptedError,
     build_default_loop_config_payload,
     load_config,
 )
@@ -374,6 +377,106 @@ def test_run_outer_loop_task_url_implies_run_once_and_force(
     assert captured["run_once_limit"] == 7
     assert captured["run_once_task_url"] == "https://github.com/acme/api/issues/9"
     assert "run_forever_limit" not in captured
+
+
+def test_run_outer_loop_sync_mode_interrupt_prints_run_resume_command(
+    tmp_path: Path,
+    monkeypatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}")
+    run_dir = tmp_path / ".loops" / "jobs" / "2026-03-01-ship-it-1"
+    loaded = LoopsConfig(
+        version=LATEST_LOOPS_CONFIG_VERSION,
+        provider_id="github_projects_v2",
+        provider_config={},
+        loop_config=OuterLoopConfig(sync_mode=True),
+        inner_loop=None,
+    )
+
+    class FakeRunner:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def run_once(
+            self,
+            *,
+            limit: int | None = None,
+            forced_task_url: str | None = None,
+        ) -> None:
+            raise SyncModeInterruptedError(run_dir=run_dir)
+
+        def run_forever(self, *, limit: int | None = None) -> None:
+            raise AssertionError("run_forever should not be called")
+
+    monkeypatch.setattr(cli_module, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(cli_module, "build_provider", lambda _config: object())
+    monkeypatch.setattr(cli_module, "build_inner_loop_launcher", lambda _config: object())
+    monkeypatch.setattr(cli_module, "OuterLoopRunner", FakeRunner)
+
+    with pytest.raises(click.Abort):
+        cli_module._run_outer_loop(
+            config_path=config_path,
+            run_once=True,
+            limit=None,
+            force=None,
+            task_url=None,
+        )
+
+    output = capsys.readouterr().out
+    assert "Sync mode interrupted." in output
+    assert f"loops inner-loop --run-dir {run_dir}" in output
+
+
+def test_run_outer_loop_sync_mode_interrupt_without_run_dir_prints_generic_resume_hint(
+    tmp_path: Path,
+    monkeypatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}")
+    loaded = LoopsConfig(
+        version=LATEST_LOOPS_CONFIG_VERSION,
+        provider_id="github_projects_v2",
+        provider_config={},
+        loop_config=OuterLoopConfig(sync_mode=True),
+        inner_loop=None,
+    )
+
+    class FakeRunner:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def run_once(
+            self,
+            *,
+            limit: int | None = None,
+            forced_task_url: str | None = None,
+        ) -> None:
+            raise KeyboardInterrupt
+
+        def run_forever(self, *, limit: int | None = None) -> None:
+            raise AssertionError("run_forever should not be called")
+
+    monkeypatch.setattr(cli_module, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(cli_module, "build_provider", lambda _config: object())
+    monkeypatch.setattr(cli_module, "build_inner_loop_launcher", lambda _config: object())
+    monkeypatch.setattr(cli_module, "OuterLoopRunner", FakeRunner)
+
+    with pytest.raises(click.Abort):
+        cli_module._run_outer_loop(
+            config_path=config_path,
+            run_once=True,
+            limit=None,
+            force=None,
+            task_url=None,
+        )
+
+    output = capsys.readouterr().out
+    assert "Sync mode interrupted." in output
+    assert "loops inner-loop --run-dir <RUN_DIR>" in output
+    assert f"{tmp_path / '.loops' / 'jobs'}" in output
 
 
 def test_doctor_upgrades_legacy_config(tmp_path: Path) -> None:

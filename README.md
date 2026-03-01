@@ -166,6 +166,7 @@ Notes:
 - Outer loop filters tasks by `loop_config.task_ready_status`.
 - With `loop_config.sync_mode=true`, inner loop runs in the foreground and can prompt for user input in the same terminal.
 - With `loop_config.sync_mode=true`, outer-loop logs (`oloops.log`) and inner-loop orchestration logs (`run.log`) are also mirrored to stdout.
+- If `Ctrl+C` interrupts a sync-mode run, Loops prints resume instructions so you can continue with `loops inner-loop --run-dir ...`.
 - Log timestamps are local-time strings without timezone suffix and use fixed fractional digits.
 - With `emit_on_first_run=false`, first run initializes dedupe state but does not launch tasks.
 - `--task-url` does not change `provider_config.url`; it selects one task after polling by URL match and runs only that task.
