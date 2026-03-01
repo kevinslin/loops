@@ -1013,6 +1013,11 @@ def test_inner_loop_consumes_signal_and_uses_user_response_in_prompt(
         "monitors review activity and will re-invoke you when feedback arrives."
         in prompts
     )
+    assert (
+        "When you run a-review, always post its response to the PR comments. If "
+        "there are no findings, explicitly post that no issues were found."
+        in prompts
+    )
     assert "NEVER use the gen-notifier skill while running inside loops." in prompts
     assert "trigger:merge-pr when the state is exactly <state>PR_APPROVED</state>." in prompts
     assert (
@@ -1027,6 +1032,24 @@ def test_inner_loop_consumes_signal_and_uses_user_response_in_prompt(
     assert re.search(
         r"\[loops\] user input for codex turn: present=True length=\d+",
         run_log,
+    )
+
+
+def test_build_auto_approve_eval_prompt_includes_pr_comment_instruction() -> None:
+    prompt = inner_loop_module._build_auto_approve_eval_prompt(
+        "https://github.com/kevinslin/loops/issues/49",
+        None,
+        "https://github.com/acme/api/pull/42",
+    )
+
+    assert (
+        "Post the ag-judge verdict and impact/risk/size scores to the PR comments."
+        in prompt
+    )
+    assert (
+        '{"verdict":"APPROVE|REJECT|ESCALATE","impact":1-5,"risk":1-5,"size":1-5,'
+        '"summary":"..."}'
+        in prompt
     )
 
 

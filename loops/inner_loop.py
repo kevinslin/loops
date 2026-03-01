@@ -46,6 +46,8 @@ PROMPT_TEMPLATE = (
     "a-review subagent. NEVER wait for human PR "
     "review/comments inside the agent; the harness monitors review activity and "
     "will re-invoke you when feedback arrives.\n"
+    "When you run a-review, always post its response to the PR comments. "
+    "If there are no findings, explicitly post that no issues were found.\n"
     "NEVER use the gen-notifier skill while running inside loops.\n"
     "Spawn the a-review subagent exactly once per conversation, only while state is "
     "<state>RUNNING</state>.Do not spawn a-review again in "
@@ -1027,7 +1029,8 @@ def _build_auto_approve_eval_prompt(
     prompt += (
         f"\nPR {pr_url} is not yet review-approved and has green CI. "
         "Run $ag-judge (judge book: references/jb.coding.md) against current diff, "
-        "review threads, and CI evidence. Return exactly one JSON object on one line "
+        "review threads, and CI evidence. Post the ag-judge verdict and impact/risk/size "
+        "scores to the PR comments. Return exactly one JSON object on one line "
         'with keys: {"verdict":"APPROVE|REJECT|ESCALATE","impact":1-5,'
         '"risk":1-5,"size":1-5,"summary":"..."}.\n'
     )
