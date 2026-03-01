@@ -2627,6 +2627,57 @@ def test_fetch_pr_status_ignores_unallowlisted_changes_requested_when_filtered(
     assert approved_by_comment is False
 
 
+def test_fetch_pr_status_uses_latest_review_per_author_when_latest_reviews_missing(
+    monkeypatch,
+) -> None:
+    payload = {
+        "url": "https://github.com/acme/api/pull/42",
+        "number": 42,
+        "reviewDecision": "CHANGES_REQUESTED",
+        "mergedAt": None,
+        "latestReviews": [],
+        "reviews": [
+            {
+                "author": {"login": "maintainer"},
+                "state": "CHANGES_REQUESTED",
+                "submittedAt": "2026-02-09T01:00:00Z",
+            },
+            {
+                "author": {"login": "maintainer"},
+                "state": "APPROVED",
+                "submittedAt": "2026-02-09T02:00:00Z",
+            },
+        ],
+        "comments": [],
+    }
+
+    def fake_subprocess_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess(
+            args=["gh", "pr", "view"],
+            returncode=0,
+            stdout=json.dumps(payload),
+            stderr="",
+        )
+
+    monkeypatch.setattr(inner_loop_module.subprocess, "run", fake_subprocess_run)
+    settings = inner_loop_module.CommentApprovalSettings(
+        allowed_usernames=(),
+        pattern_text=r"^\s*/approve\b",
+        approval_regex=re.compile(r"^\s*/approve\b", re.IGNORECASE),
+        review_actor_usernames=("maintainer",),
+    )
+    updated, approved_by_comment, _approved_by = (
+        inner_loop_module._fetch_pr_status_with_gh_with_context(
+            RunPR(url="https://github.com/acme/api/pull/42"),
+            comment_approval=settings,
+        )
+    )
+
+    assert updated.review_status == "approved"
+    assert updated.latest_review_submitted_at == "2026-02-09T02:00:00Z"
+    assert approved_by_comment is False
+
+
 def test_fetch_pr_status_does_not_override_newer_changes_requested(monkeypatch) -> None:
     payload = {
         "url": "https://github.com/acme/api/pull/42",

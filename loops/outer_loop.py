@@ -459,6 +459,8 @@ def upgrade_config_payload(payload: Any) -> tuple[dict[str, Any], bool]:
                 project_url=project_url,
             )
         for key, value in provider_defaults.items():
+            if key == "url":
+                continue
             if key not in provider_payload:
                 provider_payload[key] = value
                 changed = True

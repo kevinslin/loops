@@ -520,6 +520,29 @@ def test_doctor_reports_when_config_is_up_to_date(tmp_path: Path) -> None:
     assert "Config already up to date" in result.output
 
 
+def test_doctor_does_not_synthesize_missing_github_provider_url(tmp_path: Path) -> None:
+    runner = CliRunner()
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "provider_id": "github_projects_v2",
+                "provider_config": {},
+            }
+        )
+    )
+
+    result = runner.invoke(main, ["doctor", "--config", str(config_path)])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(config_path.read_text())
+    assert payload["provider_config"] == {
+        "allowlist": [],
+        "page_size": 50,
+        "status_field": "Status",
+    }
+
+
 def test_loop_config_defaults_are_consistent_across_entrypoints(tmp_path: Path) -> None:
     expected_defaults = build_default_loop_config_payload()
     runner = CliRunner()

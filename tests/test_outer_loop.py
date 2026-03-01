@@ -411,6 +411,29 @@ def test_load_config_backfills_github_provider_defaults(tmp_path: Path) -> None:
     }
 
 
+def test_load_config_does_not_backfill_missing_github_provider_url(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    payload = {
+        "provider_id": "github_projects_v2",
+        "provider_config": {},
+    }
+    config_path.write_text(json.dumps(payload))
+
+    config = load_config(config_path)
+    assert config.provider_config == {
+        "allowlist": [],
+        "page_size": 50,
+        "status_field": "Status",
+    }
+
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    with pytest.raises(ValueError, match="provider_config is invalid"):
+        build_provider(config)
+
+
 def test_load_config_rejects_invalid_comment_approval_usernames(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     payload = {

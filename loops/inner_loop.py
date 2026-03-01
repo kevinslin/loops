@@ -1584,6 +1584,35 @@ def _collect_review_states(reviews: Any) -> set[str]:
     return states
 
 
+def _latest_reviews_from_reviews(reviews: Any) -> list[dict[str, Any]]:
+    if not isinstance(reviews, list) or not reviews:
+        return []
+    latest_by_author: dict[str, dict[str, Any]] = {}
+    for review in reviews:
+        if not isinstance(review, dict):
+            continue
+        author_login = _extract_author_login(review)
+        submitted_at = review.get("submittedAt")
+        if author_login is None or not isinstance(submitted_at, str):
+            continue
+        author_key = author_login.casefold()
+        existing = latest_by_author.get(author_key)
+        if existing is None:
+            latest_by_author[author_key] = review
+            continue
+        existing_submitted_at = existing.get("submittedAt")
+        if not isinstance(existing_submitted_at, str) or submitted_at > existing_submitted_at:
+            latest_by_author[author_key] = review
+    return list(latest_by_author.values())
+
+
+def _review_events_for_status(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    latest_reviews = payload.get("latestReviews")
+    if isinstance(latest_reviews, list) and latest_reviews:
+        return [review for review in latest_reviews if isinstance(review, dict)]
+    return _latest_reviews_from_reviews(payload.get("reviews"))
+
+
 def _extract_latest_review_submitted_at_from_reviews(
     reviews: Any,
     target_state: str,
@@ -1607,9 +1636,7 @@ def _extract_latest_review_submitted_at_from_reviews(
 
 
 def _derive_review_status_from_reviews(payload: dict[str, Any]) -> str:
-    states = _collect_review_states(payload.get("latestReviews"))
-    if not states:
-        states = _collect_review_states(payload.get("reviews"))
+    states = _collect_review_states(_review_events_for_status(payload))
     if "CHANGES_REQUESTED" in states:
         return "changes_requested"
     if "APPROVED" in states:
@@ -1960,6 +1987,7 @@ def _fetch_pr_status_with_gh_with_context(
                 f"dropped_latest_reviews={dropped_latest_reviews}"
             )
         )
+        review_events = _review_events_for_status(effective_payload)
         review_status = _derive_review_status_from_reviews(effective_payload)
         review_state = (
             "APPROVED"
@@ -1970,27 +1998,15 @@ def _fetch_pr_status_with_gh_with_context(
         )
         if review_state:
             latest_review_submitted_at = _extract_latest_review_submitted_at_from_reviews(
-                effective_payload.get("latestReviews"),
+                review_events,
                 review_state,
             )
-            if latest_review_submitted_at is None:
-                latest_review_submitted_at = (
-                    _extract_latest_review_submitted_at_from_reviews(
-                        effective_payload.get("reviews"),
-                        review_state,
-                    )
-                )
         else:
             latest_review_submitted_at = None
         latest_changes_requested_at = _extract_latest_review_submitted_at_from_reviews(
-            effective_payload.get("latestReviews"),
+            review_events,
             "CHANGES_REQUESTED",
         )
-        if latest_changes_requested_at is None:
-            latest_changes_requested_at = _extract_latest_review_submitted_at_from_reviews(
-                effective_payload.get("reviews"),
-                "CHANGES_REQUESTED",
-            )
     else:
         review_status = _review_status_from_decision(review_decision_raw)
         latest_review_submitted_at = _extract_latest_review_submitted_at(
