@@ -1520,6 +1520,9 @@ def _filter_events_by_review_actor_allowlist(
 ) -> tuple[list[dict[str, Any]], int]:
     if not isinstance(events, list):
         return [], 0
+    if not review_actor_usernames:
+        passthrough = [event for event in events if isinstance(event, dict)]
+        return passthrough, len(events) - len(passthrough)
     filtered: list[dict[str, Any]] = []
     dropped = 0
     for event in events:
@@ -1959,29 +1962,37 @@ def _fetch_pr_status_with_gh_with_context(
     ci_status = _ci_status_from_rollup(payload)
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     review_decision_raw = payload.get("reviewDecision")
-    effective_payload = payload
     latest_changes_requested_at: Optional[str]
-    if comment_approval.review_actor_usernames:
+    (
+        effective_payload,
+        dropped_comments,
+        dropped_reviews,
+        dropped_latest_reviews,
+    ) = _filter_review_payload_by_actor_allowlist(
+        payload,
+        comment_approval.review_actor_usernames,
+    )
+    _log(
         (
-            effective_payload,
-            dropped_comments,
-            dropped_reviews,
-            dropped_latest_reviews,
-        ) = _filter_review_payload_by_actor_allowlist(
+            "[loops] applying review actor allowlist: "
+            f"pr_url={pr.url} "
+            f"allowlisted_usernames={len(comment_approval.review_actor_usernames)} "
+            f"dropped_comments={dropped_comments} "
+            f"dropped_reviews={dropped_reviews} "
+            f"dropped_latest_reviews={dropped_latest_reviews}"
+        )
+    )
+    review_events = _review_events_for_status(effective_payload)
+    if not comment_approval.review_actor_usernames:
+        review_status = _review_status_from_decision(review_decision_raw)
+        latest_review_submitted_at = _extract_latest_review_submitted_at(
+            payload, str(review_decision_raw or "")
+        )
+        latest_changes_requested_at = _extract_latest_review_submitted_at(
             payload,
-            comment_approval.review_actor_usernames,
+            "CHANGES_REQUESTED",
         )
-        _log(
-            (
-                "[loops] applying review actor allowlist: "
-                f"pr_url={pr.url} "
-                f"allowlisted_usernames={len(comment_approval.review_actor_usernames)} "
-                f"dropped_comments={dropped_comments} "
-                f"dropped_reviews={dropped_reviews} "
-                f"dropped_latest_reviews={dropped_latest_reviews}"
-            )
-        )
-        review_events = _review_events_for_status(effective_payload)
+    else:
         review_status = _derive_review_status_from_reviews(effective_payload)
         review_state = (
             "APPROVED"
@@ -1995,21 +2006,13 @@ def _fetch_pr_status_with_gh_with_context(
                 review_events,
                 review_state,
             )
+            latest_changes_requested_at = _extract_latest_review_submitted_at_from_reviews(
+                review_events,
+                "CHANGES_REQUESTED",
+            )
         else:
             latest_review_submitted_at = None
-        latest_changes_requested_at = _extract_latest_review_submitted_at_from_reviews(
-            review_events,
-            "CHANGES_REQUESTED",
-        )
-    else:
-        review_status = _review_status_from_decision(review_decision_raw)
-        latest_review_submitted_at = _extract_latest_review_submitted_at(
-            payload, str(review_decision_raw or "")
-        )
-        latest_changes_requested_at = _extract_latest_review_submitted_at(
-            payload,
-            "CHANGES_REQUESTED",
-        )
+            latest_changes_requested_at = None
     approved_by_comment = False
     approved_by = ""
     if review_status != "approved":
