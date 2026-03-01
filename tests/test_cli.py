@@ -345,6 +345,54 @@ def test_clean_archives_done_runs_even_with_schema_drift(tmp_path: Path) -> None
     assert (archived_done / "run.json").exists()
 
 
+def test_clean_skips_non_utf8_run_record_and_continues(tmp_path: Path) -> None:
+    runner = CliRunner()
+    loops_root = tmp_path / ".loops"
+    jobs_root = loops_root / "jobs"
+    jobs_root.mkdir(parents=True)
+
+    broken_run = jobs_root / "broken-run"
+    broken_run.mkdir()
+    (broken_run / "run.log").write_text("has output")
+    (broken_run / "agent.log").write_text("has output")
+    (broken_run / "run.json").write_bytes(b"\xff\xfe\x00\x01")
+
+    done_run = jobs_root / "done-run"
+    done_run.mkdir()
+    (done_run / "run.log").write_text("has output")
+    (done_run / "agent.log").write_text("has output")
+    write_run_record(
+        done_run / "run.json",
+        RunRecord(
+            task=Task(
+                provider_id="github_projects_v2",
+                id="done",
+                title="Done task",
+                status="Done",
+                url="https://github.com/acme/api/issues/4",
+                created_at="2026-03-01T00:00:00Z",
+                updated_at="2026-03-01T00:00:00Z",
+            ),
+            pr=RunPR(
+                url="https://github.com/acme/api/pull/4",
+                merged_at="2026-03-01T00:00:01Z",
+            ),
+            codex_session=None,
+            needs_user_input=False,
+            last_state="RUNNING",
+            updated_at="",
+        ),
+    )
+
+    result = runner.invoke(main, ["clean", "--loops-root", str(loops_root)])
+
+    assert result.exit_code == 0, result.output
+    assert broken_run.exists()
+    assert not done_run.exists()
+    archived_done = loops_root / ".archive" / "done-run"
+    assert archived_done.exists()
+
+
 def test_normalize_argv_preserves_known_subcommands() -> None:
     argv = ["python", "doctor"]
     assert _normalize_argv(argv) == argv

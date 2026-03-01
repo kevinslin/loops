@@ -129,7 +129,7 @@ def _read_run_state(run_dir: Path) -> str | None:
         return None
     try:
         payload = json.loads(run_record_path.read_text())
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return "INVALID"
     if not isinstance(payload, dict):
         return "INVALID"
