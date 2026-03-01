@@ -39,7 +39,7 @@ from loops.run_record import RunRecord, Task, write_run_record
 from loops.task_provider import TaskProvider
 
 INNER_LOOP_RUNS_DIR_NAME = "jobs"
-LATEST_LOOPS_CONFIG_VERSION = 1
+LATEST_LOOPS_CONFIG_VERSION = 2
 
 
 class SyncModeInterruptedError(KeyboardInterrupt):
@@ -127,8 +127,8 @@ class LoopsConfig:
     """Top-level Loops configuration loaded from JSON."""
 
     version: int
-    provider_id: str
-    provider_config: dict[str, Any]
+    task_provider_id: str
+    task_provider_config: dict[str, Any]
     loop_config: OuterLoopConfig
     inner_loop: Optional[InnerLoopCommandConfig] = None
 
@@ -377,16 +377,16 @@ def load_config(path: str | Path) -> LoopsConfig:
 
     payload = json.loads(Path(path).read_text())
     payload, _ = upgrade_config_payload(payload)
-    provider_id = payload.get("provider_id")
-    if not isinstance(provider_id, str) or not provider_id:
-        raise TypeError("provider_id is required and must be a string")
-    provider_config = payload.get("provider_config")
-    if not isinstance(provider_config, dict):
-        raise TypeError("provider_config must be an object")
+    task_provider_id = payload.get("task_provider_id")
+    if not isinstance(task_provider_id, str) or not task_provider_id:
+        raise TypeError("task_provider_id is required and must be a string")
+    task_provider_config = payload.get("task_provider_config")
+    if not isinstance(task_provider_config, dict):
+        raise TypeError("task_provider_config must be an object")
     loop_config = _load_outer_loop_config(payload.get("loop_config"))
     validate_handoff_handler_provider_compatibility(
         loop_config.handoff_handler,
-        provider_id,
+        task_provider_id,
     )
     inner_loop_payload = payload.get("inner_loop")
     inner_loop = None
@@ -400,8 +400,8 @@ def load_config(path: str | Path) -> LoopsConfig:
         )
     return LoopsConfig(
         version=_load_config_version(payload),
-        provider_id=provider_id,
-        provider_config=provider_config,
+        task_provider_id=task_provider_id,
+        task_provider_config=task_provider_config,
         loop_config=loop_config,
         inner_loop=inner_loop,
     )
@@ -426,6 +426,18 @@ def upgrade_config_payload(payload: Any) -> tuple[dict[str, Any], bool]:
         upgraded["version"] = LATEST_LOOPS_CONFIG_VERSION
         changed = True
 
+    legacy_provider_id = upgraded.pop("provider_id", None)
+    if legacy_provider_id is not None:
+        changed = True
+        if "task_provider_id" not in upgraded:
+            upgraded["task_provider_id"] = legacy_provider_id
+
+    legacy_provider_config = upgraded.pop("provider_config", None)
+    if legacy_provider_config is not None:
+        changed = True
+        if "task_provider_config" not in upgraded:
+            upgraded["task_provider_config"] = legacy_provider_config
+
     existing_loop_payload = upgraded.get("loop_config")
     if existing_loop_payload is None:
         loop_payload: dict[str, Any] = {}
@@ -442,15 +454,15 @@ def upgrade_config_payload(payload: Any) -> tuple[dict[str, Any], bool]:
     if existing_loop_payload != loop_payload:
         upgraded["loop_config"] = loop_payload
 
-    provider_id = upgraded.get("provider_id")
-    if provider_id == GITHUB_PROJECTS_V2_PROVIDER_ID:
-        existing_provider_payload = upgraded.get("provider_config")
+    task_provider_id = upgraded.get("task_provider_id")
+    if task_provider_id == GITHUB_PROJECTS_V2_PROVIDER_ID:
+        existing_provider_payload = upgraded.get("task_provider_config")
         if existing_provider_payload is None:
             provider_payload: dict[str, Any] = {}
         elif isinstance(existing_provider_payload, dict):
             provider_payload = dict(existing_provider_payload)
         else:
-            raise TypeError("provider_config must be an object")
+            raise TypeError("task_provider_config must be an object")
         project_url = provider_payload.get("url")
         if not isinstance(project_url, str) or not project_url.strip():
             provider_defaults = build_default_provider_config_payload()
@@ -465,7 +477,7 @@ def upgrade_config_payload(payload: Any) -> tuple[dict[str, Any], bool]:
                 provider_payload[key] = value
                 changed = True
         if existing_provider_payload != provider_payload:
-            upgraded["provider_config"] = provider_payload
+            upgraded["task_provider_config"] = provider_payload
 
     return upgraded, changed
 
@@ -473,15 +485,16 @@ def upgrade_config_payload(payload: Any) -> tuple[dict[str, Any], bool]:
 def build_provider(config: LoopsConfig) -> TaskProvider:
     """Construct the task provider for the configured provider id."""
 
-    definition = get_provider_definition(config.provider_id)
+    definition = get_provider_definition(config.task_provider_id)
     _validate_required_secrets(definition.metadata, environ=os.environ)
     try:
         provider_config = definition.metadata.provider_config_model.model_validate(
-            config.provider_config
+            config.task_provider_config
         )
     except ValidationError as exc:
         raise ValueError(
-            f"provider_config is invalid for provider '{definition.metadata.id}': {exc}"
+            f"task_provider_config is invalid for provider "
+            f"'{definition.metadata.id}': {exc}"
         ) from exc
     return definition.build(provider_config)
 

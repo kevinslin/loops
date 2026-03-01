@@ -333,8 +333,8 @@ def _build_default_config() -> dict[str, Any]:
 
     return {
         "version": LATEST_LOOPS_CONFIG_VERSION,
-        "provider_id": GITHUB_PROJECTS_V2_PROVIDER_ID,
-        "provider_config": build_default_provider_config_payload(),
+        "task_provider_id": GITHUB_PROJECTS_V2_PROVIDER_ID,
+        "task_provider_config": build_default_provider_config_payload(),
         "loop_config": build_default_loop_config_payload(),
         "inner_loop": _build_default_inner_loop_payload(),
     }

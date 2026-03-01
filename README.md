@@ -70,18 +70,18 @@ Loops writes runtime state under `.loops/`:
 
 Top-level config file: `.loops/config.json`
 
-- `provider_id` (string, required): currently only `"github_projects_v2"`.
-- `version` (integer, required for latest schema): config schema version. Legacy files without this field are treated as version `0`; latest is `1`.
-- `provider_config` (object, required):
-- `provider_config.url` (string, required): GitHub Projects V2 URL, for example `https://github.com/orgs/acme/projects/7`.
-- `provider_config.status_field` (string, optional, default `"Status"`): Project field name to map task status.
-- `provider_config.page_size` (integer, optional, default `50`): GraphQL page size.
-- `provider_config.github_token` (string, optional): Overrides token used by the provider once launched.
-- `provider_config.allowlist` (string[], optional, default `[]`): GitHub usernames allowed to contribute review-phase signals (PR comments/reviews) during inner-loop polling. When set, non-allowlisted actors are ignored in review polling.
-- `provider_config.filters` (string[], optional): provider-side `key=value` filters. Supported keys:
+- `task_provider_id` (string, required): currently only `"github_projects_v2"`.
+- `version` (integer, required for latest schema): config schema version. Legacy files without this field are treated as version `0`; latest is `2`.
+- `task_provider_config` (object, required):
+- `task_provider_config.url` (string, required): GitHub Projects V2 URL, for example `https://github.com/orgs/acme/projects/7`.
+- `task_provider_config.status_field` (string, optional, default `"Status"`): Project field name to map task status.
+- `task_provider_config.page_size` (integer, optional, default `50`): GraphQL page size.
+- `task_provider_config.github_token` (string, optional): Overrides token used by the provider once launched.
+- `task_provider_config.allowlist` (string[], optional, default `[]`): GitHub usernames allowed to contribute review-phase signals (PR comments/reviews) during inner-loop polling. When set, non-allowlisted actors are ignored in review polling.
+- `task_provider_config.filters` (string[], optional): provider-side `key=value` filters. Supported keys:
   - `repository=<owner>/<repo>` (repeatable; multiple repository filters are OR)
   - `tag=<label-name>` (repeatable; multiple tag filters are AND)
-- `provider_config` is validated by the provider's typed Pydantic model (unknown keys and invalid types fail fast).
+- `task_provider_config` is validated by the provider's typed Pydantic model (unknown keys and invalid types fail fast).
 - Required provider secrets are declared by provider metadata and validated from env before provider construction.
 - `loop_config` (object, optional):
 - `loop_config.poll_interval_seconds` (integer, default `30`)
@@ -97,7 +97,7 @@ Top-level config file: `.loops/config.json`
 - `loop_config.handoff_handler` (string, default `"stdin_handler"`): built-in NEEDS_INPUT handoff strategy. Supported values:
   - `stdin_handler`: prompt on stdin/stdout (interactive mode).
   - `gh_comment_handler`: post handoff prompts to the task GitHub issue and wait for `/loops-reply ...` comments.
-    Requires `provider_id="github_projects_v2"` and `task.url` in issue URL format.
+    Requires `task_provider_id="github_projects_v2"` and `task.url` in issue URL format.
 - `inner_loop` (object, optional when using outer CLI):
 - `inner_loop.command` (string or string[], required when `inner_loop` is provided)
 - `inner_loop.working_dir` (string, optional): relative paths are resolved from config directory.
@@ -170,18 +170,18 @@ Notes:
 - If `Ctrl+C` interrupts a sync-mode run, Loops prints resume instructions so you can continue with `loops inner-loop --run-dir ...`.
 - Log timestamps are local-time strings without timezone suffix and use fixed fractional digits.
 - With `emit_on_first_run=false`, first run initializes dedupe state but does not launch tasks.
-- `--task-url` does not change `provider_config.url`; it selects one task after polling by URL match and runs only that task.
+- `--task-url` does not change `task_provider_config.url`; it selects one task after polling by URL match and runs only that task.
 - `--task-url` forces foreground execution for that run (`sync_mode=true`) so targeted runs are interactive and deterministic.
 - URL matching for `--task-url` compares normalized URLs (scheme/host case-insensitive, query/fragment removed, trailing slash ignored).
 - `--task-url` bypasses ready-status filtering for the selected task and raises an error when the URL is missing or ambiguous in poll results.
-- Provider filters (`provider_config.filters`) are applied during provider polling before outer-loop status filtering.
+- Provider filters (`task_provider_config.filters`) are applied during provider polling before outer-loop status filtering.
 - `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`, `LOOPS_HANDOFF_HANDLER`, and `LOOPS_RUN_DIR` are injected into each launched inner-loop process.
-- PR approval is detected from GitHub review decision or from allowlisted approval comments configured in `loop_config`, after optional review-actor filtering from `provider_config.allowlist`.
+- PR approval is detected from GitHub review decision or from allowlisted approval comments configured in `loop_config`, after optional review-actor filtering from `task_provider_config.allowlist`.
 
 ### `loops doctor`
 
 Upgrades `config.json` to the latest supported schema version and fills missing
-`loop_config` keys (and GitHub `provider_config` defaults) without overwriting existing values.
+`loop_config` keys (and GitHub `task_provider_config` defaults) without overwriting existing values.
 
 Options:
 
@@ -224,7 +224,7 @@ Behavior summary:
 - Uses `CODEX_CMD` if set; default command is `codex exec --yolo`.
 - Polls PR state with `gh pr view` when a PR is present.
 - In review polling, Loops treats a PR as approved if `reviewDecision=APPROVED` or if a matching approval comment from `loop_config.approval_comment_usernames` is newer than the latest `CHANGES_REQUESTED` review.
-- If `provider_config.allowlist` is configured, review polling filters PR comments/reviews to those actors before deriving feedback and review-status signals.
+- If `task_provider_config.allowlist` is configured, review polling filters PR comments/reviews to those actors before deriving feedback and review-status signals.
 - Applies pending signals from `state_signals.jsonl`.
 - Selects handoff behavior from `LOOPS_HANDOFF_HANDLER`:
   - `stdin_handler`: prompt directly in terminal.

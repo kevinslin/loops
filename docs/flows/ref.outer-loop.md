@@ -113,7 +113,7 @@ None identified.
 
 | Name | Where Read | Default | Effect on Flow |
 |---|---|---|---|
-| `GITHUB_TOKEN` / `GH_TOKEN` | `loops/providers/github_projects_v2.py:220` | none | Required by GitHub provider polling when `provider_config.github_token` is not set. |
+| `GITHUB_TOKEN` / `GH_TOKEN` | `loops/providers/github_projects_v2.py:220` | none | Required by GitHub provider polling when `task_provider_config.github_token` is not set. |
 | Process env passthrough (`os.environ.copy()`) | `loops/outer_loop.py:298`, `loops/providers/github_projects_v2.py:236` | N/A | Baseline environment passed to inner-loop child and `gh api graphql` subprocesses. |
 | `LOOPS_HANDOFF_HANDLER` (child env) | set in `loops/outer_loop.py` launcher | `stdin_handler` via config default | Selects built-in inner-loop NEEDS_INPUT handoff strategy for child process. |
 | `LOOPS_STREAM_LOGS_STDOUT` (child env) | set in `loops/outer_loop.py` launcher when `sync_mode=true` | unset | Enables inner-loop `run.log` mirroring to stdout for foreground runs. |
@@ -126,7 +126,7 @@ None identified.
 | `--run-once/--run-forever` | CLI option | `loops/cli.py:46`, dispatched at `loops/cli.py:217` | Controls single-cycle execution vs continuous polling loop. |
 | `--limit` | CLI option | `loops/cli.py:51`, forwarded to provider poll | Caps tasks returned/considered in a cycle (for `github_projects_v2`, after oldest-first ordering). |
 | `--force` | CLI option | `loops/cli.py:57`, override at `loops/cli.py:198` | Reprocesses tasks even if previously seen in outer state. |
-| `provider_id` / `provider_config.*` | Config file fields | `loops/outer_loop.py:243`, `loops/outer_loop.py:274` | Chooses task provider and provider-specific polling behavior. |
+| `task_provider_id` / `task_provider_config.*` | Config file fields | `loops/outer_loop.py:243`, `loops/outer_loop.py:274` | Chooses task provider and provider-specific polling behavior. |
 | `loop_config.*` | Config file fields | `loops/outer_loop.py:394` | Controls poll interval, ready filter, sync mode, emit-on-first-run, force, parallel launch behavior, comment-approval settings, and handoff handler propagated to inner loop. |
 | `inner_loop.*` | Config file fields | `loops/outer_loop.py:44`, `loops/outer_loop.py:283` | Defines launch command, cwd, env injection, and URL appending for child processes. |
 
@@ -384,7 +384,7 @@ Q: How is `loops_root` chosen?
 A: If config is inside `.loops/`, that directory is used; otherwise `.loops/` is created adjacent to config (`loops/cli.py:275`).
 
 Q: How do review polling allowlists reach inner loop?
-A: `loop_config` approval settings and GitHub provider review-actor allowlist (`provider_config.allowlist`) are written into each run directory as `inner_loop_approval_config.json`, which inner loop reads at startup.
+A: `loop_config` approval settings and GitHub provider review-actor allowlist (`task_provider_config.allowlist`) are written into each run directory as `inner_loop_approval_config.json`, which inner loop reads at startup.
 
 Q: How does handoff handler selection reach inner loop?
 A: Outer loop injects `LOOPS_HANDOFF_HANDLER` from `loop_config.handoff_handler` into each launched inner-loop process.
@@ -397,6 +397,7 @@ A: Loops prints a resume command for the interrupted run directory so you can co
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+- 2026-03-01: Renamed outer config schema references to `task_provider_id`/`task_provider_config` (v2) and aligned provider/filter docs accordingly. (019caa8b-0807-7603-a519-4a6be2b8e53c)
 - 2026-03-01: Documented sync-mode `Ctrl+C` resume instructions for interrupted foreground launches. (019caa47-6d09-7cf1-a25a-83245c71f987)
 - 2026-02-28: Removed configurable log timestamp precision; log timestamps are local no-timezone format with fixed fractional precision. (019ca742-f800-78a3-a5f3-11d807a04164)
 - 2026-02-16: Created outer-loop flow doc covering poll, dedupe, run materialization, and launch semantics. (019c6863-d581-7f83-9809-fabbefa042e8)
