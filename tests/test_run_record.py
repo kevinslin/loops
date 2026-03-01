@@ -79,6 +79,7 @@ def test_write_run_record_writes_required_keys(tmp_path) -> None:
             "auto_approve",
             "needs_user_input",
             "needs_user_input_payload",
+            "stream_logs_stdout",
             "last_state",
             "updated_at",
         ]
@@ -107,6 +108,39 @@ def test_read_run_record_rejects_non_bool_needs_user_input(tmp_path) -> None:
 
     with pytest.raises(TypeError):
         read_run_record(path)
+
+
+def test_read_run_record_rejects_non_bool_stream_logs_stdout(tmp_path) -> None:
+    payload = {
+        "task": _task().to_dict(),
+        "pr": None,
+        "codex_session": None,
+        "needs_user_input": False,
+        "stream_logs_stdout": "true",
+        "last_state": "RUNNING",
+        "updated_at": "2026-02-03T00:00:00Z",
+    }
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps(payload))
+
+    with pytest.raises(TypeError):
+        read_run_record(path)
+
+
+def test_write_run_record_rejects_non_bool_stream_logs_stdout(tmp_path) -> None:
+    record = RunRecord(
+        task=_task(),
+        pr=None,
+        codex_session=None,
+        needs_user_input=False,
+        stream_logs_stdout="true",  # type: ignore[arg-type]
+        last_state="RUNNING",
+        updated_at="",
+    )
+    path = tmp_path / "run.json"
+
+    with pytest.raises(TypeError):
+        write_run_record(path, record)
 
 
 def test_read_run_record_accepts_needs_user_input_payload(tmp_path) -> None:
@@ -159,6 +193,26 @@ def test_run_record_round_trips_auto_approve_payload(tmp_path) -> None:
     assert restored.auto_approve.verdict == "APPROVE"
     assert restored.auto_approve.impact == 3
     assert restored.last_state == "PR_APPROVED"
+
+
+def test_run_record_round_trips_stream_logs_stdout(tmp_path) -> None:
+    record = RunRecord(
+        task=_task(),
+        pr=None,
+        codex_session=CodexSession(id="session-1"),
+        needs_user_input=False,
+        stream_logs_stdout=True,
+        last_state="RUNNING",
+        updated_at="",
+    )
+    path = tmp_path / "run.json"
+    write_run_record(path, record)
+
+    payload = json.loads(path.read_text())
+    assert payload["stream_logs_stdout"] is True
+
+    restored = read_run_record(path)
+    assert restored.stream_logs_stdout is True
 
 
 def test_derive_run_state_keeps_manual_approval_path_when_auto_approve_enabled() -> None:

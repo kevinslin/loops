@@ -110,6 +110,10 @@ def test_run_once_creates_run_records(tmp_path: Path) -> None:
     assert len(run_dirs) == 2
     titles = {read_run_record(run_dir / "run.json").task.title for run_dir in run_dirs}
     assert titles == {"Ship it", "Next"}
+    assert all(
+        read_run_record(run_dir / "run.json").stream_logs_stdout is False
+        for run_dir in run_dirs
+    )
     assert all((run_dir / "agent.log").exists() for run_dir in run_dirs)
     assert len(launched) == 2
 
@@ -799,6 +803,9 @@ def test_run_once_sync_mode_streams_outer_logs_to_stdout(
     assert "run_once.start" in captured.out
     assert "run_once.launch" in captured.out
     assert "run_once.done" in captured.out
+    run_dirs = list_run_dirs(loops_root)
+    assert len(run_dirs) == 1
+    assert read_run_record(run_dirs[0] / "run.json").stream_logs_stdout is True
 
 
 def test_load_config_preserves_explicit_version(tmp_path: Path) -> None:

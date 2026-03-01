@@ -1896,6 +1896,7 @@ def test_inner_loop_runtime_config_log_streaming_does_not_mutate_process_env(
     )
 
     assert os.environ.get("LOOPS_STREAM_LOGS_STDOUT") == "1"
+    assert read_run_record(run_dir / "run.json").stream_logs_stdout is False
 
 
 def test_inner_loop_runtime_config_omitted_stream_logs_uses_env_fallback(
@@ -1922,6 +1923,7 @@ def test_inner_loop_runtime_config_omitted_stream_logs_uses_env_fallback(
 
     captured = capsys.readouterr()
     assert "[loops] iteration 1 enter: state=RUNNING" in captured.out
+    assert read_run_record(run_dir / "run.json").stream_logs_stdout is True
 
 
 def test_inner_loop_runtime_config_omitted_auto_approve_uses_env_fallback(

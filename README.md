@@ -218,6 +218,7 @@ LOOPS_RUN_DIR=.loops/jobs/2026-02-09-example-task-123 CODEX_CMD="codex exec --yo
 Behavior summary:
 
 - Reads and writes `run.json` as the authoritative state file.
+- Persists `run.json.stream_logs_stdout` as the effective log-mirroring setting for the run.
 - Writes inner-loop orchestration logs to `run.log` and appends Codex output there.
 - Streams Codex/agent output to `agent.log`.
 - If run-scoped runtime config has `stream_logs_stdout=true` (written by outer loop in `sync_mode=true`), also mirrors `run.log` lines to stdout.
