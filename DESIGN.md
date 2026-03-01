@@ -52,6 +52,7 @@ Type/interface mapping (section 2 and runtime):
 
 ### Constants
 - `LOOPS_ROOT = [REPO_ROOT]/.loops/`
+- `ARCHIVE_ROOT = [REPO_ROOT]/.loops/.archive/`
 - `INNER_LOOP_RUNS_ROOT = [REPO_ROOT]/.loops/jobs/`
 - `INNER_LOOP_ROOT = [REPO_ROOT]/.loops/jobs/[yyyy-mm-dd]-[task_title_kebab_case]-[task_id]`
 - `RUN_FILE = [INNER_LOOP_ROOT]/run.json`
@@ -353,6 +354,14 @@ Task provider (GitHub Projects V2)
 - Ownership: this CLI writes only the signal queue; it does not mutate `run.json`.
 - Current status: not implemented in code yet (`loops/state_signal.py` is planned).
 
+#### Clean CLI (run artifact janitor)
+- Purpose: clean stale run artifacts under `LOOPS_ROOT`.
+- Interface: scans `jobs/` run directories and classifies actions:
+  - delete run dir when both `run.log` and `agent.log` exist and are empty.
+  - archive run dir when `run.json.last_state == "DONE"` (unless already classified for deletion).
+- Archive target: move completed runs to `ARCHIVE_ROOT`, adding numeric suffixes on name collisions (`-1`, `-2`, ...).
+- `--dry-run`: reports planned delete/archive actions without mutating filesystem state.
+
 #### User handoff handler
 - Called when the agent needs input.
 - Default implementation reads from stdin and returns the user response.
@@ -363,6 +372,11 @@ Task provider (GitHub Projects V2)
 
 ```
 .loops/
+  .archive/
+    2026-02-02-fix-cache-12345/
+      run.json
+      run.log
+      agent.log
   oloops.log
   outer_state.json
   jobs/
@@ -559,6 +573,7 @@ Practical invariant: if this skill contract changes, update `loops/inner_loop.py
 - `python -m loops run` starts the outer loop runner.
 - `python -m loops inner-loop` runs one inner-loop execution for a run directory.
 - `python -m loops signal` enqueues a run-local signal (MVP: `NEEDS_INPUT`).
+- `python -m loops clean` deletes empty runs and archives completed runs.
 - Direct module callers still work (`python -m loops.inner_loop`, `python -m loops.state_signal`).
 
 ### Prompt catalog

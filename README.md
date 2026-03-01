@@ -55,6 +55,11 @@ Loops writes runtime state under `.loops/`:
 
 ```text
 .loops/
+  .archive/
+    YYYY-MM-DD-task-title-task-id/
+      run.json
+      run.log
+      agent.log
   oloops.log
   outer_state.json
   jobs/
@@ -123,6 +128,7 @@ Subcommands:
 - `inner-loop`: run inner loop for one run directory.
 - `signal`: enqueue a state signal for a run directory.
 - `doctor`: upgrade config schema/default keys in `config.json`.
+- `clean`: delete empty run directories and archive completed runs.
 
 Examples:
 
@@ -132,6 +138,7 @@ loops doctor
 loops run --run-once
 loops inner-loop --run-dir .loops/jobs/2026-02-09-example-task-123
 loops signal --run-dir .loops/jobs/2026-02-09-example-task-123 --message "Need approval"
+loops clean --dry-run
 ```
 
 Legacy compatibility:
@@ -177,6 +184,31 @@ Notes:
 - Provider filters (`task_provider_config.filters`) are applied during provider polling before outer-loop status filtering.
 - Outer loop always injects `LOOPS_RUN_DIR` into launched inner-loop processes. For non-`loops.inner_loop` custom launch commands, `inner_loop.env` is also merged into child env; for `loops.inner_loop` commands, runtime settings are read from run-scoped `inner_loop_runtime_config.json`.
 - PR approval is detected from GitHub review decision or from allowlisted approval comments configured in `loop_config`, after optional review-actor filtering from `task_provider_config.allowlist`.
+
+### `loops clean`
+
+Deletes empty runs and archives completed runs.
+
+Options:
+
+- `--loops-root PATH`: Loops runtime root. Default: `.loops`.
+- `--dry-run`: Print planned delete/archive actions without changing files.
+- `-h, --help`: Show help.
+
+Examples:
+
+```sh
+loops clean --dry-run
+loops clean
+loops clean --loops-root /path/to/.loops
+```
+
+Behavior summary:
+
+- A run is deleted when both `run.log` and `agent.log` exist and are byte-empty.
+- A run is archived when `run.json` exists and `last_state == "DONE"`.
+- Empty-run deletion takes precedence over archiving when both conditions match.
+- Completed runs are moved to `.loops/.archive/`, and name collisions are resolved by appending `-1`, `-2`, etc.
 
 ### `loops doctor`
 

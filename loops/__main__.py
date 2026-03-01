@@ -5,7 +5,7 @@ import sys
 from loops.cli import main
 
 
-_CLI_SUBCOMMANDS = {"init", "run", "inner-loop", "signal", "doctor"}
+_CLI_SUBCOMMANDS = {"init", "run", "inner-loop", "signal", "doctor", "clean"}
 
 
 def _normalize_argv(argv: list[str]) -> list[str]:

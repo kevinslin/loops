@@ -13,6 +13,7 @@ from typing import Optional
 
 import click
 
+from loops.cleanup import build_clean_plan, execute_clean_plan, format_clean_report
 from loops.inner_loop import reset_run_record, run_inner_loop
 from loops.outer_loop import (
     InnerLoopCommandConfig,
@@ -249,6 +250,31 @@ def doctor_command(config_path: Path) -> None:
     click.echo(
         f"Config already up to date (version {LATEST_LOOPS_CONFIG_VERSION}): {resolved_path}"
     )
+
+
+@main.command("clean")
+@click.option(
+    "--loops-root",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=Path(".loops"),
+    show_default=True,
+    help="Directory where Loops runtime state and runs are stored.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Report cleanup actions without deleting or archiving any run directories.",
+)
+def clean_command(loops_root: Path, dry_run: bool) -> None:
+    """Delete empty runs and archive completed runs under a Loops root."""
+
+    try:
+        plan = build_clean_plan(loops_root)
+        execute_clean_plan(plan, dry_run=dry_run)
+    except OSError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(format_clean_report(plan, dry_run=dry_run))
 
 
 def _run_outer_loop(
