@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, Optional, cast
+from typing import Any, Callable, Mapping, Optional, cast
 
 from loops.approval_config import (
     DEFAULT_APPROVAL_COMMENT_PATTERN,
@@ -26,7 +26,18 @@ from loops.handoff_handlers import (
     resolve_builtin_handoff_handler,
     validate_handoff_handler_name,
 )
-from loops.logging_utils import append_log
+from loops.inner_loop_runtime_config import (
+    INNER_LOOP_RUNTIME_CONFIG_FILE,
+    InnerLoopRuntimeConfig,
+    read_inner_loop_runtime_config,
+)
+from loops.logging_utils import (
+    STREAM_LOGS_STDOUT_ENV,
+    append_log,
+    reset_stream_logs_stdout_override,
+    set_stream_logs_stdout_override,
+    should_stream_logs_to_stdout,
+)
 from loops.run_record import (
     CodexSession,
     RunAutoApprove,
@@ -125,6 +136,7 @@ class InnerLoopRuntimeContext:
     run_json_path: Path
     run_log: Path
     agent_log: Path
+    environ: Mapping[str, str]
     command: list[str]
     base_prompt: Optional[str]
     user_handoff_handler: UserHandoffHandler
@@ -175,6 +187,7 @@ def reset_run_record(run_dir: Path) -> RunRecord:
     if task is None:
         task = _build_reset_task_from_env(resolved_run_dir)
 
+    runtime_config = _load_runtime_config(run_dir=resolved_run_dir, run_log=run_log)
     reset_record = RunRecord(
         task=task,
         pr=_build_reset_pr(existing_record.pr if existing_record is not None else None),
@@ -187,7 +200,12 @@ def reset_run_record(run_dir: Path) -> RunRecord:
     written = write_run_record(
         run_json_path,
         reset_record,
-        auto_approve_enabled=_load_auto_approve_enabled(),
+        auto_approve_enabled=_load_auto_approve_enabled(
+            runtime_auto_approve_enabled=(
+                runtime_config.auto_approve_enabled if runtime_config is not None else None
+            ),
+            allow_env_fallback=True,
+        ),
     )
     append_log(
         run_log,
@@ -221,151 +239,192 @@ def run_inner_loop(
     run_json_path = run_dir / "run.json"
     run_log = run_dir / "run.log"
     agent_log = run_dir / "agent.log"
-    base_prompt = _load_prompt_file(prompt_file)
-    command = _resolve_codex_command()
-    comment_approval = _load_comment_approval_settings(run_dir)
-    if comment_approval.config_load_error is not None:
-        append_log(
-            run_log,
-            (
-                "[loops] failed to load run approval config; using defaults: "
-                f"{comment_approval.config_load_error}"
-            ),
+    runtime_config = _load_runtime_config(run_dir=run_dir, run_log=run_log)
+    runtime_env = runtime_config.env if runtime_config is not None else None
+    runtime_environ = _apply_runtime_env_overrides(runtime_env)
+    runtime_environ = _configure_log_streaming(
+        runtime_config=runtime_config,
+        environ=runtime_environ,
+    )
+    stream_logs_token = set_stream_logs_stdout_override(
+        should_stream_logs_to_stdout(environ=runtime_environ)
+    )
+
+    try:
+        base_prompt = _load_prompt_file(
+            prompt_file,
+            runtime_env=runtime_env,
+            allow_env_fallback=True,
+            environ=runtime_environ,
         )
-    if comment_approval.used_default_pattern:
-        append_log(
-            run_log,
-            (
-                "[loops] invalid approval comment pattern in run approval config; "
-                "falling back to default"
-            ),
+        command = _resolve_codex_command(
+            runtime_env=runtime_env,
+            allow_env_fallback=True,
+            environ=runtime_environ,
         )
-    if pr_status_fetcher is None:
-        def _default_pr_status_fetcher(pr: RunPR) -> RunPR:
-            updated_pr, approved_by_comment, approved_by = _fetch_pr_status_with_gh_with_context(
-                pr,
-                comment_approval=comment_approval,
-                log_message=lambda message: append_log(run_log, message),
+        comment_approval = _load_comment_approval_settings(
+            run_dir,
+            runtime_config=runtime_config,
+        )
+        if comment_approval.config_load_error is not None:
+            append_log(
+                run_log,
+                (
+                    "[loops] failed to load run approval config; using defaults: "
+                    f"{comment_approval.config_load_error}"
+                ),
             )
-            if approved_by_comment:
-                append_log(
-                    run_log,
-                    (
-                        "[loops] treating PR as approved via allowlisted approval "
-                        f"comment by {approved_by}"
-                    ),
+        if comment_approval.used_default_pattern:
+            append_log(
+                run_log,
+                (
+                    "[loops] invalid approval comment pattern in run approval config; "
+                    "falling back to default"
+                ),
+            )
+        if pr_status_fetcher is None:
+
+            def _default_pr_status_fetcher(pr: RunPR) -> RunPR:
+                updated_pr, approved_by_comment, approved_by = _fetch_pr_status_with_gh_with_context(
+                    pr,
+                    comment_approval=comment_approval,
+                    log_message=lambda message: append_log(run_log, message),
+                    environ=runtime_environ,
                 )
-            return updated_pr
+                if approved_by_comment:
+                    append_log(
+                        run_log,
+                        (
+                            "[loops] treating PR as approved via allowlisted approval "
+                            f"comment by {approved_by}"
+                        ),
+                    )
+                return updated_pr
 
-        pr_status_fetcher = _default_pr_status_fetcher
-    configured_handoff_handler = _resolve_configured_handoff_handler_name()
-    initial_run_record = read_run_record(run_json_path)
-    if user_handoff_handler is None:
-        user_handoff_handler = resolve_builtin_handoff_handler(
-            configured_handoff_handler,
+            pr_status_fetcher = _default_pr_status_fetcher
+        configured_handoff_handler = _resolve_configured_handoff_handler_name(
+            runtime_handoff_handler=(
+                runtime_config.handoff_handler if runtime_config is not None else None
+            ),
+            allow_env_fallback=True,
+            environ=runtime_environ,
+        )
+        initial_run_record = read_run_record(run_json_path)
+        if user_handoff_handler is None:
+            user_handoff_handler = resolve_builtin_handoff_handler(
+                configured_handoff_handler,
+                run_dir=run_dir,
+                task=initial_run_record.task,
+                stdin_handler=_default_user_handoff_handler,
+                log_message=lambda message: append_log(run_log, message),
+                environ=runtime_environ,
+            )
+            selected_handoff_handler = configured_handoff_handler
+            using_default_handoff_handler = selected_handoff_handler == HANDOFF_HANDLER_STDIN
+        else:
+            selected_handoff_handler = "custom_handler"
+            using_default_handoff_handler = False
+        append_log(run_log, f"[loops] using handoff handler: {selected_handoff_handler}")
+        non_interactive_default_handoff = (
+            using_default_handoff_handler and not _has_interactive_stdin()
+        )
+        auto_approve_enabled = _load_auto_approve_enabled(
+            runtime_auto_approve_enabled=(
+                runtime_config.auto_approve_enabled if runtime_config is not None else None
+            ),
+            allow_env_fallback=True,
+            environ=runtime_environ,
+        )
+        runtime = InnerLoopRuntimeContext(
             run_dir=run_dir,
-            task=initial_run_record.task,
-            stdin_handler=_default_user_handoff_handler,
-            log_message=lambda message: append_log(run_log, message),
-            environ=os.environ.copy(),
+            run_json_path=run_json_path,
+            run_log=run_log,
+            agent_log=agent_log,
+            environ=runtime_environ,
+            command=command,
+            base_prompt=base_prompt,
+            user_handoff_handler=user_handoff_handler,
+            pr_status_fetcher=pr_status_fetcher,
+            sleep_fn=sleep_fn,
+            initial_poll_seconds=initial_poll_seconds,
+            max_poll_seconds=max_poll_seconds,
+            max_idle_polls=max_idle_polls,
+            non_interactive_default_handoff=non_interactive_default_handoff,
+            auto_approve_enabled=auto_approve_enabled,
         )
-        selected_handoff_handler = configured_handoff_handler
-        using_default_handoff_handler = selected_handoff_handler == HANDOFF_HANDLER_STDIN
-    else:
-        selected_handoff_handler = "custom_handler"
-        using_default_handoff_handler = False
-    append_log(run_log, f"[loops] using handoff handler: {selected_handoff_handler}")
-    non_interactive_default_handoff = (
-        using_default_handoff_handler and not _has_interactive_stdin()
-    )
-    auto_approve_enabled = _load_auto_approve_enabled()
-    runtime = InnerLoopRuntimeContext(
-        run_dir=run_dir,
-        run_json_path=run_json_path,
-        run_log=run_log,
-        agent_log=agent_log,
-        command=command,
-        base_prompt=base_prompt,
-        user_handoff_handler=user_handoff_handler,
-        pr_status_fetcher=pr_status_fetcher,
-        sleep_fn=sleep_fn,
-        initial_poll_seconds=initial_poll_seconds,
-        max_poll_seconds=max_poll_seconds,
-        max_idle_polls=max_idle_polls,
-        non_interactive_default_handoff=non_interactive_default_handoff,
-        auto_approve_enabled=auto_approve_enabled,
-    )
-    control = LoopControlState(backoff_seconds=initial_poll_seconds)
+        control = LoopControlState(backoff_seconds=initial_poll_seconds)
 
-    for iteration in range(1, max_iterations + 1):
-        run_record = read_run_record(run_json_path)
-        run_record = _apply_pending_signals(run_dir, run_record)
-        state = _derive_state(
-            run_record,
-            auto_approve_enabled=runtime.auto_approve_enabled,
-        )
-        _log_iteration_enter(
-            run_log,
-            iteration=iteration,
-            state=state,
-            run_record=run_record,
-            backoff_seconds=control.backoff_seconds,
-            idle_polls=control.idle_polls,
-        )
-
-        if state == "DONE":
-            append_log(run_log, "[loops] run state DONE; exiting inner loop")
-            _log_iteration_exit(
+        for iteration in range(1, max_iterations + 1):
+            run_record = read_run_record(run_json_path)
+            run_record = _apply_pending_signals(run_dir, run_record)
+            state = _derive_state(
+                run_record,
+                auto_approve_enabled=runtime.auto_approve_enabled,
+            )
+            _log_iteration_enter(
                 run_log,
                 iteration=iteration,
-                next_state=state,
+                state=state,
                 run_record=run_record,
-                action="done_exit",
                 backoff_seconds=control.backoff_seconds,
                 idle_polls=control.idle_polls,
             )
-            return run_record
 
-        transition = _handle_state(
-            state=state,
-            run_record=run_record,
-            runtime=runtime,
-            control=control,
-        )
-        next_state = _derive_state(
-            transition.run_record,
+            if state == "DONE":
+                append_log(run_log, "[loops] run state DONE; exiting inner loop")
+                _log_iteration_exit(
+                    run_log,
+                    iteration=iteration,
+                    next_state=state,
+                    run_record=run_record,
+                    action="done_exit",
+                    backoff_seconds=control.backoff_seconds,
+                    idle_polls=control.idle_polls,
+                )
+                return run_record
+
+            transition = _handle_state(
+                state=state,
+                run_record=run_record,
+                runtime=runtime,
+                control=control,
+            )
+            next_state = _derive_state(
+                transition.run_record,
+                auto_approve_enabled=runtime.auto_approve_enabled,
+            )
+            _log_iteration_exit(
+                run_log,
+                iteration=iteration,
+                next_state=next_state,
+                run_record=transition.run_record,
+                action=transition.action,
+                backoff_seconds=control.backoff_seconds,
+                idle_polls=control.idle_polls,
+            )
+            if transition.terminate:
+                return transition.run_record
+
+        final_record = read_run_record(run_json_path)
+        final_record = _force_needs_input(
+            run_json_path,
+            final_record,
+            message=(
+                "Inner loop reached max iterations without DONE. "
+                "Please provide guidance."
+            ),
             auto_approve_enabled=runtime.auto_approve_enabled,
         )
-        _log_iteration_exit(
+        append_log(
             run_log,
-            iteration=iteration,
-            next_state=next_state,
-            run_record=transition.run_record,
-            action=transition.action,
-            backoff_seconds=control.backoff_seconds,
-            idle_polls=control.idle_polls,
+            (
+                "[loops] iteration limit reached; forcing NEEDS_INPUT "
+                f"(max_iterations={max_iterations})"
+            ),
         )
-        if transition.terminate:
-            return transition.run_record
-
-    final_record = read_run_record(run_json_path)
-    final_record = _force_needs_input(
-        run_json_path,
-        final_record,
-        message=(
-            "Inner loop reached max iterations without DONE. "
-            "Please provide guidance."
-        ),
-        auto_approve_enabled=runtime.auto_approve_enabled,
-    )
-    append_log(
-        run_log,
-        (
-            "[loops] iteration limit reached; forcing NEEDS_INPUT "
-            f"(max_iterations={max_iterations})"
-        ),
-    )
-    return final_record
+        return final_record
+    finally:
+        reset_stream_logs_stdout_override(stream_logs_token)
 
 
 def _handle_state(
@@ -461,6 +520,7 @@ def _handle_running_state(
         agent_log=runtime.agent_log,
         run_record=run_record,
         command=runtime.command,
+        environ=runtime.environ,
         base_prompt=runtime.base_prompt,
         user_response=control.next_user_response,
         review_feedback=False,
@@ -538,6 +598,7 @@ def _handle_waiting_on_review_state(
             agent_log=runtime.agent_log,
             run_record=run_record,
             command=runtime.command,
+            environ=runtime.environ,
             base_prompt=runtime.base_prompt,
             user_response=control.next_user_response,
             review_feedback=True,
@@ -651,6 +712,7 @@ def _handle_pr_approved_state(
             run_log=runtime.run_log,
             codex_session=run_record.codex_session,
             turn_label="cleanup turn",
+            environ=runtime.environ,
         )
         append_log(runtime.run_log, output)
         if exit_code != 0:
@@ -796,6 +858,48 @@ def _build_reset_pr(existing_pr: Optional[RunPR]) -> Optional[RunPR]:
     )
 
 
+def _load_runtime_config(
+    *,
+    run_dir: Path,
+    run_log: Path,
+) -> Optional[InnerLoopRuntimeConfig]:
+    try:
+        return read_inner_loop_runtime_config(run_dir)
+    except Exception as exc:
+        runtime_config_path = run_dir / INNER_LOOP_RUNTIME_CONFIG_FILE
+        if runtime_config_path.exists():
+            append_log(
+                run_log,
+                (
+                    "[loops] failed to load run runtime config; "
+                    f"aborting: {exc}"
+                ),
+            )
+        raise
+
+
+def _apply_runtime_env_overrides(runtime_env: Mapping[str, str] | None) -> dict[str, str]:
+    merged = os.environ.copy()
+    if runtime_env:
+        merged.update(runtime_env)
+    return merged
+
+
+def _configure_log_streaming(
+    *,
+    runtime_config: Optional[InnerLoopRuntimeConfig],
+    environ: Mapping[str, str],
+) -> dict[str, str]:
+    configured = dict(environ)
+    if runtime_config is None or runtime_config.stream_logs_stdout is None:
+        return configured
+    if runtime_config.stream_logs_stdout:
+        configured[STREAM_LOGS_STDOUT_ENV] = "1"
+        return configured
+    configured.pop(STREAM_LOGS_STDOUT_ENV, None)
+    return configured
+
+
 def _derive_state(
     run_record: RunRecord,
     *,
@@ -809,8 +913,18 @@ def _derive_state(
     )
 
 
-def _load_auto_approve_enabled() -> bool:
-    raw = os.environ.get("LOOPS_AUTO_APPROVE_ENABLED")
+def _load_auto_approve_enabled(
+    *,
+    runtime_auto_approve_enabled: bool | None = None,
+    allow_env_fallback: bool = True,
+    environ: Mapping[str, str] | None = None,
+) -> bool:
+    if runtime_auto_approve_enabled is not None:
+        return runtime_auto_approve_enabled
+    if not allow_env_fallback:
+        return False
+    source = os.environ if environ is None else environ
+    raw = source.get("LOOPS_AUTO_APPROVE_ENABLED")
     if raw is None:
         return False
     return raw.strip().lower() in {"1", "true", "yes", "on"}
@@ -877,8 +991,20 @@ def _format_run_record_log_details(run_record: RunRecord) -> str:
     )
 
 
-def _resolve_codex_command() -> list[str]:
-    raw_command = os.environ.get("CODEX_CMD", "codex exec --yolo")
+def _resolve_codex_command(
+    *,
+    runtime_env: Mapping[str, str] | None = None,
+    allow_env_fallback: bool = True,
+    environ: Mapping[str, str] | None = None,
+) -> list[str]:
+    raw_command = None
+    if runtime_env is not None:
+        raw_command = runtime_env.get("CODEX_CMD")
+    if raw_command is None and allow_env_fallback:
+        source = os.environ if environ is None else environ
+        raw_command = source.get("CODEX_CMD")
+    if raw_command is None:
+        raw_command = "codex exec --yolo"
     command = shlex.split(raw_command)
     if not command:
         raise ValueError("CODEX_CMD cannot be empty")
@@ -932,11 +1058,24 @@ def _find_codex_token_index(command: list[str]) -> Optional[int]:
     return None
 
 
-def _load_prompt_file(prompt_file: Optional[Path]) -> Optional[str]:
+def _load_prompt_file(
+    prompt_file: Optional[Path],
+    *,
+    runtime_env: Mapping[str, str] | None = None,
+    allow_env_fallback: bool = True,
+    environ: Mapping[str, str] | None = None,
+) -> Optional[str]:
     if prompt_file is None:
-        prompt_path = os.environ.get("LOOPS_PROMPT_FILE") or os.environ.get(
-            "CODEX_PROMPT_FILE"
-        )
+        prompt_path = None
+        if runtime_env is not None:
+            prompt_path = runtime_env.get("LOOPS_PROMPT_FILE") or runtime_env.get(
+                "CODEX_PROMPT_FILE"
+            )
+        if prompt_path is None and allow_env_fallback:
+            source = os.environ if environ is None else environ
+            prompt_path = source.get("LOOPS_PROMPT_FILE") or source.get(
+                "CODEX_PROMPT_FILE"
+            )
         if prompt_path:
             prompt_file = Path(prompt_path)
     if prompt_file is None:
@@ -1037,7 +1176,13 @@ def _build_auto_approve_eval_prompt(
     return _append_state_tag(prompt, PROMPT_STATE_WAITING_ON_REVIEW)
 
 
-def _run_codex(command: list[str], prompt: str, agent_log: Path) -> tuple[str, int]:
+def _run_codex(
+    command: list[str],
+    prompt: str,
+    agent_log: Path,
+    *,
+    environ: Mapping[str, str],
+) -> tuple[str, int]:
     agent_log.parent.mkdir(parents=True, exist_ok=True)
     try:
         process = subprocess.Popen(
@@ -1046,7 +1191,7 @@ def _run_codex(command: list[str], prompt: str, agent_log: Path) -> tuple[str, i
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            env=os.environ.copy(),
+            env=dict(environ),
             bufsize=1,
         )
         if process.stdin is not None:
@@ -1077,6 +1222,7 @@ def _invoke_codex(
     run_log: Path,
     codex_session: Optional[CodexSession],
     turn_label: str,
+    environ: Mapping[str, str],
 ) -> tuple[str, int, bool]:
     command, strategy = _build_codex_turn_command(
         base_command,
@@ -1097,7 +1243,12 @@ def _invoke_codex(
         )
     else:
         append_log(run_log, f"[loops] {turn_label}: starting new codex session")
-    output, exit_code = _run_codex(command, prompt, agent_log)
+    output, exit_code = _run_codex(
+        command,
+        prompt,
+        agent_log,
+        environ=environ,
+    )
     if strategy != "resume" or exit_code == 0:
         return output, exit_code, False
 
@@ -1108,7 +1259,12 @@ def _invoke_codex(
             f"(exit_code={exit_code}); retrying without resume"
         ),
     )
-    fallback_output, fallback_exit_code = _run_codex(list(base_command), prompt, agent_log)
+    fallback_output, fallback_exit_code = _run_codex(
+        list(base_command),
+        prompt,
+        agent_log,
+        environ=environ,
+    )
     if fallback_exit_code == 0:
         append_log(
             run_log,
@@ -1159,6 +1315,7 @@ def _run_codex_turn(
     agent_log: Path,
     run_record: RunRecord,
     command: list[str],
+    environ: Mapping[str, str],
     base_prompt: Optional[str],
     user_response: Optional[str] = None,
     review_feedback: bool,
@@ -1201,6 +1358,7 @@ def _run_codex_turn(
         run_log=run_log,
         codex_session=run_record.codex_session,
         turn_label="codex turn",
+        environ=environ,
     )
     append_log(run_log, output)
 
@@ -1349,6 +1507,7 @@ def _run_auto_approve_eval(
         run_log=runtime.run_log,
         codex_session=run_record.codex_session,
         turn_label="auto-approve evaluation turn",
+        environ=runtime.environ,
     )
     append_log(runtime.run_log, output)
 
@@ -1704,13 +1863,24 @@ def _ci_status_from_rollup(payload: dict[str, Any]) -> str:
     return "success"
 
 
-def _load_comment_approval_settings(run_dir: Path) -> CommentApprovalSettings:
+def _load_comment_approval_settings(
+    run_dir: Path,
+    *,
+    runtime_config: InnerLoopRuntimeConfig | None = None,
+) -> CommentApprovalSettings:
     config_load_error: str | None = None
-    try:
-        config = read_inner_loop_approval_config(run_dir)
-    except Exception as exc:
-        config_load_error = str(exc)
-        config = InnerLoopApprovalConfig()
+    if runtime_config is not None:
+        config = InnerLoopApprovalConfig(
+            approval_comment_usernames=runtime_config.approval_comment_usernames,
+            approval_comment_pattern=runtime_config.approval_comment_pattern,
+            review_actor_usernames=runtime_config.review_actor_usernames,
+        )
+    else:
+        try:
+            config = read_inner_loop_approval_config(run_dir)
+        except Exception as exc:
+            config_load_error = str(exc)
+            config = InnerLoopApprovalConfig()
     allowed_usernames = config.approval_comment_usernames
     pattern_text = config.approval_comment_pattern or DEFAULT_APPROVAL_COMMENT_PATTERN
     used_default_pattern = False
@@ -1902,6 +2072,7 @@ def _fetch_pr_status_with_gh_with_context(
     *,
     comment_approval: CommentApprovalSettings,
     log_message: Optional[Callable[[str], None]] = None,
+    environ: Mapping[str, str] | None = None,
 ) -> tuple[RunPR, bool, str]:
     def _log(message: str) -> None:
         if log_message is None:
@@ -1931,7 +2102,7 @@ def _fetch_pr_status_with_gh_with_context(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
-        env=os.environ.copy(),
+        env=os.environ.copy() if environ is None else dict(environ),
     )
     if result.returncode != 0:
         _log(
@@ -2343,8 +2514,19 @@ def _apply_pending_signals(run_dir: Path, run_record: RunRecord) -> RunRecord:
     return written
 
 
-def _resolve_configured_handoff_handler_name() -> str:
-    raw_handler = os.environ.get("LOOPS_HANDOFF_HANDLER", DEFAULT_HANDOFF_HANDLER)
+def _resolve_configured_handoff_handler_name(
+    runtime_handoff_handler: str | None = None,
+    *,
+    allow_env_fallback: bool = True,
+    environ: Mapping[str, str] | None = None,
+) -> str:
+    if runtime_handoff_handler is not None:
+        raw_handler = runtime_handoff_handler
+    elif allow_env_fallback:
+        source = os.environ if environ is None else environ
+        raw_handler = source.get("LOOPS_HANDOFF_HANDLER", DEFAULT_HANDOFF_HANDLER)
+    else:
+        raw_handler = DEFAULT_HANDOFF_HANDLER
     if not isinstance(raw_handler, str):
         raw_handler = DEFAULT_HANDOFF_HANDLER
     return validate_handoff_handler_name(raw_handler)

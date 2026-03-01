@@ -19,16 +19,18 @@ from pydantic import ValidationError
 
 from loops.approval_config import (
     DEFAULT_APPROVAL_COMMENT_PATTERN,
-    build_inner_loop_approval_config,
     normalize_approval_usernames,
-    write_inner_loop_approval_config,
 )
 from loops.handoff_handlers import (
     DEFAULT_HANDOFF_HANDLER,
     validate_handoff_handler_name,
     validate_handoff_handler_provider_compatibility,
 )
-from loops.logging_utils import STREAM_LOGS_STDOUT_ENV, format_log_timestamp
+from loops.inner_loop_runtime_config import (
+    InnerLoopRuntimeConfig,
+    write_inner_loop_runtime_config,
+)
+from loops.logging_utils import format_log_timestamp
 from loops.provider_types import LoopsProviderConfig, SecretRequirement
 from loops.providers.github_projects_v2 import (
     GITHUB_PROJECTS_V2_PROVIDER_ID,
@@ -181,7 +183,6 @@ class OuterLoopRunner:
         self.inner_loop_launcher = inner_loop_launcher
         self.state_path = self.loops_root / "outer_state.json"
         self.log_path = self.loops_root / "oloops.log"
-        self.review_actor_usernames = _resolve_provider_review_actor_usernames(provider)
 
     def run_once(
         self,
@@ -293,14 +294,6 @@ class OuterLoopRunner:
                 updated_at=now_iso,
             )
             write_run_record(run_dir / "run.json", record)
-            write_inner_loop_approval_config(
-                run_dir,
-                build_inner_loop_approval_config(
-                    approval_comment_usernames=self.config.approval_comment_usernames,
-                    approval_comment_pattern=self.config.approval_comment_pattern,
-                    review_actor_usernames=self.review_actor_usernames,
-                ),
-            )
             _touch(run_dir / "run.log")
             _touch(run_dir / "agent.log")
             to_launch.append((run_dir, task))
@@ -316,6 +309,13 @@ class OuterLoopRunner:
         launch_error: str | None = None
         try:
             if to_launch:
+                _log(
+                    self.log_path,
+                    "run_once.launching "
+                    f"count={len(to_launch)} "
+                    f"tasks={_task_keys_preview([task for _, task in to_launch])}",
+                    stream_to_stdout=self.config.sync_mode,
+                )
                 self._launch_tasks(to_launch)
         except Exception as exc:
             launch_error = type(exc).__name__
@@ -516,6 +516,8 @@ def _resolve_provider_review_actor_usernames(provider: TaskProvider) -> tuple[st
 
 def build_inner_loop_launcher(
     config: LoopsConfig,
+    *,
+    review_actor_usernames: tuple[str, ...] = (),
 ) -> Callable[[Path, Task], None]:
     """Build the launcher callable for inner loop executions."""
 
@@ -523,27 +525,33 @@ def build_inner_loop_launcher(
         raise ValueError("inner_loop.command is required to launch tasks")
     inner_loop = config.inner_loop
     sync_mode = config.loop_config.sync_mode
+    normalized_review_actor_usernames = normalize_approval_usernames(
+        review_actor_usernames
+    )
 
     def launcher(run_dir: Path, task: Task) -> None:
         """Launch a single inner loop invocation."""
 
         run_dir.mkdir(parents=True, exist_ok=True)
         run_log = run_dir / "run.log"
+        write_inner_loop_runtime_config(
+            run_dir,
+            InnerLoopRuntimeConfig(
+                handoff_handler=config.loop_config.handoff_handler,
+                auto_approve_enabled=config.loop_config.auto_approve_enabled,
+                stream_logs_stdout=sync_mode,
+                env=dict(inner_loop.env) if inner_loop.env else None,
+                approval_comment_usernames=config.loop_config.approval_comment_usernames,
+                approval_comment_pattern=config.loop_config.approval_comment_pattern,
+                review_actor_usernames=normalized_review_actor_usernames,
+            ),
+        )
         env = os.environ.copy()
         env["LOOPS_RUN_DIR"] = str(run_dir)
-        env["LOOPS_TASK_ID"] = task.id
-        env["LOOPS_TASK_TITLE"] = task.title
-        env["LOOPS_TASK_URL"] = task.url
-        env["LOOPS_TASK_PROVIDER"] = task.provider_id
-        env["LOOPS_HANDOFF_HANDLER"] = config.loop_config.handoff_handler
-        env["LOOPS_AUTO_APPROVE_ENABLED"] = (
-            "1" if config.loop_config.auto_approve_enabled else "0"
-        )
-        if sync_mode:
-            env[STREAM_LOGS_STDOUT_ENV] = "1"
-        if inner_loop.env:
-            env.update(inner_loop.env)
         command = list(inner_loop.command)
+        launches_loops_inner_loop = _is_loops_inner_loop_command(command)
+        if inner_loop.env and not launches_loops_inner_loop:
+            env.update(inner_loop.env)
         if inner_loop.append_task_url:
             command.append(task.url)
 
@@ -572,6 +580,24 @@ def build_inner_loop_launcher(
             os.close(log_fd)
 
     return launcher
+
+
+def _is_loops_inner_loop_command(command: list[str]) -> bool:
+    if not command:
+        return False
+    for index, item in enumerate(command):
+        name = Path(item).name.casefold()
+        if name == "loops" and index + 1 < len(command):
+            if command[index + 1].casefold() == "inner-loop":
+                return True
+        if item == "-m" and index + 1 < len(command):
+            if command[index + 1] == "loops.inner_loop":
+                return True
+        if name == "loops.inner_loop":
+            return True
+    if " ".join(command).strip().casefold().endswith("loops.inner_loop"):
+        return True
+    return False
 
 
 def read_outer_state(path: str | Path) -> OuterLoopState:

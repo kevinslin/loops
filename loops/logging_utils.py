@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextvars import ContextVar, Token
 import os
 from datetime import datetime
 from pathlib import Path
@@ -8,6 +9,22 @@ from typing import Mapping
 
 STREAM_LOGS_STDOUT_ENV = "LOOPS_STREAM_LOGS_STDOUT"
 LOG_TIMESTAMP_FRACTION_DIGITS = 2
+_STREAM_LOGS_STDOUT_OVERRIDE: ContextVar[bool | None] = ContextVar(
+    "loops_stream_logs_stdout_override",
+    default=None,
+)
+
+
+def set_stream_logs_stdout_override(value: bool | None) -> Token[bool | None]:
+    """Set a per-context override for log streaming behavior."""
+
+    return _STREAM_LOGS_STDOUT_OVERRIDE.set(value)
+
+
+def reset_stream_logs_stdout_override(token: Token[bool | None]) -> None:
+    """Reset a previously set per-context log streaming override."""
+
+    _STREAM_LOGS_STDOUT_OVERRIDE.reset(token)
 
 
 def should_stream_logs_to_stdout(
@@ -16,6 +33,9 @@ def should_stream_logs_to_stdout(
 ) -> bool:
     """Return True when log lines should also be emitted to stdout."""
 
+    override = _STREAM_LOGS_STDOUT_OVERRIDE.get()
+    if override is not None:
+        return override
     source = os.environ if environ is None else environ
     raw_value = source.get(STREAM_LOGS_STDOUT_ENV, "")
     return raw_value.strip().casefold() in {"1", "true", "yes", "on"}

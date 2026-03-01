@@ -297,11 +297,13 @@ Notes:
 ### Environment variables
 - `GITHUB_TOKEN` or `GH_TOKEN`: required for GitHub provider startup checks (`GH_TOKEN` is supported as alias fallback).
 - `LOOPS_RUN_DIR`: required path to the inner loop run directory.
-- `CODEX_CMD`: command used to invoke Codex (default: `codex exec --yolo`).
-- `LOOPS_PROMPT_FILE` / `CODEX_PROMPT_FILE`: optional base prompt file path.
-- `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`: task metadata injected by the outer loop launcher.
-- `LOOPS_HANDOFF_HANDLER`: selected built-in handoff handler injected by outer loop from `loop_config.handoff_handler`.
-- `LOOPS_STREAM_LOGS_STDOUT`: set to `1` by the outer loop when `sync_mode=true` so inner-loop log writes are also mirrored to stdout.
+- `CODEX_CMD`: fallback command used when run-scoped runtime config does not set one (default: `codex exec --yolo`).
+- `LOOPS_PROMPT_FILE` / `CODEX_PROMPT_FILE`: fallback base prompt file path when run-scoped runtime config does not set one.
+- `LOOPS_HANDOFF_HANDLER`: direct/manual-run fallback built-in handoff handler name.
+- `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`: legacy fallback task metadata used only when resetting a run with missing `run.json`.
+- `LOOPS_STREAM_LOGS_STDOUT`: direct/manual-run fallback toggle for mirroring `run.log` lines to stdout.
+- Outer-loop-launched runs persist runtime settings in `inner_loop_runtime_config.json` under each run directory, instead of injecting config via child-process env vars. For non-`loops.inner_loop` custom launch commands, `inner_loop.env` remains merged into child env for backward compatibility.
+- When `inner_loop_runtime_config.json` exists but is malformed, inner loop startup fails fast instead of silently falling back to process environment defaults.
 
 ## 4. Architecture
 
@@ -605,7 +607,8 @@ State-to-prompt mapping:
 Prompt-related configuration and runtime inputs:
 
 - `loops inner-loop --prompt-file PATH`: prepend file contents to every Codex prompt for the run.
-- `LOOPS_PROMPT_FILE`: env fallback prompt file when `--prompt-file` is unset.
+- `inner_loop_runtime_config.json` (`env.LOOPS_PROMPT_FILE` / `env.CODEX_PROMPT_FILE`): run-scoped prompt-file source for outer-loop-launched runs when `--prompt-file` is unset.
+- `LOOPS_PROMPT_FILE`: env fallback prompt file when `--prompt-file` is unset and runtime config does not provide a prompt path.
 - `CODEX_PROMPT_FILE`: second env fallback when `LOOPS_PROMPT_FILE` is unset.
 - `loop_config.auto_approve_enabled`: enables one-time auto-approve evaluation when review is not already approved.
 - Auto-approve defaults are fixed in runtime design: require green CI and judge with `references/jb.coding.md`.

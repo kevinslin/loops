@@ -3,15 +3,19 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from loops.approval_config import (
     DEFAULT_APPROVAL_COMMENT_PATTERN,
-    INNER_LOOP_APPROVAL_CONFIG_FILE,
 )
 from loops.handoff_handlers import HANDOFF_HANDLER_GH_COMMENT
+from loops.inner_loop_runtime_config import (
+    INNER_LOOP_RUNTIME_CONFIG_FILE,
+    read_inner_loop_runtime_config,
+)
 from loops.outer_loop import (
     InnerLoopCommandConfig,
     LATEST_LOOPS_CONFIG_VERSION,
@@ -21,6 +25,7 @@ from loops.outer_loop import (
     SyncModeInterruptedError,
     build_provider,
     build_inner_loop_launcher,
+    _is_loops_inner_loop_command,
     load_config,
     read_outer_state,
 )
@@ -67,6 +72,24 @@ def list_run_dirs(loops_root: Path) -> list[Path]:
     return sorted([path for path in runs_root.iterdir() if path.is_dir()])
 
 
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (["loops", "inner-loop"], True),
+        (["uv", "run", "loops", "inner-loop"], True),
+        ([sys.executable, "-m", "loops.inner_loop"], True),
+        (["uv", "run", sys.executable, "-X", "dev", "-m", "loops.inner_loop"], True),
+        (["python", "-m", "loops.other"], False),
+        (["echo", "hello"], False),
+    ],
+)
+def test_is_loops_inner_loop_command_detects_wrapped_invocations(
+    command: list[str],
+    expected: bool,
+) -> None:
+    assert _is_loops_inner_loop_command(command) is expected
+
+
 def test_run_once_creates_run_records(tmp_path: Path) -> None:
     tasks = [make_task("1", "Ship it"), make_task("2", "Next")]
     provider = StubProvider(tasks)
@@ -88,7 +111,6 @@ def test_run_once_creates_run_records(tmp_path: Path) -> None:
     titles = {read_run_record(run_dir / "run.json").task.title for run_dir in run_dirs}
     assert titles == {"Ship it", "Next"}
     assert all((run_dir / "agent.log").exists() for run_dir in run_dirs)
-    assert all((run_dir / INNER_LOOP_APPROVAL_CONFIG_FILE).exists() for run_dir in run_dirs)
     assert len(launched) == 2
 
     state = read_outer_state(loops_root / "outer_state.json")
@@ -605,8 +627,13 @@ def test_build_inner_loop_launcher_sync_mode_uses_subprocess_run(
 
     monkeypatch.setattr("loops.outer_loop.subprocess.run", fake_run)
     monkeypatch.setattr("loops.outer_loop.subprocess.Popen", fail_popen)
-    monkeypatch.delenv("LOOPS_APPROVAL_COMMENT_USERNAMES", raising=False)
-    monkeypatch.delenv("LOOPS_APPROVAL_COMMENT_PATTERN", raising=False)
+    monkeypatch.delenv("LOOPS_TASK_ID", raising=False)
+    monkeypatch.delenv("LOOPS_TASK_TITLE", raising=False)
+    monkeypatch.delenv("LOOPS_TASK_URL", raising=False)
+    monkeypatch.delenv("LOOPS_TASK_PROVIDER", raising=False)
+    monkeypatch.delenv("LOOPS_HANDOFF_HANDLER", raising=False)
+    monkeypatch.delenv("LOOPS_AUTO_APPROVE_ENABLED", raising=False)
+    monkeypatch.delenv("LOOPS_STREAM_LOGS_STDOUT", raising=False)
 
     launcher(run_dir, task)
 
@@ -615,12 +642,19 @@ def test_build_inner_loop_launcher_sync_mode_uses_subprocess_run(
     env = captured["env"]
     assert isinstance(env, dict)
     assert env["LOOPS_RUN_DIR"] == str(run_dir)
-    assert env["LOOPS_TASK_ID"] == task.id
-    assert env["LOOPS_HANDOFF_HANDLER"] == "stdin_handler"
-    assert env["LOOPS_AUTO_APPROVE_ENABLED"] == "0"
-    assert env["LOOPS_STREAM_LOGS_STDOUT"] == "1"
-    assert "LOOPS_APPROVAL_COMMENT_USERNAMES" not in env
-    assert "LOOPS_APPROVAL_COMMENT_PATTERN" not in env
+    assert "LOOPS_TASK_ID" not in env
+    assert "LOOPS_HANDOFF_HANDLER" not in env
+    assert "LOOPS_AUTO_APPROVE_ENABLED" not in env
+    assert "LOOPS_STREAM_LOGS_STDOUT" not in env
+    runtime_config = read_inner_loop_runtime_config(run_dir)
+    assert runtime_config is not None
+    assert runtime_config.handoff_handler == "stdin_handler"
+    assert runtime_config.auto_approve_enabled is False
+    assert runtime_config.stream_logs_stdout is True
+    assert runtime_config.env is None
+    runtime_config_path = run_dir / INNER_LOOP_RUNTIME_CONFIG_FILE
+    assert runtime_config_path.exists()
+    assert runtime_config_path.stat().st_mode & 0o777 == 0o600
 
 
 def test_build_inner_loop_launcher_sync_mode_interrupt_raises_typed_error(
@@ -651,6 +685,95 @@ def test_build_inner_loop_launcher_sync_mode_interrupt_raises_typed_error(
         launcher(run_dir, task)
 
     assert exc_info.value.run_dir == run_dir
+
+
+def test_build_inner_loop_launcher_writes_runtime_env_to_run_config(
+    tmp_path: Path, monkeypatch
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    task = make_task("1", "Ship it")
+    config = LoopsConfig(
+        version=LATEST_LOOPS_CONFIG_VERSION,
+        task_provider_id="github_projects_v2",
+        task_provider_config={"url": "https://github.com/orgs/acme/projects/1"},
+        loop_config=OuterLoopConfig(sync_mode=False),
+        inner_loop=InnerLoopCommandConfig(
+            command=["echo", "hello"],
+            env={"CODEX_CMD": "codex exec --json", "CUSTOM_VAR": "present"},
+            append_task_url=False,
+        ),
+    )
+    launcher = build_inner_loop_launcher(config)
+    captured: dict[str, object] = {}
+
+    def fake_popen(command, *, cwd, stdout, stderr, env):
+        captured["command"] = command
+        captured["cwd"] = cwd
+        captured["stdout"] = stdout
+        captured["stderr"] = stderr
+        captured["env"] = env
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("loops.outer_loop.subprocess.Popen", fake_popen)
+    monkeypatch.delenv("CODEX_CMD", raising=False)
+    monkeypatch.delenv("CUSTOM_VAR", raising=False)
+
+    launcher(run_dir, task)
+
+    runtime_config = read_inner_loop_runtime_config(run_dir)
+    assert runtime_config is not None
+    assert runtime_config.env == {
+        "CODEX_CMD": "codex exec --json",
+        "CUSTOM_VAR": "present",
+    }
+    assert (run_dir / INNER_LOOP_RUNTIME_CONFIG_FILE).stat().st_mode & 0o777 == 0o600
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["LOOPS_RUN_DIR"] == str(run_dir)
+    assert env["CODEX_CMD"] == "codex exec --json"
+    assert env["CUSTOM_VAR"] == "present"
+
+
+def test_build_inner_loop_launcher_does_not_inject_runtime_env_for_loops_inner_loop_command(
+    tmp_path: Path, monkeypatch
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    task = make_task("1", "Ship it")
+    config = LoopsConfig(
+        version=LATEST_LOOPS_CONFIG_VERSION,
+        task_provider_id="github_projects_v2",
+        task_provider_config={"url": "https://github.com/orgs/acme/projects/1"},
+        loop_config=OuterLoopConfig(sync_mode=False),
+        inner_loop=InnerLoopCommandConfig(
+            command=[sys.executable, "-m", "loops.inner_loop"],
+            env={"CODEX_CMD": "codex exec --json", "CUSTOM_VAR": "present"},
+            append_task_url=False,
+        ),
+    )
+    launcher = build_inner_loop_launcher(config)
+    captured: dict[str, object] = {}
+
+    def fake_popen(command, *, cwd, stdout, stderr, env):
+        captured["command"] = command
+        captured["cwd"] = cwd
+        captured["stdout"] = stdout
+        captured["stderr"] = stderr
+        captured["env"] = env
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("loops.outer_loop.subprocess.Popen", fake_popen)
+    monkeypatch.delenv("CODEX_CMD", raising=False)
+    monkeypatch.delenv("CUSTOM_VAR", raising=False)
+
+    launcher(run_dir, task)
+
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["LOOPS_RUN_DIR"] == str(run_dir)
+    assert "CODEX_CMD" not in env
+    assert "CUSTOM_VAR" not in env
 
 
 def test_run_once_sync_mode_streams_outer_logs_to_stdout(
@@ -691,68 +814,103 @@ def test_load_config_preserves_explicit_version(tmp_path: Path) -> None:
     assert config.version == LATEST_LOOPS_CONFIG_VERSION
 
 
-def test_run_once_writes_custom_comment_approval_config(tmp_path: Path) -> None:
+def test_build_inner_loop_launcher_writes_custom_comment_approval_settings(
+    tmp_path: Path, monkeypatch
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
     task = make_task("1", "Ship it")
-    provider = StubProvider([task])
-    loops_root = tmp_path / ".loops"
-
-    config = OuterLoopConfig(
-        task_ready_status="Ready",
-        emit_on_first_run=True,
-        approval_comment_usernames=("maintainer", "review-bot"),
-        approval_comment_pattern=r"^\s*/shipit\b",
+    config = LoopsConfig(
+        version=LATEST_LOOPS_CONFIG_VERSION,
+        task_provider_id="github_projects_v2",
+        task_provider_config={"url": "https://github.com/orgs/acme/projects/1"},
+        loop_config=OuterLoopConfig(
+            approval_comment_usernames=("maintainer", "review-bot"),
+            approval_comment_pattern=r"^\s*/shipit\b",
+        ),
+        inner_loop=InnerLoopCommandConfig(
+            command=["echo", "hello"],
+            append_task_url=False,
+        ),
     )
-    runner = OuterLoopRunner(
-        provider,
+    launcher = build_inner_loop_launcher(config)
+
+    def fake_popen(command, *, cwd, stdout, stderr, env):
+        del cwd, stdout, stderr, env
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("loops.outer_loop.subprocess.Popen", fake_popen)
+    launcher(run_dir, task)
+
+    runtime_config = read_inner_loop_runtime_config(run_dir)
+    assert runtime_config is not None
+    assert runtime_config.approval_comment_usernames == ("maintainer", "review-bot")
+    assert runtime_config.approval_comment_pattern == r"^\s*/shipit\b"
+    assert runtime_config.review_actor_usernames == ()
+
+
+def test_build_inner_loop_launcher_writes_default_comment_approval_settings(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    task = make_task("1", "Ship it")
+    config = LoopsConfig(
+        version=LATEST_LOOPS_CONFIG_VERSION,
+        task_provider_id="github_projects_v2",
+        task_provider_config={"url": "https://github.com/orgs/acme/projects/1"},
+        loop_config=OuterLoopConfig(),
+        inner_loop=InnerLoopCommandConfig(
+            command=["echo", "hello"],
+            append_task_url=False,
+        ),
+    )
+    launcher = build_inner_loop_launcher(config)
+
+    def fake_popen(command, *, cwd, stdout, stderr, env):
+        del cwd, stdout, stderr, env
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("loops.outer_loop.subprocess.Popen", fake_popen)
+    launcher(run_dir, task)
+
+    runtime_config = read_inner_loop_runtime_config(run_dir)
+    assert runtime_config is not None
+    assert runtime_config.approval_comment_usernames == ()
+    assert runtime_config.approval_comment_pattern == DEFAULT_APPROVAL_COMMENT_PATTERN
+    assert runtime_config.review_actor_usernames == ()
+
+
+def test_build_inner_loop_launcher_writes_review_actor_allowlist_to_runtime_config(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    task = make_task("1", "Ship it")
+    config = LoopsConfig(
+        version=LATEST_LOOPS_CONFIG_VERSION,
+        task_provider_id="github_projects_v2",
+        task_provider_config={"url": "https://github.com/orgs/acme/projects/1"},
+        loop_config=OuterLoopConfig(),
+        inner_loop=InnerLoopCommandConfig(
+            command=["echo", "hello"],
+            append_task_url=False,
+        ),
+    )
+    launcher = build_inner_loop_launcher(
         config,
-        loops_root=loops_root,
-        inner_loop_launcher=lambda _run_dir, _task: None,
+        review_actor_usernames=("Maintainer", "review-bot", "maintainer"),
     )
 
-    run_dirs = runner.run_once()
-    assert len(run_dirs) == 1
-    payload = json.loads((run_dirs[0] / INNER_LOOP_APPROVAL_CONFIG_FILE).read_text())
-    assert payload == {
-        "approval_comment_pattern": r"^\s*/shipit\b",
-        "approval_comment_usernames": ["maintainer", "review-bot"],
-        "review_actor_usernames": [],
-    }
+    def fake_popen(command, *, cwd, stdout, stderr, env):
+        del cwd, stdout, stderr, env
+        return subprocess.CompletedProcess(command, 0)
 
+    monkeypatch.setattr("loops.outer_loop.subprocess.Popen", fake_popen)
+    launcher(run_dir, task)
 
-def test_run_once_writes_default_comment_approval_config(tmp_path: Path) -> None:
-    task = make_task("1", "Ship it")
-    provider = StubProvider([task])
-    loops_root = tmp_path / ".loops"
-    runner = OuterLoopRunner(
-        provider,
-        OuterLoopConfig(task_ready_status="Ready", emit_on_first_run=True),
-        loops_root=loops_root,
-        inner_loop_launcher=lambda _run_dir, _task: None,
-    )
-
-    run_dirs = runner.run_once()
-    assert len(run_dirs) == 1
-    payload = json.loads((run_dirs[0] / INNER_LOOP_APPROVAL_CONFIG_FILE).read_text())
-    assert payload == {
-        "approval_comment_pattern": DEFAULT_APPROVAL_COMMENT_PATTERN,
-        "approval_comment_usernames": [],
-        "review_actor_usernames": [],
-    }
-
-
-def test_run_once_writes_provider_review_actor_allowlist(tmp_path: Path) -> None:
-    task = make_task("1", "Ship it")
-    provider = StubProvider([task])
-    provider.review_actor_allowlist = ("Maintainer", "review-bot", "maintainer")
-    loops_root = tmp_path / ".loops"
-    runner = OuterLoopRunner(
-        provider,
-        OuterLoopConfig(task_ready_status="Ready", emit_on_first_run=True),
-        loops_root=loops_root,
-        inner_loop_launcher=lambda _run_dir, _task: None,
-    )
-
-    run_dirs = runner.run_once()
-    assert len(run_dirs) == 1
-    payload = json.loads((run_dirs[0] / INNER_LOOP_APPROVAL_CONFIG_FILE).read_text())
-    assert payload["review_actor_usernames"] == ["maintainer", "review-bot"]
+    runtime_config = read_inner_loop_runtime_config(run_dir)
+    assert runtime_config is not None
+    assert runtime_config.review_actor_usernames == ("maintainer", "review-bot")

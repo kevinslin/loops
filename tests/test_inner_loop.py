@@ -19,6 +19,12 @@ from loops.approval_config import (
     INNER_LOOP_APPROVAL_CONFIG_FILE,
 )
 from loops.handoff_handlers import HandoffResult
+from loops.inner_loop_runtime_config import (
+    INNER_LOOP_RUNTIME_CONFIG_FILE,
+    InnerLoopRuntimeConfig,
+    read_inner_loop_runtime_config,
+    write_inner_loop_runtime_config,
+)
 from loops import inner_loop as inner_loop_module
 from loops.inner_loop import run_inner_loop
 from loops import cli as cli_module
@@ -164,6 +170,7 @@ def _runtime_context(
         run_json_path=run_dir / "run.json",
         run_log=run_dir / "run.log",
         agent_log=run_dir / "agent.log",
+        environ=os.environ.copy(),
         command=["codex", "exec"],
         base_prompt=None,
         user_handoff_handler=user_handoff_handler,
@@ -1706,6 +1713,341 @@ def test_inner_loop_gh_comment_handler_requires_github_provider(
         )
 
 
+def test_inner_loop_reads_handoff_handler_from_runtime_config(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        needs_user_input=True,
+        needs_user_input_payload={"message": "Need manual input"},
+    )
+    write_inner_loop_runtime_config(
+        run_dir,
+        InnerLoopRuntimeConfig(handoff_handler="gh_comment_handler"),
+    )
+
+    with pytest.raises(ValueError, match="requires provider_id='github_projects_v2'"):
+        run_inner_loop(
+            run_dir,
+            sleep_fn=lambda _seconds: None,
+            max_iterations=1,
+        )
+
+
+def test_inner_loop_runtime_config_omitted_runtime_keys_are_none(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / INNER_LOOP_RUNTIME_CONFIG_FILE).write_text("{}")
+
+    runtime_config = read_inner_loop_runtime_config(run_dir)
+
+    assert runtime_config is not None
+    assert runtime_config.handoff_handler is None
+    assert runtime_config.auto_approve_enabled is None
+    assert runtime_config.stream_logs_stdout is None
+
+
+def test_inner_loop_runtime_config_omitted_handoff_uses_env_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        needs_user_input=True,
+        needs_user_input_payload={"message": "Need manual input"},
+    )
+    (run_dir / INNER_LOOP_RUNTIME_CONFIG_FILE).write_text("{}")
+    monkeypatch.setenv("LOOPS_HANDOFF_HANDLER", "gh_comment_handler")
+
+    with pytest.raises(ValueError, match="requires provider_id='github_projects_v2'"):
+        run_inner_loop(
+            run_dir,
+            sleep_fn=lambda _seconds: None,
+            max_iterations=1,
+        )
+
+
+def test_inner_loop_runtime_config_codex_cmd_overrides_process_env(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(run_dir)
+
+    stub = tmp_path / "codex"
+    _write_codex_cli_stub(stub)
+    counter_path = tmp_path / "counter.txt"
+    prompt_log_path = tmp_path / "prompts.log"
+    args_log_path = tmp_path / "args.log"
+    write_inner_loop_runtime_config(
+        run_dir,
+        InnerLoopRuntimeConfig(
+            env={
+                "CODEX_CMD": f"{shlex.quote(str(stub))} exec",
+                "STUB_COUNTER_PATH": str(counter_path),
+                "STUB_PROMPT_LOG": str(prompt_log_path),
+                "STUB_ARGS_LOG": str(args_log_path),
+            },
+        ),
+    )
+    monkeypatch.setenv(
+        "CODEX_CMD",
+        f"{shlex.quote(sys.executable)} -c \"import sys; sys.exit(13)\"",
+    )
+
+    poll_calls = {"count": 0}
+
+    def pr_status_fetcher(pr: RunPR) -> RunPR:
+        poll_calls["count"] += 1
+        if poll_calls["count"] == 1:
+            return RunPR(
+                url=pr.url,
+                number=pr.number,
+                repo=pr.repo,
+                review_status="approved",
+                ci_status="success",
+                merged_at=None,
+                last_checked_at="2026-02-09T00:00:01Z",
+            )
+        return RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="approved",
+            ci_status="success",
+            merged_at="2026-02-09T00:00:02Z",
+            last_checked_at="2026-02-09T00:00:02Z",
+        )
+
+    result = run_inner_loop(
+        run_dir,
+        pr_status_fetcher=pr_status_fetcher,
+        sleep_fn=lambda _seconds: None,
+        max_iterations=20,
+    )
+
+    assert result.last_state == "DONE"
+    assert result.pr is not None
+    assert result.pr.merged_at == "2026-02-09T00:00:02Z"
+    assert counter_path.read_text() == "2"
+    args = [line.strip() for line in args_log_path.read_text().splitlines() if line]
+    assert args == ["exec", "exec resume session-1"]
+
+
+def test_inner_loop_raises_on_malformed_runtime_config(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(run_dir)
+    (run_dir / INNER_LOOP_RUNTIME_CONFIG_FILE).write_text("{invalid-json")
+
+    with pytest.raises(json.JSONDecodeError):
+        run_inner_loop(
+            run_dir,
+            sleep_fn=lambda _seconds: None,
+            max_iterations=1,
+        )
+
+    assert "failed to load run runtime config; aborting" in (run_dir / "run.log").read_text()
+
+
+def test_inner_loop_runtime_config_log_streaming_does_not_mutate_process_env(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(run_dir)
+    write_inner_loop_runtime_config(
+        run_dir,
+        InnerLoopRuntimeConfig(stream_logs_stdout=False),
+    )
+    monkeypatch.setenv("LOOPS_STREAM_LOGS_STDOUT", "1")
+    monkeypatch.setattr(
+        inner_loop_module,
+        "_run_codex_turn",
+        lambda **kwargs: kwargs["run_record"],
+    )
+
+    run_inner_loop(
+        run_dir,
+        sleep_fn=lambda _seconds: None,
+        max_iterations=1,
+    )
+
+    assert os.environ.get("LOOPS_STREAM_LOGS_STDOUT") == "1"
+
+
+def test_inner_loop_runtime_config_omitted_stream_logs_uses_env_fallback(
+    tmp_path: Path,
+    monkeypatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(run_dir)
+    (run_dir / INNER_LOOP_RUNTIME_CONFIG_FILE).write_text("{}")
+    monkeypatch.setenv("LOOPS_STREAM_LOGS_STDOUT", "1")
+    monkeypatch.setattr(
+        inner_loop_module,
+        "_run_codex_turn",
+        lambda **kwargs: kwargs["run_record"],
+    )
+
+    run_inner_loop(
+        run_dir,
+        sleep_fn=lambda _seconds: None,
+        max_iterations=1,
+    )
+
+    captured = capsys.readouterr()
+    assert "[loops] iteration 1 enter: state=RUNNING" in captured.out
+
+
+def test_inner_loop_runtime_config_omitted_auto_approve_uses_env_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        pr=RunPR(
+            url="https://github.com/acme/api/pull/42",
+            number=42,
+            repo="acme/api",
+            review_status="open",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:00Z",
+        ),
+    )
+    (run_dir / INNER_LOOP_RUNTIME_CONFIG_FILE).write_text("{}")
+    monkeypatch.setenv("LOOPS_AUTO_APPROVE_ENABLED", "1")
+
+    def pr_status_fetcher(pr: RunPR) -> RunPR:
+        return RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="open",
+            ci_status="success",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:01Z",
+        )
+
+    eval_calls = {"count": 0}
+
+    def fake_run_auto_approve_eval(*, run_record, runtime, control):
+        eval_calls["count"] += 1
+        del control
+        return write_run_record(
+            runtime.run_json_path,
+            replace(
+                run_record,
+                auto_approve=RunAutoApprove(
+                    verdict="REJECT",
+                    impact=2,
+                    risk=4,
+                    size=2,
+                    judged_at="2026-02-09T00:00:01Z",
+                    summary="Risk remains too high for auto-merge.",
+                ),
+            ),
+            auto_approve_enabled=runtime.auto_approve_enabled,
+        )
+
+    monkeypatch.setattr(inner_loop_module, "_run_auto_approve_eval", fake_run_auto_approve_eval)
+
+    result = run_inner_loop(
+        run_dir,
+        pr_status_fetcher=pr_status_fetcher,
+        user_handoff_handler=lambda _payload: HandoffResult.waiting(),
+        sleep_fn=lambda _seconds: None,
+        max_iterations=8,
+        max_idle_polls=2,
+    )
+
+    assert result.last_state == "NEEDS_INPUT"
+    assert result.auto_approve is not None
+    assert result.auto_approve.verdict == "REJECT"
+    assert eval_calls["count"] == 1
+
+
+def test_inner_loop_runtime_config_keeps_process_env_codex_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(run_dir)
+
+    stub = tmp_path / "codex"
+    _write_codex_cli_stub(stub)
+    counter_path = tmp_path / "counter.txt"
+    prompt_log_path = tmp_path / "prompts.log"
+    args_log_path = tmp_path / "args.log"
+    write_inner_loop_runtime_config(
+        run_dir,
+        InnerLoopRuntimeConfig(
+            env={
+                "STUB_COUNTER_PATH": str(counter_path),
+                "STUB_PROMPT_LOG": str(prompt_log_path),
+                "STUB_ARGS_LOG": str(args_log_path),
+            },
+        ),
+    )
+    monkeypatch.setenv(
+        "CODEX_CMD",
+        f"{shlex.quote(str(stub))} exec",
+    )
+
+    poll_calls = {"count": 0}
+
+    def pr_status_fetcher(pr: RunPR) -> RunPR:
+        poll_calls["count"] += 1
+        if poll_calls["count"] == 1:
+            return RunPR(
+                url=pr.url,
+                number=pr.number,
+                repo=pr.repo,
+                review_status="approved",
+                ci_status="success",
+                merged_at=None,
+                last_checked_at="2026-02-09T00:00:01Z",
+            )
+        return RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="approved",
+            ci_status="success",
+            merged_at="2026-02-09T00:00:02Z",
+            last_checked_at="2026-02-09T00:00:02Z",
+        )
+
+    result = run_inner_loop(
+        run_dir,
+        pr_status_fetcher=pr_status_fetcher,
+        sleep_fn=lambda _seconds: None,
+        max_iterations=20,
+    )
+
+    assert result.last_state == "DONE"
+    assert result.pr is not None
+    assert result.pr.merged_at == "2026-02-09T00:00:02Z"
+    assert counter_path.read_text() == "2"
+    args = [line.strip() for line in args_log_path.read_text().splitlines() if line]
+    assert args == ["exec", "exec resume session-1"]
+
+
 def test_build_codex_turn_command_adds_resume_for_codex_exec() -> None:
     session = inner_loop_module.CodexSession(id="session-123")
     command, strategy = inner_loop_module._build_codex_turn_command(
@@ -1735,7 +2077,14 @@ def test_invoke_codex_retries_without_resume_on_resume_failure(
 ) -> None:
     calls: list[list[str]] = []
 
-    def fake_run_codex(command: list[str], _prompt: str, _agent_log: Path) -> tuple[str, int]:
+    def fake_run_codex(
+        command: list[str],
+        _prompt: str,
+        _agent_log: Path,
+        *,
+        environ: dict[str, str],
+    ) -> tuple[str, int]:
+        del environ
         calls.append(command)
         if len(calls) == 1:
             return "resume failed", 17
@@ -1753,6 +2102,7 @@ def test_invoke_codex_retries_without_resume_on_resume_failure(
         run_log=tmp_path / "run.log",
         codex_session=inner_loop_module.CodexSession(id="stale-session"),
         turn_label="codex turn",
+        environ=os.environ.copy(),
     )
 
     assert resume_fallback_used is True
@@ -1804,8 +2154,9 @@ def test_run_codex_turn_sets_needs_input_from_trailing_state_marker(
         run_log: Path,
         codex_session: inner_loop_module.CodexSession | None,
         turn_label: str,
+        environ: dict[str, str],
     ) -> tuple[str, int, bool]:
-        del base_command, prompt, agent_log, run_log, codex_session, turn_label
+        del base_command, prompt, agent_log, run_log, codex_session, turn_label, environ
         return (
             json.dumps({"session_id": "session-2"})
             + "\nOpened PR https://github.com/acme/api/pull/42\n<state>NEEDS_INPUT</state>\n",
@@ -1821,6 +2172,7 @@ def test_run_codex_turn_sets_needs_input_from_trailing_state_marker(
         agent_log=run_dir / "agent.log",
         run_record=read_run_record(run_json_path),
         command=["codex", "exec"],
+        environ=os.environ.copy(),
         base_prompt=None,
         review_feedback=False,
     )
@@ -1855,8 +2207,9 @@ def test_run_codex_turn_clears_stale_session_after_failed_resume_fallback(
         run_log: Path,
         codex_session: inner_loop_module.CodexSession | None,
         turn_label: str,
+        environ: dict[str, str],
     ) -> tuple[str, int, bool]:
-        del base_command, prompt, agent_log, run_log, codex_session, turn_label
+        del base_command, prompt, agent_log, run_log, codex_session, turn_label, environ
         return "resume failed\nfallback failed\n", 17, True
 
     monkeypatch.setattr(inner_loop_module, "_invoke_codex", fake_invoke_codex)
@@ -1867,6 +2220,7 @@ def test_run_codex_turn_clears_stale_session_after_failed_resume_fallback(
         agent_log=run_dir / "agent.log",
         run_record=read_run_record(run_json_path),
         command=["codex", "exec"],
+        environ=os.environ.copy(),
         base_prompt=None,
         review_feedback=False,
     )
@@ -1897,7 +2251,12 @@ def test_run_codex_streams_output_to_agent_log_while_running(tmp_path) -> None:
     result: dict[str, tuple[str, int]] = {}
 
     def invoke() -> None:
-        result["value"] = inner_loop_module._run_codex(command, "prompt", agent_log)
+        result["value"] = inner_loop_module._run_codex(
+            command,
+            "prompt",
+            agent_log,
+            environ=os.environ.copy(),
+        )
 
     worker = threading.Thread(target=invoke)
     worker.start()

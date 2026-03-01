@@ -76,7 +76,7 @@ class OuterLoopRunner
 - Emission gate is `emit_on_first_run || force || !first_run`.
 - Dedupe gate skips already-seen tasks unless `force=true`.
 - Launch gate requires `inner_loop_launcher` whenever `emit_tasks` is non-empty.
-- Run materialization order is fixed: create run directory, log `run_once.schedule` with `run_dir`, write `run.json`, write approval config, touch logs, launch.
+- Run materialization order is fixed: create run directory, log `run_once.schedule` with `run_dir`, write `run.json`, touch logs, launch (launcher writes `inner_loop_runtime_config.json`).
 - For GitHub Projects V2, poll ordering is oldest-first by task `created_at`; outer loop preserves provider order when scheduling.
 
 ## Sequence diagram
@@ -97,7 +97,7 @@ sequenceDiagram
     loop each emitted task
         O->>FS: create run_dir
         O->>FS: append oloops.log run_once.schedule(run_dir)
-        O->>FS: write run.json + approval config + run/agent logs
+        O->>FS: write run.json + run/agent logs
         O->>L: launch(run_dir, task)
     end
     O->>FS: write outer_state.json + cycle summary log
@@ -114,9 +114,8 @@ None identified.
 | Name | Where Read | Default | Effect on Flow |
 |---|---|---|---|
 | `GITHUB_TOKEN` / `GH_TOKEN` | `loops/providers/github_projects_v2.py:220` | none | Required by GitHub provider polling when `task_provider_config.github_token` is not set. |
-| Process env passthrough (`os.environ.copy()`) | `loops/outer_loop.py:298`, `loops/providers/github_projects_v2.py:236` | N/A | Baseline environment passed to inner-loop child and `gh api graphql` subprocesses. |
-| `LOOPS_HANDOFF_HANDLER` (child env) | set in `loops/outer_loop.py` launcher | `stdin_handler` via config default | Selects built-in inner-loop NEEDS_INPUT handoff strategy for child process. |
-| `LOOPS_STREAM_LOGS_STDOUT` (child env) | set in `loops/outer_loop.py` launcher when `sync_mode=true` | unset | Enables inner-loop `run.log` mirroring to stdout for foreground runs. |
+| Process env passthrough (`os.environ.copy()`) | `loops/outer_loop.py`, `loops/providers/github_projects_v2.py:236` | N/A | Baseline environment passed to inner-loop child and `gh api graphql` subprocesses. |
+| `LOOPS_RUN_DIR` (child env) | set in `loops/outer_loop.py` launcher | required by inner-loop CLI/module fallback path | Selects the per-run directory to execute when child command does not pass `--run-dir`. |
 
 ### Other User-Settable Inputs
 
@@ -127,8 +126,8 @@ None identified.
 | `--limit` | CLI option | `loops/cli.py:51`, forwarded to provider poll | Caps tasks returned/considered in a cycle (for `github_projects_v2`, after oldest-first ordering). |
 | `--force` | CLI option | `loops/cli.py:57`, override at `loops/cli.py:198` | Reprocesses tasks even if previously seen in outer state. |
 | `task_provider_id` / `task_provider_config.*` | Config file fields | `loops/outer_loop.py:243`, `loops/outer_loop.py:274` | Chooses task provider and provider-specific polling behavior. |
-| `loop_config.*` | Config file fields | `loops/outer_loop.py:394` | Controls poll interval, ready filter, sync mode, emit-on-first-run, force, parallel launch behavior, comment-approval settings, and handoff handler propagated to inner loop. |
-| `inner_loop.*` | Config file fields | `loops/outer_loop.py:44`, `loops/outer_loop.py:283` | Defines launch command, cwd, env injection, and URL appending for child processes. |
+| `loop_config.*` | Config file fields | `loops/outer_loop.py:394` | Controls poll interval, ready filter, sync mode, emit-on-first-run, force, parallel launch behavior, and run-scoped inner-loop runtime settings. |
+| `inner_loop.*` | Config file fields | `loops/outer_loop.py:44`, `loops/outer_loop.py:283` | Defines launch command, cwd, run-scoped runtime env payload, conditional env merge for non-`loops.inner_loop` commands, and URL appending for child processes. |
 
 ## Flow
 
@@ -148,9 +147,7 @@ None identified.
 | `ready_tasks` | Created from provider poll filtered by `_is_ready` (`loops/outer_loop.py:164`) | Snapshot per cycle in memory | Used to build emit set and log counts (`loops/outer_loop.py:172`, `loops/outer_loop.py:206`) | Yes |
 | `emit_tasks` | Built in cycle loop (`loops/outer_loop.py:168`, `loops/outer_loop.py:179`) | Snapshot before launch (`loops/outer_loop.py:183`) | Drives run-dir creation + launcher dispatch (`loops/outer_loop.py:184`, `loops/outer_loop.py:199`) | Yes |
 | `run.json` initial state | Written by `write_run_record` (`loops/outer_loop.py:194`) | Materialized before launcher call | Consumed by inner loop as authoritative starting state | Yes |
-| `inner_loop_approval_config.json` | Written in run dir from `loop_config.approval_comment_*` plus provider review-actor allowlist before launch | Materialized before launcher call | Consumed by inner loop PR poller config loader | Yes |
-| `LOOPS_HANDOFF_HANDLER` child env | Injected from `loop_config.handoff_handler` during launch | Snapshot at launch invocation | Inner loop built-in handoff resolver chooses handler | Yes |
-| `LOOPS_STREAM_LOGS_STDOUT` child env | Injected as `1` during sync-mode launch | Snapshot at launch invocation | Inner-loop log appender mirrors `run.log` lines to stdout | Yes |
+| `inner_loop_runtime_config.json` | Written in launcher from `loop_config` + `inner_loop.env` + provider review-actor allowlist | Materialized before child process execution | Consumed by inner loop for handoff handler, auto-approve flag, sync-mode log mirroring, comment-approval settings, review-actor allowlist, and runtime env map | Yes |
 | `oloops.log` cycle summary | Appended in finally block (`loops/outer_loop.py:206`, formatter at `loops/outer_loop.py:493`) | N/A | Used for operational summaries (`ready`/`processed`) | Yes |
 
 ### Outer-loop runtime invocation
@@ -276,13 +273,12 @@ class OuterLoopRunner
 ### Child-launch behavior and handoff contract
 
 - `build_inner_loop_launcher` builds a closure that:
-  - Injects run/task metadata env vars (`LOOPS_RUN_DIR`, `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`) (`loops/outer_loop.py:299`).
-  - Injects configured handoff strategy (`LOOPS_HANDOFF_HANDLER`) from `loop_config.handoff_handler`.
-  - In `sync_mode=true`, injects `LOOPS_STREAM_LOGS_STDOUT=1` so inner-loop `run.log` writes are mirrored to stdout.
-  - Merges configured `inner_loop.env` (`loops/outer_loop.py:304`).
+  - Persists run-scoped runtime settings to `inner_loop_runtime_config.json` (handoff handler, auto-approve flag, sync-mode log mirroring flag, and optional `inner_loop.env` payload).
+  - Injects `LOOPS_RUN_DIR` into child env for run-dir resolution compatibility.
+  - For non-`loops.inner_loop` commands, merges `inner_loop.env` into child env for backward-compatible custom wrapper execution.
   - Appends task URL to command when configured (`loops/outer_loop.py:307`).
   - Uses `subprocess.run` in `sync_mode=true` (`loops/outer_loop.py:310`) or detached `subprocess.Popen` writing to `run.log` (`loops/outer_loop.py:319`).
-- Approval-comment settings and provider review-actor allowlist are persisted per run as `inner_loop_approval_config.json`, not injected via env.
+- Approval-comment settings and provider review-actor allowlist are persisted per run inside `inner_loop_runtime_config.json`, not injected via env.
 
 ### Provider polling behavior (GitHub Projects V2)
 
@@ -330,7 +326,7 @@ class OuterLoopRunner
         v
 +-------------------------------+
 | inner-loop launcher closure   |
-| sets LOOPS_TASK_* + RUN_DIR   |
+| sets LOOPS_RUN_DIR only       |
 | run(sync) or popen(detached)  |
 +-------------------------------+
         |
@@ -384,10 +380,10 @@ Q: How is `loops_root` chosen?
 A: If config is inside `.loops/`, that directory is used; otherwise `.loops/` is created adjacent to config (`loops/cli.py:275`).
 
 Q: How do review polling allowlists reach inner loop?
-A: `loop_config` approval settings and GitHub provider review-actor allowlist (`task_provider_config.allowlist`) are written into each run directory as `inner_loop_approval_config.json`, which inner loop reads at startup.
+A: `loop_config` approval settings and GitHub provider review-actor allowlist (`task_provider_config.allowlist`) are written into each run directory as fields in `inner_loop_runtime_config.json`, which inner loop reads at startup.
 
 Q: How does handoff handler selection reach inner loop?
-A: Outer loop injects `LOOPS_HANDOFF_HANDLER` from `loop_config.handoff_handler` into each launched inner-loop process.
+A: Outer loop writes `loop_config.handoff_handler` into run-scoped `inner_loop_runtime_config.json`, which inner loop reads at startup.
 
 Q: What happens if I press `Ctrl+C` during a sync-mode inner-loop run?
 A: Loops prints a resume command for the interrupted run directory so you can continue with `loops inner-loop --run-dir <path>`.
@@ -397,6 +393,7 @@ A: Loops prints a resume command for the interrupted run directory so you can co
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+- 2026-03-01: Replaced launcher env-based inner-loop config transport with run-scoped `inner_loop_runtime_config.json`; outer loop now injects only `LOOPS_RUN_DIR` for `loops.inner_loop` launches while preserving `inner_loop.env` merge for non-`loops.inner_loop` commands. (019caae6-1189-7d83-a9cd-1665818fba36)
 - 2026-03-01: Renamed outer config schema references to `task_provider_id`/`task_provider_config` (v2) and aligned provider/filter docs accordingly. (019caa8b-0807-7603-a519-4a6be2b8e53c)
 - 2026-03-01: Documented sync-mode `Ctrl+C` resume instructions for interrupted foreground launches. (019caa47-6d09-7cf1-a25a-83245c71f987)
 - 2026-02-28: Removed configurable log timestamp precision; log timestamps are local no-timezone format with fixed fractional precision. (019ca742-f800-78a3-a5f3-11d807a04164)
@@ -408,4 +405,4 @@ A: Loops prints a resume command for the interrupted run directory so you can co
 - 2026-02-19: Documented `loop_config.handoff_handler` and `LOOPS_HANDOFF_HANDLER` propagation into inner-loop runtime. (019c747a-a05e-7be1-b09d-66c5debb37c4)
 - 2026-02-28: Added schedule-log coverage noting per-task `run_once.schedule` entries include the created run directory path. (019ca550-9ae5-7393-b5e6-e5e68e6c959d)
 - 2026-02-28: Documented sync-mode stdout log mirroring for outer-loop logs and `LOOPS_STREAM_LOGS_STDOUT` propagation into inner-loop runs. (019ca579-eb69-7883-a6a5-ff48348ca2ab)
-- 2026-03-01: Documented provider-scoped review-actor allowlist propagation into run-scoped `inner_loop_approval_config.json`. (019caa52-baf6-7913-b365-3c89049a5716)
+- 2026-03-01: Documented provider-scoped review-actor allowlist propagation into run-scoped runtime config fields in `inner_loop_runtime_config.json`. (019caa52-baf6-7913-b365-3c89049a5716)

@@ -345,8 +345,13 @@ def test_run_outer_loop_task_url_implies_run_once_and_force(
         )
         return provider
 
-    def fake_build_inner_loop_launcher(config: LoopsConfig) -> object:
+    def fake_build_inner_loop_launcher(
+        config: LoopsConfig,
+        *,
+        review_actor_usernames: tuple[str, ...] = (),
+    ) -> object:
         captured["launcher_sync_mode"] = config.loop_config.sync_mode
+        captured["review_actor_usernames"] = review_actor_usernames
         return launcher
 
     monkeypatch.setattr(cli_module, "load_config", lambda _path: loaded)
@@ -376,6 +381,7 @@ def test_run_outer_loop_task_url_implies_run_once_and_force(
     assert captured["inner_loop_launcher"] is launcher
     assert captured["run_once_limit"] == 7
     assert captured["run_once_task_url"] == "https://github.com/acme/api/issues/9"
+    assert captured["review_actor_usernames"] == ()
     assert "run_forever_limit" not in captured
 
 
@@ -412,7 +418,11 @@ def test_run_outer_loop_sync_mode_interrupt_prints_run_resume_command(
 
     monkeypatch.setattr(cli_module, "load_config", lambda _path: loaded)
     monkeypatch.setattr(cli_module, "build_provider", lambda _config: object())
-    monkeypatch.setattr(cli_module, "build_inner_loop_launcher", lambda _config: object())
+    monkeypatch.setattr(
+        cli_module,
+        "build_inner_loop_launcher",
+        lambda _config, **_kwargs: object(),
+    )
     monkeypatch.setattr(cli_module, "OuterLoopRunner", FakeRunner)
 
     with pytest.raises(click.Abort):
@@ -461,7 +471,11 @@ def test_run_outer_loop_non_launcher_interrupt_does_not_print_resume_hint(
 
     monkeypatch.setattr(cli_module, "load_config", lambda _path: loaded)
     monkeypatch.setattr(cli_module, "build_provider", lambda _config: object())
-    monkeypatch.setattr(cli_module, "build_inner_loop_launcher", lambda _config: object())
+    monkeypatch.setattr(
+        cli_module,
+        "build_inner_loop_launcher",
+        lambda _config, **_kwargs: object(),
+    )
     monkeypatch.setattr(cli_module, "OuterLoopRunner", FakeRunner)
 
     with pytest.raises(click.Abort):
