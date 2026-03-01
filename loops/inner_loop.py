@@ -262,7 +262,10 @@ def run_inner_loop(
             allow_env_fallback=True,
             environ=runtime_environ,
         )
-        comment_approval = _load_comment_approval_settings(run_dir)
+        comment_approval = _load_comment_approval_settings(
+            run_dir,
+            runtime_config=runtime_config,
+        )
         if comment_approval.config_load_error is not None:
             append_log(
                 run_log,
@@ -1860,13 +1863,24 @@ def _ci_status_from_rollup(payload: dict[str, Any]) -> str:
     return "success"
 
 
-def _load_comment_approval_settings(run_dir: Path) -> CommentApprovalSettings:
+def _load_comment_approval_settings(
+    run_dir: Path,
+    *,
+    runtime_config: InnerLoopRuntimeConfig | None = None,
+) -> CommentApprovalSettings:
     config_load_error: str | None = None
-    try:
-        config = read_inner_loop_approval_config(run_dir)
-    except Exception as exc:
-        config_load_error = str(exc)
-        config = InnerLoopApprovalConfig()
+    if runtime_config is not None:
+        config = InnerLoopApprovalConfig(
+            approval_comment_usernames=runtime_config.approval_comment_usernames,
+            approval_comment_pattern=runtime_config.approval_comment_pattern,
+            review_actor_usernames=runtime_config.review_actor_usernames,
+        )
+    else:
+        try:
+            config = read_inner_loop_approval_config(run_dir)
+        except Exception as exc:
+            config_load_error = str(exc)
+            config = InnerLoopApprovalConfig()
     allowed_usernames = config.approval_comment_usernames
     pattern_text = config.approval_comment_pattern or DEFAULT_APPROVAL_COMMENT_PATTERN
     used_default_pattern = False

@@ -127,8 +127,8 @@ None identified.
 |---|---|---|---|
 | `--run-dir` | CLI option | `loops/cli.py:77`, `loops/inner_loop.py:982` | Overrides `LOOPS_RUN_DIR` for the target run. |
 | `--prompt-file` | CLI option | `loops/cli.py:84`, `loops/inner_loop.py:489` | Overrides prompt-file env fallbacks and changes all Codex prompts for the run. |
-| `loop_config.approval_comment_usernames` / `loop_config.approval_comment_pattern` | Config file fields (outer loop) | `loops/outer_loop.py` -> written to `inner_loop_approval_config.json` | Controls comment-based approval override behavior in review polling. |
-| `task_provider_config.allowlist` (GitHub provider) | Config file field (outer loop/provider) | `loops/outer_loop.py` -> written to `inner_loop_approval_config.json` | Filters review-phase PR comments/reviews to allowlisted actors during polling. |
+| `loop_config.approval_comment_usernames` / `loop_config.approval_comment_pattern` | Config file fields (outer loop) | `loops/outer_loop.py` -> written to `inner_loop_runtime_config.json` | Controls comment-based approval override behavior in review polling. |
+| `task_provider_config.allowlist` (GitHub provider) | Config file field (outer loop/provider) | `loops/cli.py` + `loops/outer_loop.py` -> resolved and written to `inner_loop_runtime_config.json` as `review_actor_usernames` | Filters review-phase PR comments/reviews to allowlisted actors during polling. |
 | `loop_config.handoff_handler`, `loop_config.auto_approve_enabled`, `loop_config.sync_mode`, `inner_loop.env` | Config file fields (outer loop) | `loops/outer_loop.py` -> written to `inner_loop_runtime_config.json` | Controls runtime handoff strategy, auto-approve gate, log mirroring, and optional run-scoped env payload for inner-loop subprocess behavior. |
 | Signal payload (`--message`, `--context`) | Signal queue input | `loops/state_signal.py:49`, consumed by `loops/inner_loop.py:941` | Causes state transition to `NEEDS_INPUT` with structured handoff payload. |
 | `run.json` content (`pr`, `needs_user_input`, `needs_user_input_payload`) | Persisted state | `loops/run_record.py:183`, `loops/run_record.py:139` | Determines the branch selected by each loop iteration. |
@@ -146,7 +146,7 @@ None identified.
 
 | value | write step | snapshot step | read step | ordering valid? |
 |---|---|---|---|---|
-| comment-approval settings (`usernames`, `pattern`) plus review-actor allowlist (`review_actor_usernames`) | Written by outer loop to `inner_loop_approval_config.json` | Loaded once at run start before default PR poller closure creation | Used on each `WAITING_ON_REVIEW` poll to evaluate comment-based approval and review-feedback filtering | Yes |
+| comment-approval settings (`usernames`, `pattern`) plus review-actor allowlist (`review_actor_usernames`) | Written by outer loop to `inner_loop_runtime_config.json` | Loaded once at run start before default PR poller closure creation | Used on each `WAITING_ON_REVIEW` poll to evaluate comment-based approval and review-feedback filtering | Yes |
 | runtime settings (`handoff_handler`, `auto_approve_enabled`, `stream_logs_stdout`, optional `env`) | Written by outer loop launcher to `inner_loop_runtime_config.json` | Loaded once at run start before handoff/codex resolution | Used to configure handoff behavior, auto-approve gate, and optional runtime env overrides | Yes |
 | `needs_user_input` | Written in `_run_codex_turn`, `_force_needs_input`, signal apply path (`loops/inner_loop.py:601`, `loops/inner_loop.py:857`, `loops/inner_loop.py:941`) | Reloaded at top of each iteration (`loops/inner_loop.py:87`) | Used by `derive_run_state` (`loops/inner_loop.py:89`, `loops/run_record.py:139`) | Yes |
 | `pr.review_status` | Updated from Codex output or PR poll (`loops/inner_loop.py:635`, `loops/inner_loop.py:259`, `loops/inner_loop.py:392`) | Reloaded each iteration (`loops/inner_loop.py:87`) | Branches into `WAITING_ON_REVIEW`/`PR_APPROVED` (`loops/inner_loop.py:208`, `loops/inner_loop.py:325`) | Yes |
@@ -162,7 +162,7 @@ None identified.
 ```ts
 function runInnerLoop(runDir: Path, opts: Options): RunRecord {
   initializePathsAndDefaults(runDir, opts)
-  commentApproval = loadCommentApprovalSettings(runDir) // reads inner_loop_approval_config.json
+  commentApproval = loadCommentApprovalSettings(runDir) // reads inner_loop_runtime_config.json (legacy approval file fallback)
   if (commentApproval.configLoadError) {
     log("[loops] failed to load run approval config; using defaults")
   }
@@ -214,7 +214,7 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
   - Sets `needs_user_input=true` on non-zero exits, on trailing `NEEDS_INPUT` state markers, or on successful turns with no PR detected.
 
 - Review polling behavior (`loops/inner_loop.py:767`):
-  - Loads comment-approval settings once per run from `inner_loop_approval_config.json` and compiles approval pattern with safe fallback.
+  - Loads comment-approval settings once per run from `inner_loop_runtime_config.json` (legacy approval-file fallback) and compiles approval pattern with safe fallback.
   - When provider review-actor allowlist is configured, filters `latestReviews`, `reviews`, and `comments` to allowlisted actors before deriving review status/feedback.
   - Calls `gh pr view ... --json reviewDecision,mergedAt,url,number,latestReviews,reviews,comments`.
   - Maps decision into `review_status`, captures latest relevant review timestamp, and may override to approved when the newest allowlisted approval signal (plain PR comment or `COMMENTED`/`APPROVED` review body matching pattern) is newer than latest `CHANGES_REQUESTED` review.

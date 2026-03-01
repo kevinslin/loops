@@ -19,9 +19,7 @@ from pydantic import ValidationError
 
 from loops.approval_config import (
     DEFAULT_APPROVAL_COMMENT_PATTERN,
-    build_inner_loop_approval_config,
     normalize_approval_usernames,
-    write_inner_loop_approval_config,
 )
 from loops.handoff_handlers import (
     DEFAULT_HANDOFF_HANDLER,
@@ -185,7 +183,6 @@ class OuterLoopRunner:
         self.inner_loop_launcher = inner_loop_launcher
         self.state_path = self.loops_root / "outer_state.json"
         self.log_path = self.loops_root / "oloops.log"
-        self.review_actor_usernames = _resolve_provider_review_actor_usernames(provider)
 
     def run_once(
         self,
@@ -297,14 +294,6 @@ class OuterLoopRunner:
                 updated_at=now_iso,
             )
             write_run_record(run_dir / "run.json", record)
-            write_inner_loop_approval_config(
-                run_dir,
-                build_inner_loop_approval_config(
-                    approval_comment_usernames=self.config.approval_comment_usernames,
-                    approval_comment_pattern=self.config.approval_comment_pattern,
-                    review_actor_usernames=self.review_actor_usernames,
-                ),
-            )
             _touch(run_dir / "run.log")
             _touch(run_dir / "agent.log")
             to_launch.append((run_dir, task))
@@ -527,6 +516,8 @@ def _resolve_provider_review_actor_usernames(provider: TaskProvider) -> tuple[st
 
 def build_inner_loop_launcher(
     config: LoopsConfig,
+    *,
+    review_actor_usernames: tuple[str, ...] = (),
 ) -> Callable[[Path, Task], None]:
     """Build the launcher callable for inner loop executions."""
 
@@ -534,6 +525,9 @@ def build_inner_loop_launcher(
         raise ValueError("inner_loop.command is required to launch tasks")
     inner_loop = config.inner_loop
     sync_mode = config.loop_config.sync_mode
+    normalized_review_actor_usernames = normalize_approval_usernames(
+        review_actor_usernames
+    )
 
     def launcher(run_dir: Path, task: Task) -> None:
         """Launch a single inner loop invocation."""
@@ -547,6 +541,9 @@ def build_inner_loop_launcher(
                 auto_approve_enabled=config.loop_config.auto_approve_enabled,
                 stream_logs_stdout=sync_mode,
                 env=dict(inner_loop.env) if inner_loop.env else None,
+                approval_comment_usernames=config.loop_config.approval_comment_usernames,
+                approval_comment_pattern=config.loop_config.approval_comment_pattern,
+                review_actor_usernames=normalized_review_actor_usernames,
             ),
         )
         env = os.environ.copy()

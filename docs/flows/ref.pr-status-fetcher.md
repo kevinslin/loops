@@ -27,7 +27,7 @@ Entrypoints:
 - `loops/inner_loop.py:_load_comment_approval_settings`
 
 Ordered call path:
-- Load run-scoped comment-approval settings from `inner_loop_approval_config.json`.
+- Load run-scoped comment-approval settings from `inner_loop_runtime_config.json` (legacy approval-file fallback supported for older runs).
 - If caller did not inject `pr_status_fetcher`, create `_default_pr_status_fetcher` closure.
 - Closure delegates to `_fetch_pr_status_with_gh_with_context(...)` and logs comment-based approval attribution.
 - Store the chosen fetcher on `runtime.pr_status_fetcher`.
@@ -239,8 +239,8 @@ None identified.
 
 | Name | Type | Where Read | Effect on Flow |
 |---|---|---|---|
-| `loop_config.approval_comment_usernames` | config field | written by outer loop to `inner_loop_approval_config.json`, read by `_load_comment_approval_settings` | Enables allowlisted approval signals from comments/reviews. |
-| `loop_config.approval_comment_pattern` | config field (regex text) | `inner_loop_approval_config.json` -> `_load_comment_approval_settings` | Defines which comment/review bodies count as approval signals. |
+| `loop_config.approval_comment_usernames` | config field | written by outer loop to `inner_loop_runtime_config.json`, read by `_load_comment_approval_settings` | Enables allowlisted approval signals from comments/reviews. |
+| `loop_config.approval_comment_pattern` | config field (regex text) | `inner_loop_runtime_config.json` -> `_load_comment_approval_settings` | Defines which comment/review bodies count as approval signals. |
 | `pr_status_fetcher` parameter | runtime dependency injection | `run_inner_loop(..., pr_status_fetcher=...)` | Replaces default GH-backed normalization logic (used mainly in tests). |
 | `run.json.pr.review_addressed_at` | persisted state field | read/write in `_is_new_review` and `_run_codex_turn` | Prevents reprocessing the same review/comment feedback event. |
 

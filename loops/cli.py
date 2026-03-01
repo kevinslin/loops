@@ -25,6 +25,7 @@ from loops.outer_loop import (
     build_inner_loop_launcher,
     build_provider,
     load_config,
+    _resolve_provider_review_actor_usernames,
     upgrade_config_payload,
     write_outer_state,
 )
@@ -274,7 +275,10 @@ def _run_outer_loop(
     if config.inner_loop is None:
         config = replace(config, inner_loop=_build_default_inner_loop_config())
     provider = build_provider(config)
-    launcher = build_inner_loop_launcher(config)
+    launcher = build_inner_loop_launcher(
+        config,
+        review_actor_usernames=_resolve_provider_review_actor_usernames(provider),
+    )
     loops_root = _resolve_loops_root(config_path)
     runner = OuterLoopRunner(
         provider,

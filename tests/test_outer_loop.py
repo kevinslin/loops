@@ -10,7 +10,6 @@ import pytest
 
 from loops.approval_config import (
     DEFAULT_APPROVAL_COMMENT_PATTERN,
-    INNER_LOOP_APPROVAL_CONFIG_FILE,
 )
 from loops.handoff_handlers import HANDOFF_HANDLER_GH_COMMENT
 from loops.inner_loop_runtime_config import (
@@ -112,7 +111,6 @@ def test_run_once_creates_run_records(tmp_path: Path) -> None:
     titles = {read_run_record(run_dir / "run.json").task.title for run_dir in run_dirs}
     assert titles == {"Ship it", "Next"}
     assert all((run_dir / "agent.log").exists() for run_dir in run_dirs)
-    assert all((run_dir / INNER_LOOP_APPROVAL_CONFIG_FILE).exists() for run_dir in run_dirs)
     assert len(launched) == 2
 
     state = read_outer_state(loops_root / "outer_state.json")
@@ -816,68 +814,103 @@ def test_load_config_preserves_explicit_version(tmp_path: Path) -> None:
     assert config.version == LATEST_LOOPS_CONFIG_VERSION
 
 
-def test_run_once_writes_custom_comment_approval_config(tmp_path: Path) -> None:
+def test_build_inner_loop_launcher_writes_custom_comment_approval_settings(
+    tmp_path: Path, monkeypatch
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
     task = make_task("1", "Ship it")
-    provider = StubProvider([task])
-    loops_root = tmp_path / ".loops"
-
-    config = OuterLoopConfig(
-        task_ready_status="Ready",
-        emit_on_first_run=True,
-        approval_comment_usernames=("maintainer", "review-bot"),
-        approval_comment_pattern=r"^\s*/shipit\b",
+    config = LoopsConfig(
+        version=LATEST_LOOPS_CONFIG_VERSION,
+        task_provider_id="github_projects_v2",
+        task_provider_config={"url": "https://github.com/orgs/acme/projects/1"},
+        loop_config=OuterLoopConfig(
+            approval_comment_usernames=("maintainer", "review-bot"),
+            approval_comment_pattern=r"^\s*/shipit\b",
+        ),
+        inner_loop=InnerLoopCommandConfig(
+            command=["echo", "hello"],
+            append_task_url=False,
+        ),
     )
-    runner = OuterLoopRunner(
-        provider,
+    launcher = build_inner_loop_launcher(config)
+
+    def fake_popen(command, *, cwd, stdout, stderr, env):
+        del cwd, stdout, stderr, env
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("loops.outer_loop.subprocess.Popen", fake_popen)
+    launcher(run_dir, task)
+
+    runtime_config = read_inner_loop_runtime_config(run_dir)
+    assert runtime_config is not None
+    assert runtime_config.approval_comment_usernames == ("maintainer", "review-bot")
+    assert runtime_config.approval_comment_pattern == r"^\s*/shipit\b"
+    assert runtime_config.review_actor_usernames == ()
+
+
+def test_build_inner_loop_launcher_writes_default_comment_approval_settings(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    task = make_task("1", "Ship it")
+    config = LoopsConfig(
+        version=LATEST_LOOPS_CONFIG_VERSION,
+        task_provider_id="github_projects_v2",
+        task_provider_config={"url": "https://github.com/orgs/acme/projects/1"},
+        loop_config=OuterLoopConfig(),
+        inner_loop=InnerLoopCommandConfig(
+            command=["echo", "hello"],
+            append_task_url=False,
+        ),
+    )
+    launcher = build_inner_loop_launcher(config)
+
+    def fake_popen(command, *, cwd, stdout, stderr, env):
+        del cwd, stdout, stderr, env
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("loops.outer_loop.subprocess.Popen", fake_popen)
+    launcher(run_dir, task)
+
+    runtime_config = read_inner_loop_runtime_config(run_dir)
+    assert runtime_config is not None
+    assert runtime_config.approval_comment_usernames == ()
+    assert runtime_config.approval_comment_pattern == DEFAULT_APPROVAL_COMMENT_PATTERN
+    assert runtime_config.review_actor_usernames == ()
+
+
+def test_build_inner_loop_launcher_writes_review_actor_allowlist_to_runtime_config(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    task = make_task("1", "Ship it")
+    config = LoopsConfig(
+        version=LATEST_LOOPS_CONFIG_VERSION,
+        task_provider_id="github_projects_v2",
+        task_provider_config={"url": "https://github.com/orgs/acme/projects/1"},
+        loop_config=OuterLoopConfig(),
+        inner_loop=InnerLoopCommandConfig(
+            command=["echo", "hello"],
+            append_task_url=False,
+        ),
+    )
+    launcher = build_inner_loop_launcher(
         config,
-        loops_root=loops_root,
-        inner_loop_launcher=lambda _run_dir, _task: None,
+        review_actor_usernames=("Maintainer", "review-bot", "maintainer"),
     )
 
-    run_dirs = runner.run_once()
-    assert len(run_dirs) == 1
-    payload = json.loads((run_dirs[0] / INNER_LOOP_APPROVAL_CONFIG_FILE).read_text())
-    assert payload == {
-        "approval_comment_pattern": r"^\s*/shipit\b",
-        "approval_comment_usernames": ["maintainer", "review-bot"],
-        "review_actor_usernames": [],
-    }
+    def fake_popen(command, *, cwd, stdout, stderr, env):
+        del cwd, stdout, stderr, env
+        return subprocess.CompletedProcess(command, 0)
 
+    monkeypatch.setattr("loops.outer_loop.subprocess.Popen", fake_popen)
+    launcher(run_dir, task)
 
-def test_run_once_writes_default_comment_approval_config(tmp_path: Path) -> None:
-    task = make_task("1", "Ship it")
-    provider = StubProvider([task])
-    loops_root = tmp_path / ".loops"
-    runner = OuterLoopRunner(
-        provider,
-        OuterLoopConfig(task_ready_status="Ready", emit_on_first_run=True),
-        loops_root=loops_root,
-        inner_loop_launcher=lambda _run_dir, _task: None,
-    )
-
-    run_dirs = runner.run_once()
-    assert len(run_dirs) == 1
-    payload = json.loads((run_dirs[0] / INNER_LOOP_APPROVAL_CONFIG_FILE).read_text())
-    assert payload == {
-        "approval_comment_pattern": DEFAULT_APPROVAL_COMMENT_PATTERN,
-        "approval_comment_usernames": [],
-        "review_actor_usernames": [],
-    }
-
-
-def test_run_once_writes_provider_review_actor_allowlist(tmp_path: Path) -> None:
-    task = make_task("1", "Ship it")
-    provider = StubProvider([task])
-    provider.review_actor_allowlist = ("Maintainer", "review-bot", "maintainer")
-    loops_root = tmp_path / ".loops"
-    runner = OuterLoopRunner(
-        provider,
-        OuterLoopConfig(task_ready_status="Ready", emit_on_first_run=True),
-        loops_root=loops_root,
-        inner_loop_launcher=lambda _run_dir, _task: None,
-    )
-
-    run_dirs = runner.run_once()
-    assert len(run_dirs) == 1
-    payload = json.loads((run_dirs[0] / INNER_LOOP_APPROVAL_CONFIG_FILE).read_text())
-    assert payload["review_actor_usernames"] == ["maintainer", "review-bot"]
+    runtime_config = read_inner_loop_runtime_config(run_dir)
+    assert runtime_config is not None
+    assert runtime_config.review_actor_usernames == ("maintainer", "review-bot")

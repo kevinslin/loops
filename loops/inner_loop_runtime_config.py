@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
+from loops.approval_config import (
+    DEFAULT_APPROVAL_COMMENT_PATTERN,
+    normalize_approval_usernames,
+)
 from loops.handoff_handlers import DEFAULT_HANDOFF_HANDLER, validate_handoff_handler_name
 
 INNER_LOOP_RUNTIME_CONFIG_FILE = "inner_loop_runtime_config.json"
@@ -18,6 +22,9 @@ class InnerLoopRuntimeConfig:
     handoff_handler: str = DEFAULT_HANDOFF_HANDLER
     auto_approve_enabled: bool = False
     stream_logs_stdout: bool = False
+    approval_comment_usernames: tuple[str, ...] = ()
+    approval_comment_pattern: str = DEFAULT_APPROVAL_COMMENT_PATTERN
+    review_actor_usernames: tuple[str, ...] = ()
     env: dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -25,6 +32,9 @@ class InnerLoopRuntimeConfig:
             "handoff_handler": self.handoff_handler,
             "auto_approve_enabled": self.auto_approve_enabled,
             "stream_logs_stdout": self.stream_logs_stdout,
+            "approval_comment_usernames": list(self.approval_comment_usernames),
+            "approval_comment_pattern": self.approval_comment_pattern,
+            "review_actor_usernames": list(self.review_actor_usernames),
         }
         if self.env:
             payload["env"] = dict(sorted(self.env.items()))
@@ -75,6 +85,33 @@ def read_inner_loop_runtime_config(run_dir: Path) -> Optional[InnerLoopRuntimeCo
     if not isinstance(stream_logs_stdout, bool):
         raise TypeError("stream_logs_stdout must be a boolean")
 
+    raw_approval_usernames = payload.get("approval_comment_usernames", ())
+    if isinstance(raw_approval_usernames, tuple):
+        approval_usernames_candidate = list(raw_approval_usernames)
+    else:
+        approval_usernames_candidate = raw_approval_usernames
+    if not isinstance(approval_usernames_candidate, list) or not all(
+        isinstance(item, str) for item in approval_usernames_candidate
+    ):
+        raise TypeError("approval_comment_usernames must be a list of strings")
+
+    approval_comment_pattern = payload.get(
+        "approval_comment_pattern",
+        DEFAULT_APPROVAL_COMMENT_PATTERN,
+    )
+    if not isinstance(approval_comment_pattern, str):
+        raise TypeError("approval_comment_pattern must be a string")
+
+    raw_review_usernames = payload.get("review_actor_usernames", ())
+    if isinstance(raw_review_usernames, tuple):
+        review_usernames_candidate = list(raw_review_usernames)
+    else:
+        review_usernames_candidate = raw_review_usernames
+    if not isinstance(review_usernames_candidate, list) or not all(
+        isinstance(item, str) for item in review_usernames_candidate
+    ):
+        raise TypeError("review_actor_usernames must be a list of strings")
+
     env_payload = payload.get("env")
     env: dict[str, str] | None = None
     if env_payload is not None:
@@ -89,5 +126,12 @@ def read_inner_loop_runtime_config(run_dir: Path) -> Optional[InnerLoopRuntimeCo
         handoff_handler=handoff_handler,
         auto_approve_enabled=auto_approve_enabled,
         stream_logs_stdout=stream_logs_stdout,
+        approval_comment_usernames=normalize_approval_usernames(
+            approval_usernames_candidate
+        ),
+        approval_comment_pattern=(
+            approval_comment_pattern or DEFAULT_APPROVAL_COMMENT_PATTERN
+        ),
+        review_actor_usernames=normalize_approval_usernames(review_usernames_candidate),
         env=env,
     )
