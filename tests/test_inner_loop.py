@@ -39,6 +39,18 @@ from loops.run_record import (
 from loops.state_signal import enqueue_state_signal
 
 
+def _pr_discovery_artifact_path() -> Path:
+    return Path("/tmp") / f"{Path.cwd().name}-devloop-pr"
+
+
+@pytest.fixture(autouse=True)
+def _clear_pr_discovery_artifact() -> None:
+    artifact_path = _pr_discovery_artifact_path()
+    artifact_path.unlink(missing_ok=True)
+    yield
+    artifact_path.unlink(missing_ok=True)
+
+
 def _task() -> Task:
     return Task(
         provider_id="github",
@@ -108,11 +120,13 @@ def _write_codex_stub(path: Path) -> None:
                 "count += 1",
                 "counter_path.write_text(str(count))",
                 "",
+                "pr_artifact_path = Path('/tmp') / f\"{Path.cwd().name}-devloop-pr\"",
                 "if resume_session is not None:",
                 "    print(json.dumps({'session_id': resume_session}))",
                 "else:",
                 "    print(json.dumps({'session_id': f'session-{count}'}))",
                 "if count == 1:",
+                "    pr_artifact_path.write_text('https://github.com/acme/api/pull/42\\n', encoding='utf-8')",
                 "    print('Opened PR https://github.com/acme/api/pull/42')",
                 "else:",
                 "    print('cleanup complete')",
@@ -2169,6 +2183,10 @@ def test_run_codex_turn_sets_needs_input_from_trailing_state_marker(
         environ: dict[str, str],
     ) -> tuple[str, int, bool]:
         del base_command, prompt, agent_log, run_log, codex_session, turn_label, environ
+        _pr_discovery_artifact_path().write_text(
+            "https://github.com/acme/api/pull/42\n",
+            encoding="utf-8",
+        )
         return (
             json.dumps({"session_id": "session-2"})
             + "\nOpened PR https://github.com/acme/api/pull/42\n<state>NEEDS_INPUT</state>\n",
@@ -2198,6 +2216,55 @@ def test_run_codex_turn_sets_needs_input_from_trailing_state_marker(
     assert updated.codex_session is not None
     assert updated.codex_session.id == "session-2"
     assert "codex requested state via marker: NEEDS_INPUT" in (run_dir / "run.log").read_text()
+
+
+def test_run_codex_turn_does_not_parse_pr_from_output_without_artifact(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(run_dir)
+
+    def fake_invoke_codex(
+        *,
+        base_command: list[str],
+        prompt: str,
+        agent_log: Path,
+        run_log: Path,
+        codex_session: inner_loop_module.CodexSession | None,
+        turn_label: str,
+        environ: dict[str, str],
+    ) -> tuple[str, int, bool]:
+        del base_command, prompt, agent_log, run_log, codex_session, turn_label, environ
+        return (
+            json.dumps({"session_id": "session-2"})
+            + "\nOpened PR https://github.com/acme/api/pull/42\n",
+            0,
+            False,
+        )
+
+    monkeypatch.setattr(inner_loop_module, "_invoke_codex", fake_invoke_codex)
+    run_json_path = run_dir / "run.json"
+    updated = inner_loop_module._run_codex_turn(
+        run_json_path=run_json_path,
+        run_log=run_dir / "run.log",
+        agent_log=run_dir / "agent.log",
+        run_record=read_run_record(run_json_path),
+        command=["codex", "exec"],
+        environ=os.environ.copy(),
+        base_prompt=None,
+        review_feedback=False,
+    )
+
+    assert updated.pr is None
+    assert updated.needs_user_input is True
+    assert updated.needs_user_input_payload == {
+        "message": (
+            "Codex run completed without opening a PR or requesting input. "
+            "What should Loops do next?"
+        )
+    }
 
 
 def test_run_codex_turn_clears_stale_session_after_failed_resume_fallback(

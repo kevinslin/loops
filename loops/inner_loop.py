@@ -92,6 +92,7 @@ WAITING_STATES = {"WAITING_ON_REVIEW", "PR_APPROVED"}
 GITHUB_PR_PATTERN = re.compile(
     r"https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([0-9]+)"
 )
+DEVLOOP_PR_FILE_SUFFIX = "-devloop-pr"
 
 SESSION_ID_PATTERN = re.compile(r"session[_\s-]*id\s*[:=]\s*([\w-]+)", re.IGNORECASE)
 UUID_PATTERN = re.compile(
@@ -1329,6 +1330,9 @@ def _run_codex_turn(
     review_feedback: bool,
     auto_approve_enabled: bool = False,
 ) -> RunRecord:
+    pr_artifact_path = _devloop_pr_artifact_path()
+    _clear_pr_artifact_file(path=pr_artifact_path, run_log=run_log)
+
     if user_response is not None:
         normalized_response = user_response.strip()
         append_log(
@@ -1380,7 +1384,10 @@ def _run_codex_turn(
     elif exit_code == 0 and codex_session is None:
         append_log(run_log, "[loops] warning: no session id detected in codex output")
 
-    discovered_pr = _extract_pr_from_output(output)
+    discovered_pr = _extract_pr_from_artifact_file(
+        path=pr_artifact_path,
+        run_log=run_log,
+    )
     pr = _merge_pr_records(run_record.pr, discovered_pr)
     requested_state = _extract_trailing_state_marker(output)
     if requested_state is not None:
@@ -1561,23 +1568,66 @@ def _run_auto_approve_eval(
     )
 
 
-def _extract_pr_from_output(output: str) -> Optional[RunPR]:
-    for line in output.splitlines():
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
-            for key in ("pr_url", "pull_request_url", "url"):
-                value = payload.get(key)
-                if isinstance(value, str):
-                    pr = _run_pr_from_url(value)
-                    if pr is not None:
-                        return pr
-    match = GITHUB_PR_PATTERN.search(output)
-    if not match:
+def _devloop_pr_artifact_path() -> Path:
+    return Path("/tmp") / f"{Path.cwd().name}{DEVLOOP_PR_FILE_SUFFIX}"
+
+
+def _clear_pr_artifact_file(*, path: Path, run_log: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except Exception as exc:
+        append_log(
+            run_log,
+            (
+                "[loops] failed to clear PR discovery artifact before codex turn: "
+                f"path={path} error={exc}"
+            ),
+        )
+
+
+def _extract_pr_from_artifact_file(*, path: Path, run_log: Path) -> Optional[RunPR]:
+    try:
+        artifact_value = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
         return None
-    return _run_pr_from_url(match.group(0))
+    except Exception as exc:
+        append_log(
+            run_log,
+            (
+                "[loops] failed to read PR discovery artifact: "
+                f"path={path} error={exc}"
+            ),
+        )
+        return None
+
+    candidate = ""
+    for line in artifact_value.splitlines():
+        stripped = line.strip()
+        if stripped:
+            candidate = stripped
+            break
+    if not candidate:
+        append_log(
+            run_log,
+            f"[loops] PR discovery artifact is empty: path={path}",
+        )
+        return None
+
+    pr = _run_pr_from_url(candidate)
+    if pr is None:
+        append_log(
+            run_log,
+            (
+                "[loops] PR discovery artifact does not contain a valid GitHub PR URL: "
+                f"path={path} value={candidate}"
+            ),
+        )
+        return None
+    append_log(
+        run_log,
+        f"[loops] discovered PR from artifact: path={path} pr_url={pr.url}",
+    )
+    return pr
 
 
 def _extract_trailing_state_marker(output: str) -> Optional[RunState]:
