@@ -635,7 +635,9 @@ def test_build_inner_loop_launcher_sync_mode_uses_subprocess_run(
     assert runtime_config.auto_approve_enabled is False
     assert runtime_config.stream_logs_stdout is True
     assert runtime_config.env is None
-    assert (run_dir / INNER_LOOP_RUNTIME_CONFIG_FILE).exists()
+    runtime_config_path = run_dir / INNER_LOOP_RUNTIME_CONFIG_FILE
+    assert runtime_config_path.exists()
+    assert runtime_config_path.stat().st_mode & 0o777 == 0o600
 
 
 def test_build_inner_loop_launcher_sync_mode_interrupt_raises_typed_error(
@@ -708,6 +710,7 @@ def test_build_inner_loop_launcher_writes_runtime_env_to_run_config(
         "CODEX_CMD": "codex exec --json",
         "CUSTOM_VAR": "present",
     }
+    assert (run_dir / INNER_LOOP_RUNTIME_CONFIG_FILE).stat().st_mode & 0o777 == 0o600
     env = captured["env"]
     assert isinstance(env, dict)
     assert env["LOOPS_RUN_DIR"] == str(run_dir)

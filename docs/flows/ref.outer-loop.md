@@ -327,7 +327,7 @@ class OuterLoopRunner
         v
 +-------------------------------+
 | inner-loop launcher closure   |
-| sets LOOPS_TASK_* + RUN_DIR   |
+| sets LOOPS_RUN_DIR only       |
 | run(sync) or popen(detached)  |
 +-------------------------------+
         |

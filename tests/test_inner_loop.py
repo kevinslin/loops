@@ -20,6 +20,7 @@ from loops.approval_config import (
 )
 from loops.handoff_handlers import HandoffResult
 from loops.inner_loop_runtime_config import (
+    INNER_LOOP_RUNTIME_CONFIG_FILE,
     InnerLoopRuntimeConfig,
     write_inner_loop_runtime_config,
 )
@@ -168,6 +169,7 @@ def _runtime_context(
         run_json_path=run_dir / "run.json",
         run_log=run_dir / "run.log",
         agent_log=run_dir / "agent.log",
+        environ=os.environ.copy(),
         command=["codex", "exec"],
         base_prompt=None,
         user_handoff_handler=user_handoff_handler,
@@ -1801,6 +1803,51 @@ def test_inner_loop_runtime_config_codex_cmd_overrides_process_env(
     assert args == ["exec", "exec resume session-1"]
 
 
+def test_inner_loop_raises_on_malformed_runtime_config(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(run_dir)
+    (run_dir / INNER_LOOP_RUNTIME_CONFIG_FILE).write_text("{invalid-json")
+
+    with pytest.raises(json.JSONDecodeError):
+        run_inner_loop(
+            run_dir,
+            sleep_fn=lambda _seconds: None,
+            max_iterations=1,
+        )
+
+    assert "failed to load run runtime config; aborting" in (run_dir / "run.log").read_text()
+
+
+def test_inner_loop_runtime_config_log_streaming_does_not_mutate_process_env(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(run_dir)
+    write_inner_loop_runtime_config(
+        run_dir,
+        InnerLoopRuntimeConfig(stream_logs_stdout=False),
+    )
+    monkeypatch.setenv("LOOPS_STREAM_LOGS_STDOUT", "1")
+    monkeypatch.setattr(
+        inner_loop_module,
+        "_run_codex_turn",
+        lambda **kwargs: kwargs["run_record"],
+    )
+
+    run_inner_loop(
+        run_dir,
+        sleep_fn=lambda _seconds: None,
+        max_iterations=1,
+    )
+
+    assert os.environ.get("LOOPS_STREAM_LOGS_STDOUT") == "1"
+
+
 def test_inner_loop_runtime_config_keeps_process_env_codex_fallback(
     tmp_path: Path,
     monkeypatch,
@@ -1897,7 +1944,14 @@ def test_invoke_codex_retries_without_resume_on_resume_failure(
 ) -> None:
     calls: list[list[str]] = []
 
-    def fake_run_codex(command: list[str], _prompt: str, _agent_log: Path) -> tuple[str, int]:
+    def fake_run_codex(
+        command: list[str],
+        _prompt: str,
+        _agent_log: Path,
+        *,
+        environ: dict[str, str],
+    ) -> tuple[str, int]:
+        del environ
         calls.append(command)
         if len(calls) == 1:
             return "resume failed", 17
@@ -1915,6 +1969,7 @@ def test_invoke_codex_retries_without_resume_on_resume_failure(
         run_log=tmp_path / "run.log",
         codex_session=inner_loop_module.CodexSession(id="stale-session"),
         turn_label="codex turn",
+        environ=os.environ.copy(),
     )
 
     assert resume_fallback_used is True
@@ -1966,8 +2021,9 @@ def test_run_codex_turn_sets_needs_input_from_trailing_state_marker(
         run_log: Path,
         codex_session: inner_loop_module.CodexSession | None,
         turn_label: str,
+        environ: dict[str, str],
     ) -> tuple[str, int, bool]:
-        del base_command, prompt, agent_log, run_log, codex_session, turn_label
+        del base_command, prompt, agent_log, run_log, codex_session, turn_label, environ
         return (
             json.dumps({"session_id": "session-2"})
             + "\nOpened PR https://github.com/acme/api/pull/42\n<state>NEEDS_INPUT</state>\n",
@@ -1983,6 +2039,7 @@ def test_run_codex_turn_sets_needs_input_from_trailing_state_marker(
         agent_log=run_dir / "agent.log",
         run_record=read_run_record(run_json_path),
         command=["codex", "exec"],
+        environ=os.environ.copy(),
         base_prompt=None,
         review_feedback=False,
     )
@@ -2017,8 +2074,9 @@ def test_run_codex_turn_clears_stale_session_after_failed_resume_fallback(
         run_log: Path,
         codex_session: inner_loop_module.CodexSession | None,
         turn_label: str,
+        environ: dict[str, str],
     ) -> tuple[str, int, bool]:
-        del base_command, prompt, agent_log, run_log, codex_session, turn_label
+        del base_command, prompt, agent_log, run_log, codex_session, turn_label, environ
         return "resume failed\nfallback failed\n", 17, True
 
     monkeypatch.setattr(inner_loop_module, "_invoke_codex", fake_invoke_codex)
@@ -2029,6 +2087,7 @@ def test_run_codex_turn_clears_stale_session_after_failed_resume_fallback(
         agent_log=run_dir / "agent.log",
         run_record=read_run_record(run_json_path),
         command=["codex", "exec"],
+        environ=os.environ.copy(),
         base_prompt=None,
         review_feedback=False,
     )
@@ -2059,7 +2118,12 @@ def test_run_codex_streams_output_to_agent_log_while_running(tmp_path) -> None:
     result: dict[str, tuple[str, int]] = {}
 
     def invoke() -> None:
-        result["value"] = inner_loop_module._run_codex(command, "prompt", agent_log)
+        result["value"] = inner_loop_module._run_codex(
+            command,
+            "prompt",
+            agent_log,
+            environ=os.environ.copy(),
+        )
 
     worker = threading.Thread(target=invoke)
     worker.start()

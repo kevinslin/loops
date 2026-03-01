@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Optional
@@ -38,7 +39,15 @@ def write_inner_loop_runtime_config(
 
     target = run_dir / INNER_LOOP_RUNTIME_CONFIG_FILE
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(config.to_dict(), indent=2, sort_keys=True))
+    payload = json.dumps(config.to_dict(), indent=2, sort_keys=True)
+    fd = os.open(
+        str(target),
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+        0o600,
+    )
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(payload)
+    os.chmod(target, 0o600)
     return target
 
 

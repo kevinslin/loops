@@ -303,6 +303,7 @@ Notes:
 - `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`: legacy fallback task metadata used only when resetting a run with missing `run.json`.
 - `LOOPS_STREAM_LOGS_STDOUT`: direct/manual-run fallback toggle for mirroring `run.log` lines to stdout.
 - Outer-loop-launched runs persist runtime settings in `inner_loop_runtime_config.json` under each run directory, instead of injecting config via child-process env vars. For non-`loops.inner_loop` custom launch commands, `inner_loop.env` remains merged into child env for backward compatibility.
+- When `inner_loop_runtime_config.json` exists but is malformed, inner loop startup fails fast instead of silently falling back to process environment defaults.
 
 ## 4. Architecture
 

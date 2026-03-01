@@ -70,7 +70,7 @@ function run_inner_loop(run_dir):
 - Core state is derived each iteration from `run.json` (`pr`, `needs_user_input`), not from cached in-memory state.
 - Transition gates include: review freshness (`latest_review_submitted_at > review_addressed_at`), idle polling threshold escalation, and max-iteration fallback.
 - Additional inline review gate: when review is not already approved and `ci_status == success`, if `auto_approve_enabled` is true and `RunRecord.auto_approve` is unset/`none`, run one-time `$ag-judge` and persist judgement on `RunRecord`.
-- Runtime config comes from CLI options plus run-scoped files (`inner_loop_approval_config.json`, `inner_loop_runtime_config.json`), with env fallbacks for keys omitted from runtime config (or when runtime config is unavailable).
+- Runtime config comes from CLI options plus run-scoped files (`inner_loop_approval_config.json`, `inner_loop_runtime_config.json`), with env fallbacks for keys omitted from runtime config or when runtime config is absent; malformed runtime config is treated as a startup error.
 - In sync-mode launches, outer loop writes `stream_logs_stdout=true` in `inner_loop_runtime_config.json`, which causes inner-loop `run.log` appends to be mirrored to stdout.
 
 ## Sequence diagram
