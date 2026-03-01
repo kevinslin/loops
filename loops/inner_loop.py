@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-import hashlib
 import json
 import os
 import re
@@ -68,7 +67,9 @@ PROMPT_TEMPLATE = (
     "initial state is <state>RUNNING</state>.\n"
     "If you need input from user, print what you need help with and end current conversation "
     "with <state>NEEDS_INPUT</>\n"
-    "When you open a PR, run trigger:push-pr so Loops records the PR URL artifact.\n"
+    "For trigger:push-pr: 1. if there are unstaged changes -> invoke:commit-code. 2. run "
+    "push-pr.py script and capture output for url. 3. invoke:check-ci -> if failure, "
+    "invoke:fix-pr\n"
     "trigger:merge-pr when the state is exactly <state>PR_APPROVED</state>.\n"
     "Do not merge until the state is exactly <state>PR_APPROVED</state>.\n"
     "In the initial PR description, do not repeat the PR title in the body.\n"
@@ -94,8 +95,6 @@ WAITING_STATES = {"WAITING_ON_REVIEW", "PR_APPROVED"}
 GITHUB_PR_PATTERN = re.compile(
     r"https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([0-9]+)"
 )
-DEVLOOP_PR_FILE_SUFFIX = "-devloop-pr"
-RUN_DIR_ENV = "LOOPS_RUN_DIR"
 
 SESSION_ID_PATTERN = re.compile(r"session[_\s-]*id\s*[:=]\s*([\w-]+)", re.IGNORECASE)
 UUID_PATTERN = re.compile(
@@ -1333,12 +1332,6 @@ def _run_codex_turn(
     review_feedback: bool,
     auto_approve_enabled: bool = False,
 ) -> RunRecord:
-    pr_artifact_path = _resolve_pr_artifact_path(
-        environ=environ,
-        run_log=run_log,
-    )
-    _clear_pr_artifact_file(path=pr_artifact_path, run_log=run_log)
-
     if user_response is not None:
         normalized_response = user_response.strip()
         append_log(
@@ -1390,10 +1383,9 @@ def _run_codex_turn(
     elif exit_code == 0 and codex_session is None:
         append_log(run_log, "[loops] warning: no session id detected in codex output")
 
-    discovered_pr = _extract_pr_from_artifact_file(
-        path=pr_artifact_path,
-        run_log=run_log,
-    ) if (not review_feedback and not run_record.needs_user_input) else None
+    discovered_pr = _extract_pr_from_output(output) if (
+        not review_feedback and not run_record.needs_user_input
+    ) else None
     pr = _merge_pr_records(run_record.pr, discovered_pr)
     requested_state = _extract_trailing_state_marker(output)
     if requested_state is not None:
@@ -1418,13 +1410,13 @@ def _run_codex_turn(
         needs_user_input = True
         needs_user_input_payload = {
             "message": (
-                "Codex run completed but PR was not found in the PR artifact file. "
+                "Codex run completed but PR was not found. "
                 "What should Loops do next?"
             )
         }
         append_log(
             run_log,
-            "[loops] PR artifact missing after codex run; requesting user input",
+            "[loops] no PR detected after codex run; requesting user input",
         )
     elif review_feedback:
         # Record which review event we addressed so we don't re-invoke
@@ -1574,89 +1566,23 @@ def _run_auto_approve_eval(
     )
 
 
-def _default_devloop_pr_artifact_path() -> Path:
-    return Path("/tmp") / f"{Path.cwd().name}{DEVLOOP_PR_FILE_SUFFIX}"
-
-
-def _run_scoped_pr_artifact_path(run_dir: Path) -> Path:
-    run_dir_resolved = run_dir.expanduser().resolve()
-    run_dir_hash = hashlib.sha1(str(run_dir_resolved).encode("utf-8")).hexdigest()
-    return Path("/tmp") / f"{run_dir_hash}{DEVLOOP_PR_FILE_SUFFIX}"
-
-
-def _resolve_pr_artifact_path(*, environ: Mapping[str, str], run_log: Path) -> Path:
-    run_dir_value = environ.get(RUN_DIR_ENV)
-    if run_dir_value is not None:
-        run_dir_candidate = run_dir_value.strip()
-        if run_dir_candidate:
-            return _run_scoped_pr_artifact_path(Path(run_dir_candidate))
-        else:
-            append_log(
-                run_log,
-                (
-                    "[loops] ignoring empty run-dir env var while resolving PR "
-                    f"artifact path: {RUN_DIR_ENV}"
-                ),
-            )
-    return _default_devloop_pr_artifact_path()
-
-
-def _clear_pr_artifact_file(*, path: Path, run_log: Path) -> None:
-    try:
-        path.unlink(missing_ok=True)
-    except Exception as exc:
-        append_log(
-            run_log,
-            (
-                "[loops] failed to clear PR discovery artifact before codex turn: "
-                f"path={path} error={exc}"
-            ),
-        )
-
-
-def _extract_pr_from_artifact_file(*, path: Path, run_log: Path) -> Optional[RunPR]:
-    try:
-        artifact_value = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
+def _extract_pr_from_output(output: str) -> Optional[RunPR]:
+    for line in output.splitlines():
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            for key in ("pr_url", "pull_request_url", "url"):
+                value = payload.get(key)
+                if isinstance(value, str):
+                    pr = _run_pr_from_url(value)
+                    if pr is not None:
+                        return pr
+    match = GITHUB_PR_PATTERN.search(output)
+    if not match:
         return None
-    except Exception as exc:
-        append_log(
-            run_log,
-            (
-                "[loops] failed to read PR discovery artifact: "
-                f"path={path} error={exc}"
-            ),
-        )
-        return None
-
-    candidate = ""
-    for line in artifact_value.splitlines():
-        stripped = line.strip()
-        if stripped:
-            candidate = stripped
-            break
-    if not candidate:
-        append_log(
-            run_log,
-            f"[loops] PR discovery artifact is empty: path={path}",
-        )
-        return None
-
-    pr = _run_pr_from_url(candidate)
-    if pr is None:
-        append_log(
-            run_log,
-            (
-                "[loops] PR discovery artifact does not contain a valid GitHub PR URL: "
-                f"path={path} value={candidate}"
-            ),
-        )
-        return None
-    append_log(
-        run_log,
-        f"[loops] discovered PR from artifact: path={path} pr_url={pr.url}",
-    )
-    return pr
+    return _run_pr_from_url(match.group(0))
 
 
 def _extract_trailing_state_marker(output: str) -> Optional[RunState]:

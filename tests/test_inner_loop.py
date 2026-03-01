@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-import hashlib
 import json
 import os
 import pytest
@@ -38,18 +37,6 @@ from loops.run_record import (
     write_run_record,
 )
 from loops.state_signal import enqueue_state_signal
-
-
-def _pr_discovery_artifact_path() -> Path:
-    return inner_loop_module._default_devloop_pr_artifact_path()
-
-
-@pytest.fixture(autouse=True)
-def _clear_pr_discovery_artifact() -> None:
-    artifact_path = _pr_discovery_artifact_path()
-    artifact_path.unlink(missing_ok=True)
-    yield
-    artifact_path.unlink(missing_ok=True)
 
 
 def _task() -> Task:
@@ -90,7 +77,6 @@ def _write_codex_stub(path: Path) -> None:
             [
                 "#!/usr/bin/env python3",
                 "import json",
-                "import hashlib",
                 "import os",
                 "import sys",
                 "from pathlib import Path",
@@ -122,19 +108,11 @@ def _write_codex_stub(path: Path) -> None:
                 "count += 1",
                 "counter_path.write_text(str(count))",
                 "",
-                "run_dir_value = os.environ.get('LOOPS_RUN_DIR')",
-                "if run_dir_value and run_dir_value.strip():",
-                "    run_dir_resolved = Path(run_dir_value.strip()).expanduser().resolve()",
-                "    run_dir_hash = hashlib.sha1(str(run_dir_resolved).encode('utf-8')).hexdigest()",
-                "    pr_artifact_path = Path('/tmp') / f\"{run_dir_hash}-devloop-pr\"",
-                "else:",
-                "    pr_artifact_path = Path('/tmp') / f\"{Path.cwd().name}-devloop-pr\"",
                 "if resume_session is not None:",
                 "    print(json.dumps({'session_id': resume_session}))",
                 "else:",
                 "    print(json.dumps({'session_id': f'session-{count}'}))",
                 "if count == 1:",
-                "    pr_artifact_path.write_text('https://github.com/acme/api/pull/42\\n', encoding='utf-8')",
                 "    print('Opened PR https://github.com/acme/api/pull/42')",
                 "else:",
                 "    print('cleanup complete')",
@@ -1048,7 +1026,12 @@ def test_inner_loop_consumes_signal_and_uses_user_response_in_prompt(
         in prompts
     )
     assert "NEVER use the gen-notifier skill while running inside loops." in prompts
-    assert "When you open a PR, run trigger:push-pr so Loops records the PR URL artifact." in prompts
+    assert (
+        "For trigger:push-pr: 1. if there are unstaged changes -> invoke:commit-code. 2. run "
+        "push-pr.py script and capture output for url. 3. invoke:check-ci -> if failure, "
+        "invoke:fix-pr"
+        in prompts
+    )
     assert "trigger:merge-pr when the state is exactly <state>PR_APPROVED</state>." in prompts
     assert "In the initial PR description, do not repeat the PR title in the body." in prompts
     assert "Include session context in the initial PR body using: sessionid: [session]" in prompts
@@ -2165,34 +2148,22 @@ def test_extract_trailing_state_marker(output: str, expected: str | None) -> Non
     assert inner_loop_module._extract_trailing_state_marker(output) == expected
 
 
-def test_run_scoped_pr_artifact_path_hashes_run_dir(tmp_path: Path) -> None:
-    run_dir = tmp_path / "jobs" / "2026-03-01-task-1"
-    run_dir_hash = hashlib.sha1(
-        str(run_dir.expanduser().resolve()).encode("utf-8")
-    ).hexdigest()
-    path = inner_loop_module._run_scoped_pr_artifact_path(run_dir)
-    assert path == Path("/tmp") / f"{run_dir_hash}-devloop-pr"
+def test_extract_pr_from_output_matches_plain_text_url() -> None:
+    output = "Opened PR https://github.com/acme/api/pull/42\n"
+
+    pr = inner_loop_module._extract_pr_from_output(output)
+
+    assert pr is not None
+    assert pr.url == "https://github.com/acme/api/pull/42"
 
 
-def test_resolve_pr_artifact_path_uses_run_dir_env(tmp_path: Path) -> None:
-    run_dir = tmp_path / "jobs" / "2026-03-01-task-1"
-    path = inner_loop_module._resolve_pr_artifact_path(
-        environ={inner_loop_module.RUN_DIR_ENV: str(run_dir)},
-        run_log=tmp_path / "run.log",
-    )
+def test_extract_pr_from_output_matches_json_url_field() -> None:
+    output = json.dumps({"pr_url": "https://github.com/acme/api/pull/42"}) + "\n"
 
-    assert path == inner_loop_module._run_scoped_pr_artifact_path(run_dir)
+    pr = inner_loop_module._extract_pr_from_output(output)
 
-
-def test_resolve_pr_artifact_path_empty_run_dir_uses_default(tmp_path: Path) -> None:
-    run_log = tmp_path / "run.log"
-    path = inner_loop_module._resolve_pr_artifact_path(
-        environ={inner_loop_module.RUN_DIR_ENV: "   "},
-        run_log=run_log,
-    )
-
-    assert path == _pr_discovery_artifact_path()
-    assert "ignoring empty run-dir env var while resolving PR artifact path" in run_log.read_text()
+    assert pr is not None
+    assert pr.url == "https://github.com/acme/api/pull/42"
 
 
 def test_run_codex_turn_sets_needs_input_from_trailing_state_marker(
@@ -2222,10 +2193,6 @@ def test_run_codex_turn_sets_needs_input_from_trailing_state_marker(
         environ: dict[str, str],
     ) -> tuple[str, int, bool]:
         del base_command, prompt, agent_log, run_log, codex_session, turn_label, environ
-        _pr_discovery_artifact_path().write_text(
-            "https://github.com/acme/api/pull/42\n",
-            encoding="utf-8",
-        )
         return (
             json.dumps({"session_id": "session-2"})
             + "\nOpened PR https://github.com/acme/api/pull/42\n<state>NEEDS_INPUT</state>\n",
@@ -2257,7 +2224,7 @@ def test_run_codex_turn_sets_needs_input_from_trailing_state_marker(
     assert "codex requested state via marker: NEEDS_INPUT" in (run_dir / "run.log").read_text()
 
 
-def test_run_codex_turn_does_not_parse_pr_from_output_without_artifact(
+def test_run_codex_turn_parses_pr_from_output(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -2296,30 +2263,18 @@ def test_run_codex_turn_does_not_parse_pr_from_output_without_artifact(
         review_feedback=False,
     )
 
-    assert updated.pr is None
-    assert updated.needs_user_input is True
-    assert updated.needs_user_input_payload == {
-        "message": (
-            "Codex run completed but PR was not found in the PR artifact file. "
-            "What should Loops do next?"
-        )
-    }
+    assert updated.pr is not None
+    assert updated.pr.url == "https://github.com/acme/api/pull/42"
+    assert updated.needs_user_input is False
 
 
-def test_run_codex_turn_reads_pr_from_run_dir_scoped_artifact_path(
+def test_run_codex_turn_sets_needs_input_when_output_has_no_pr(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     _write_run_record(run_dir)
-
-    # Simulate stale global artifact from another run; run-dir-scoped artifact should isolate this turn.
-    _pr_discovery_artifact_path().write_text(
-        "https://github.com/acme/api/pull/999\n",
-        encoding="utf-8",
-    )
-    run_scoped_path = inner_loop_module._run_scoped_pr_artifact_path(run_dir)
 
     def fake_invoke_codex(
         *,
@@ -2332,35 +2287,30 @@ def test_run_codex_turn_reads_pr_from_run_dir_scoped_artifact_path(
         environ: dict[str, str],
     ) -> tuple[str, int, bool]:
         del base_command, prompt, agent_log, run_log, codex_session, turn_label, environ
-        run_scoped_path.write_text(
-            "https://github.com/acme/api/pull/42\n",
-            encoding="utf-8",
-        )
         return (
-            json.dumps({"session_id": "session-2"})
-            + "\nOpened PR https://github.com/acme/api/pull/42\n",
+            json.dumps({"session_id": "session-2"}) + "\nwork complete\n",
             0,
             False,
         )
 
     monkeypatch.setattr(inner_loop_module, "_invoke_codex", fake_invoke_codex)
     run_json_path = run_dir / "run.json"
-    env = os.environ.copy()
-    env[inner_loop_module.RUN_DIR_ENV] = str(run_dir)
     updated = inner_loop_module._run_codex_turn(
         run_json_path=run_json_path,
         run_log=run_dir / "run.log",
         agent_log=run_dir / "agent.log",
         run_record=read_run_record(run_json_path),
         command=["codex", "exec"],
-        environ=env,
+        environ=os.environ.copy(),
         base_prompt=None,
         review_feedback=False,
     )
 
-    assert updated.pr is not None
-    assert updated.pr.url == "https://github.com/acme/api/pull/42"
-    assert "pr_url=https://github.com/acme/api/pull/42" in (run_dir / "run.log").read_text()
+    assert updated.pr is None
+    assert updated.needs_user_input is True
+    assert updated.needs_user_input_payload == {
+        "message": "Codex run completed but PR was not found. What should Loops do next?"
+    }
 
 
 def test_run_codex_turn_does_not_discover_pr_during_review_feedback(
@@ -2376,7 +2326,6 @@ def test_run_codex_turn_does_not_discover_pr_during_review_feedback(
         review_status="open",
     )
     _write_run_record(run_dir, pr=existing_pr)
-    run_scoped_path = inner_loop_module._run_scoped_pr_artifact_path(run_dir)
 
     def fake_invoke_codex(
         *,
@@ -2389,23 +2338,22 @@ def test_run_codex_turn_does_not_discover_pr_during_review_feedback(
         environ: dict[str, str],
     ) -> tuple[str, int, bool]:
         del base_command, prompt, agent_log, run_log, codex_session, turn_label, environ
-        run_scoped_path.write_text(
-            "https://github.com/acme/api/pull/99\n",
-            encoding="utf-8",
+        return (
+            json.dumps({"session_id": "session-2"})
+            + "\nOpened PR https://github.com/acme/api/pull/99\nreview handled\n",
+            0,
+            False,
         )
-        return (json.dumps({"session_id": "session-2"}) + "\nreview handled\n", 0, False)
 
     monkeypatch.setattr(inner_loop_module, "_invoke_codex", fake_invoke_codex)
     run_json_path = run_dir / "run.json"
-    env = os.environ.copy()
-    env[inner_loop_module.RUN_DIR_ENV] = str(run_dir)
     updated = inner_loop_module._run_codex_turn(
         run_json_path=run_json_path,
         run_log=run_dir / "run.log",
         agent_log=run_dir / "agent.log",
         run_record=read_run_record(run_json_path),
         command=["codex", "exec"],
-        environ=env,
+        environ=os.environ.copy(),
         base_prompt=None,
         review_feedback=True,
     )
