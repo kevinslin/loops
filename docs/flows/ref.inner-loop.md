@@ -19,7 +19,7 @@ It is intended as a fast context-recapture artifact for humans and LLM agents ch
 - `Run directory`: Per-task folder under `.loops/jobs/<run>/` containing `run.json`, `run.log`, `agent.log`, and signal files.
 - `Run record`: The `RunRecord` payload persisted in `run.json`.
 - `Derived state`: `RUNNING | WAITING_ON_REVIEW | NEEDS_INPUT | PR_APPROVED | DONE`, computed from `pr` + `needs_user_input`.
-- `Auto-approve gate`: inline branch inside `WAITING_ON_REVIEW` requiring green CI and one-time `$ag-judge` evaluation.
+- `Auto-approve gate`: inline branch inside `WAITING_ON_REVIEW` that applies only when review is not already approved, CI is green, and `auto_approve_enabled` is true; it runs one-time `$ag-judge` evaluation.
 - `Signal queue`: Append-only `state_signals.jsonl` used to request `NEEDS_INPUT` without direct `run.json` writes.
 - `Single-writer model`: Inner loop is the only writer of `run.json`.
 
@@ -69,7 +69,7 @@ function run_inner_loop(run_dir):
 
 - Core state is derived each iteration from `run.json` (`pr`, `needs_user_input`), not from cached in-memory state.
 - Transition gates include: review freshness (`latest_review_submitted_at > review_addressed_at`), idle polling threshold escalation, and max-iteration fallback.
-- Additional inline review gate: once review is approved, require `ci_status == success`; when `auto_approve_enabled` is true and `RunRecord.auto_approve` is unset/`none`, run one-time `$ag-judge` and persist judgement on `RunRecord`.
+- Additional inline review gate: when review is not already approved and `ci_status == success`, if `auto_approve_enabled` is true and `RunRecord.auto_approve` is unset/`none`, run one-time `$ag-judge` and persist judgement on `RunRecord`.
 - Runtime config comes from CLI/env + run-scoped files (`inner_loop_approval_config.json`, optional prompt file).
 - In sync-mode launches, outer loop sets `LOOPS_STREAM_LOGS_STDOUT=1`, which causes inner-loop `run.log` appends to be mirrored to stdout.
 
@@ -214,8 +214,8 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
   - Calls `gh pr view ... --json reviewDecision,mergedAt,url,number,latestReviews,reviews,comments`.
   - Maps decision into `review_status`, captures latest relevant review timestamp, and may override to approved when the newest allowlisted approval signal (plain PR comment or `COMMENTED`/`APPROVED` review body matching pattern) is newer than latest `CHANGES_REQUESTED` review.
   - When review status remains open, chooses the newest timestamp between the latest `COMMENTED` PR review and plain PR discussion comment and uses that as the feedback signal.
-  - When review is approved, keeps control in `WAITING_ON_REVIEW` until CI is green (`ci_status == success`).
-  - If CI is green and `auto_approve_enabled` is true with no stored verdict, runs one-time `trigger:auto-approve-eval` (`$ag-judge`, fixed judge book `references/jb.coding.md`) and persists verdict/scores on `RunRecord.auto_approve`.
+  - When review is approved, the loop derives `PR_APPROVED` via the existing manual path.
+  - If review is not already approved, CI is green, and `auto_approve_enabled` is true with no stored verdict, it runs one-time `trigger:auto-approve-eval` (`$ag-judge`, fixed judge book `references/jb.coding.md`) and persists verdict/scores on `RunRecord.auto_approve`.
   - Only `auto_approve.verdict == APPROVE` allows promotion to `PR_APPROVED`; `REJECT`/`ESCALATE` remain blocked in `WAITING_ON_REVIEW` with no automatic re-run.
 
 - Approved-state merge polling behavior (`loops/inner_loop.py`):
@@ -315,13 +315,13 @@ Q: When does inner loop reuse the same Codex session?
 A: After the first successful turn stores `codex_session.id`, follow-up turns (review-feedback turns and PR-approved cleanup turns) attempt `codex exec resume <session_id>`; if `CODEX_CMD` is not codex-shaped, the loop logs fallback and runs the base command.
 
 Q: Can a PR move to `PR_APPROVED` without `reviewDecision=APPROVED`?
-A: Yes. If configured allowlisted usernames post matching approval text in either a plain PR comment or a `COMMENTED`/`APPROVED` review body, and that signal is newer than the latest `CHANGES_REQUESTED` review, polling treats the PR as approved.
+A: Yes. There are two supported paths: (1) manual approval signals (including allowlisted matching approval text newer than latest `CHANGES_REQUESTED` review), and (2) when review is not already approved, CI is green, `auto_approve_enabled=true`, and the one-time auto-approve verdict is `APPROVE`.
 
 Q: How does `gh_comment_handler` know which comment to consume?
 A: It only accepts comments that start with `/loops-reply` and are newer than the current prompt comment, tracked with run-local handoff state.
 
 Q: Where is auto-approve judgement persisted?
-A: On top-level `RunRecord.auto_approve`, not under `RunPR`. The gate runs once per conversation when review is approved and CI is green.
+A: On top-level `RunRecord.auto_approve`, not under `RunPR`. The gate runs once per conversation when review is not already approved and CI is green.
 
 Q: Who owns `run.json` updates?
 A: Inner loop only. Signal producers append to queue; they do not mutate `run.json` (`loops/state_signal.py:49`, `loops/inner_loop.py:941`).
@@ -331,6 +331,7 @@ A: Inner loop only. Signal producers append to queue; they do not mutate `run.js
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+- 2026-02-28: Clarified `PR_APPROVED` derivation to keep manual approval path unchanged and add conditional auto-approve path only when review is not already approved, CI is green, and `auto_approve_enabled` is true. (019ca742-f800-78a3-a5f3-11d807a04164)
 - 2026-02-28: Simplified auto-approve flow to keep old state topology and run CI + one-time `$ag-judge` gating inline within `WAITING_ON_REVIEW`, with judgement stored on `RunRecord.auto_approve`. (019ca742-f800-78a3-a5f3-11d807a04164)
 - 2026-02-28: Documented prompt contract forbidding in-turn human-review waiting and limiting in-turn waiting to `a-review` subagent completion. (019ca6dd-2edd-75c0-91e9-96d280d202ac)
 - 2026-02-28: Refactored flow sudocode to match kernel+dispatch runtime structure (`run_inner_loop` dispatching to per-state handlers). (019ca688-39ba-7f12-9fba-23a0aeac144c)
