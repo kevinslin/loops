@@ -38,8 +38,8 @@ def test_init_creates_default_loops_structure(tmp_path: Path) -> None:
 
     config_payload = json.loads((loops_root / "config.json").read_text())
     assert config_payload["version"] == LATEST_LOOPS_CONFIG_VERSION
-    assert config_payload["provider_id"] == "github_projects_v2"
-    assert config_payload["provider_config"] == build_default_provider_config_payload()
+    assert config_payload["task_provider_id"] == "github_projects_v2"
+    assert config_payload["task_provider_config"] == build_default_provider_config_payload()
     assert config_payload["loop_config"] == build_default_loop_config_payload()
     assert config_payload["inner_loop"] == cli_module._build_default_inner_loop_payload()
     assert config_payload["loop_config"]["sync_mode"] is False
@@ -80,7 +80,7 @@ def test_init_force_overwrites_existing_config(tmp_path: Path) -> None:
 
     assert result.exit_code == 0, result.output
     overwritten = json.loads(config_path.read_text())
-    assert overwritten["provider_id"] == "github_projects_v2"
+    assert overwritten["task_provider_id"] == "github_projects_v2"
 
 
 def test_normalize_argv_preserves_known_subcommands() -> None:
@@ -300,8 +300,8 @@ def test_run_outer_loop_task_url_implies_run_once_and_force(
     config_path.write_text("{}")
     loaded = LoopsConfig(
         version=LATEST_LOOPS_CONFIG_VERSION,
-        provider_id="github_projects_v2",
-        provider_config={
+        task_provider_id="github_projects_v2",
+        task_provider_config={
             "url": "https://github.com/orgs/default/projects/1",
             "status_field": "Status",
         },
@@ -339,7 +339,7 @@ def test_run_outer_loop_task_url_implies_run_once_and_force(
             captured["run_forever_limit"] = limit
 
     def fake_build_provider(config: LoopsConfig) -> object:
-        captured["provider_config"] = dict(config.provider_config)
+        captured["task_provider_config"] = dict(config.task_provider_config)
         captured["inner_loop_command"] = (
             list(config.inner_loop.command) if config.inner_loop is not None else None
         )
@@ -362,7 +362,7 @@ def test_run_outer_loop_task_url_implies_run_once_and_force(
         task_url="https://github.com/acme/api/issues/9",
     )
 
-    assert captured["provider_config"] == {
+    assert captured["task_provider_config"] == {
         "url": "https://github.com/orgs/default/projects/1",
         "status_field": "Status",
     }
@@ -389,8 +389,8 @@ def test_run_outer_loop_sync_mode_interrupt_prints_run_resume_command(
     run_dir = tmp_path / ".loops" / "jobs" / "2026-03-01-ship-it-1"
     loaded = LoopsConfig(
         version=LATEST_LOOPS_CONFIG_VERSION,
-        provider_id="github_projects_v2",
-        provider_config={},
+        task_provider_id="github_projects_v2",
+        task_provider_config={},
         loop_config=OuterLoopConfig(sync_mode=True),
         inner_loop=None,
     )
@@ -438,8 +438,8 @@ def test_run_outer_loop_non_launcher_interrupt_does_not_print_resume_hint(
     config_path.write_text("{}")
     loaded = LoopsConfig(
         version=LATEST_LOOPS_CONFIG_VERSION,
-        provider_id="github_projects_v2",
-        provider_config={},
+        task_provider_id="github_projects_v2",
+        task_provider_config={},
         loop_config=OuterLoopConfig(sync_mode=True),
         inner_loop=None,
     )
@@ -483,6 +483,7 @@ def test_doctor_upgrades_legacy_config(tmp_path: Path) -> None:
     config_path.write_text(
         json.dumps(
             {
+                "version": 1,
                 "provider_id": "github_projects_v2",
                 "provider_config": {"url": "https://github.com/orgs/acme/projects/7"},
                 "loop_config": {"task_ready_status": "Todo"},
@@ -496,7 +497,10 @@ def test_doctor_upgrades_legacy_config(tmp_path: Path) -> None:
     assert "Upgraded config to version" in result.output
     payload = json.loads(config_path.read_text())
     assert payload["version"] == LATEST_LOOPS_CONFIG_VERSION
-    assert payload["provider_config"] == {
+    assert "provider_id" not in payload
+    assert "provider_config" not in payload
+    assert payload["task_provider_id"] == "github_projects_v2"
+    assert payload["task_provider_config"] == {
         "allowlist": [],
         "page_size": 50,
         "status_field": "Status",
@@ -526,8 +530,8 @@ def test_doctor_does_not_synthesize_missing_github_provider_url(tmp_path: Path) 
     config_path.write_text(
         json.dumps(
             {
-                "provider_id": "github_projects_v2",
-                "provider_config": {},
+                "task_provider_id": "github_projects_v2",
+                "task_provider_config": {},
             }
         )
     )
@@ -536,7 +540,7 @@ def test_doctor_does_not_synthesize_missing_github_provider_url(tmp_path: Path) 
 
     assert result.exit_code == 0, result.output
     payload = json.loads(config_path.read_text())
-    assert payload["provider_config"] == {
+    assert payload["task_provider_config"] == {
         "allowlist": [],
         "page_size": 50,
         "status_field": "Status",
@@ -557,8 +561,8 @@ def test_loop_config_defaults_are_consistent_across_entrypoints(tmp_path: Path) 
     doctor_config_path.write_text(
         json.dumps(
             {
-                "provider_id": "github_projects_v2",
-                "provider_config": {"url": "https://github.com/orgs/acme/projects/7"},
+                "task_provider_id": "github_projects_v2",
+                "task_provider_config": {"url": "https://github.com/orgs/acme/projects/7"},
             }
         )
     )
@@ -571,8 +575,8 @@ def test_loop_config_defaults_are_consistent_across_entrypoints(tmp_path: Path) 
     loader_config_path.write_text(
         json.dumps(
             {
-                "provider_id": "github_projects_v2",
-                "provider_config": {},
+                "task_provider_id": "github_projects_v2",
+                "task_provider_config": {},
             }
         )
     )
@@ -586,5 +590,5 @@ def test_loop_config_defaults_are_consistent_across_entrypoints(tmp_path: Path) 
 
 def test_default_provider_and_inner_loop_payloads_are_canonical() -> None:
     default_config = cli_module._build_default_config()
-    assert default_config["provider_config"] == build_default_provider_config_payload()
+    assert default_config["task_provider_config"] == build_default_provider_config_payload()
     assert default_config["inner_loop"] == cli_module._build_default_inner_loop_payload()

@@ -282,8 +282,8 @@ def test_run_once_writes_detailed_logs(tmp_path: Path) -> None:
 def test_load_config_resolves_working_dir(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     payload = {
-        "provider_id": "github_projects_v2",
-        "provider_config": {},
+        "task_provider_id": "github_projects_v2",
+        "task_provider_config": {},
         "inner_loop": {
             "command": "echo hello",
             "working_dir": "inner",
@@ -301,8 +301,8 @@ def test_load_config_resolves_working_dir(tmp_path: Path) -> None:
 def test_load_config_reads_sync_mode(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     payload = {
-        "provider_id": "github_projects_v2",
-        "provider_config": {},
+        "task_provider_id": "github_projects_v2",
+        "task_provider_config": {},
         "loop_config": {"sync_mode": True},
         "inner_loop": {
             "command": ["echo", "hello"],
@@ -319,8 +319,8 @@ def test_load_config_reads_sync_mode(tmp_path: Path) -> None:
 def test_load_config_reads_auto_approve_enabled(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     payload = {
-        "provider_id": "github_projects_v2",
-        "provider_config": {},
+        "task_provider_id": "github_projects_v2",
+        "task_provider_config": {},
         "loop_config": {"auto_approve_enabled": True},
         "inner_loop": {
             "command": ["echo", "hello"],
@@ -337,8 +337,8 @@ def test_load_config_reads_auto_approve_enabled(tmp_path: Path) -> None:
 def test_load_config_reads_handoff_handler(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     payload = {
-        "provider_id": "github_projects_v2",
-        "provider_config": {},
+        "task_provider_id": "github_projects_v2",
+        "task_provider_config": {},
         "loop_config": {"handoff_handler": HANDOFF_HANDLER_GH_COMMENT},
     }
     config_path.write_text(json.dumps(payload))
@@ -347,11 +347,31 @@ def test_load_config_reads_handoff_handler(tmp_path: Path) -> None:
     assert config.loop_config.handoff_handler == HANDOFF_HANDLER_GH_COMMENT
 
 
+def test_load_config_migrates_legacy_provider_keys(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    payload = {
+        "version": 1,
+        "provider_id": "github_projects_v2",
+        "provider_config": {"url": "https://github.com/orgs/acme/projects/1"},
+    }
+    config_path.write_text(json.dumps(payload))
+
+    config = load_config(config_path)
+    assert config.version == LATEST_LOOPS_CONFIG_VERSION
+    assert config.task_provider_id == "github_projects_v2"
+    assert config.task_provider_config == {
+        "allowlist": [],
+        "page_size": 50,
+        "status_field": "Status",
+        "url": "https://github.com/orgs/acme/projects/1",
+    }
+
+
 def test_load_config_rejects_invalid_handoff_handler(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     payload = {
-        "provider_id": "github_projects_v2",
-        "provider_config": {},
+        "task_provider_id": "github_projects_v2",
+        "task_provider_config": {},
         "loop_config": {"handoff_handler": "unsupported_handler"},
     }
     config_path.write_text(json.dumps(payload))
@@ -363,8 +383,8 @@ def test_load_config_rejects_invalid_handoff_handler(tmp_path: Path) -> None:
 def test_load_config_rejects_gh_handoff_for_non_github_provider(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     payload = {
-        "provider_id": "custom_provider",
-        "provider_config": {},
+        "task_provider_id": "custom_provider",
+        "task_provider_config": {},
         "loop_config": {"handoff_handler": HANDOFF_HANDLER_GH_COMMENT},
     }
     config_path.write_text(json.dumps(payload))
@@ -376,8 +396,8 @@ def test_load_config_rejects_gh_handoff_for_non_github_provider(tmp_path: Path) 
 def test_load_config_reads_comment_approval_config(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     payload = {
-        "provider_id": "github_projects_v2",
-        "provider_config": {},
+        "task_provider_id": "github_projects_v2",
+        "task_provider_config": {},
         "loop_config": {
             "approval_comment_usernames": ["Maintainer", "review-bot", "maintainer"],
             "approval_comment_pattern": r"^\s*/shipit\b",
@@ -397,13 +417,13 @@ def test_load_config_reads_comment_approval_config(tmp_path: Path) -> None:
 def test_load_config_backfills_github_provider_defaults(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     payload = {
-        "provider_id": "github_projects_v2",
-        "provider_config": {"url": "https://github.com/orgs/acme/projects/1"},
+        "task_provider_id": "github_projects_v2",
+        "task_provider_config": {"url": "https://github.com/orgs/acme/projects/1"},
     }
     config_path.write_text(json.dumps(payload))
 
     config = load_config(config_path)
-    assert config.provider_config == {
+    assert config.task_provider_config == {
         "allowlist": [],
         "page_size": 50,
         "status_field": "Status",
@@ -417,28 +437,28 @@ def test_load_config_does_not_backfill_missing_github_provider_url(
 ) -> None:
     config_path = tmp_path / "config.json"
     payload = {
-        "provider_id": "github_projects_v2",
-        "provider_config": {},
+        "task_provider_id": "github_projects_v2",
+        "task_provider_config": {},
     }
     config_path.write_text(json.dumps(payload))
 
     config = load_config(config_path)
-    assert config.provider_config == {
+    assert config.task_provider_config == {
         "allowlist": [],
         "page_size": 50,
         "status_field": "Status",
     }
 
     monkeypatch.setenv("GITHUB_TOKEN", "token")
-    with pytest.raises(ValueError, match="provider_config is invalid"):
+    with pytest.raises(ValueError, match="task_provider_config is invalid"):
         build_provider(config)
 
 
 def test_load_config_rejects_invalid_comment_approval_usernames(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     payload = {
-        "provider_id": "github_projects_v2",
-        "provider_config": {},
+        "task_provider_id": "github_projects_v2",
+        "task_provider_config": {},
         "loop_config": {"approval_comment_usernames": "maintainer"},
     }
     config_path.write_text(json.dumps(payload))
@@ -450,8 +470,8 @@ def test_load_config_rejects_invalid_comment_approval_usernames(tmp_path: Path) 
 def test_load_config_rejects_bool_ints(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     payload = {
-        "provider_id": "github_projects_v2",
-        "provider_config": {},
+        "task_provider_id": "github_projects_v2",
+        "task_provider_config": {},
         "loop_config": {"poll_interval_seconds": True},
     }
     config_path.write_text(json.dumps(payload))
@@ -465,8 +485,8 @@ def test_build_provider_accepts_alias_secret_env_var(monkeypatch) -> None:
     monkeypatch.setenv("GH_TOKEN", "token-from-alias")
     config = LoopsConfig(
         version=LATEST_LOOPS_CONFIG_VERSION,
-        provider_id="github_projects_v2",
-        provider_config={"url": "https://github.com/orgs/acme/projects/1"},
+        task_provider_id="github_projects_v2",
+        task_provider_config={"url": "https://github.com/orgs/acme/projects/1"},
         loop_config=OuterLoopConfig(),
         inner_loop=None,
     )
@@ -481,8 +501,8 @@ def test_build_provider_rejects_missing_required_secret(monkeypatch) -> None:
     monkeypatch.delenv("GH_TOKEN", raising=False)
     config = LoopsConfig(
         version=LATEST_LOOPS_CONFIG_VERSION,
-        provider_id="github_projects_v2",
-        provider_config={"url": "https://github.com/orgs/acme/projects/1"},
+        task_provider_id="github_projects_v2",
+        task_provider_config={"url": "https://github.com/orgs/acme/projects/1"},
         loop_config=OuterLoopConfig(),
         inner_loop=None,
     )
@@ -495,8 +515,8 @@ def test_build_provider_validates_provider_config(monkeypatch) -> None:
     monkeypatch.setenv("GITHUB_TOKEN", "token")
     config = LoopsConfig(
         version=LATEST_LOOPS_CONFIG_VERSION,
-        provider_id="github_projects_v2",
-        provider_config={
+        task_provider_id="github_projects_v2",
+        task_provider_config={
             "url": "https://github.com/orgs/acme/projects/1",
             "unsupported": "value",
         },
@@ -504,7 +524,7 @@ def test_build_provider_validates_provider_config(monkeypatch) -> None:
         inner_loop=None,
     )
 
-    with pytest.raises(ValueError, match="provider_config is invalid"):
+    with pytest.raises(ValueError, match="task_provider_config is invalid"):
         build_provider(config)
 
 
@@ -538,8 +558,8 @@ def test_build_inner_loop_launcher_sync_mode_uses_subprocess_run(
 
     config = LoopsConfig(
         version=LATEST_LOOPS_CONFIG_VERSION,
-        provider_id="github_projects_v2",
-        provider_config={"url": "https://github.com/orgs/acme/projects/1"},
+        task_provider_id="github_projects_v2",
+        task_provider_config={"url": "https://github.com/orgs/acme/projects/1"},
         loop_config=OuterLoopConfig(
             sync_mode=True,
             approval_comment_usernames=("maintainer", "review-bot"),
@@ -593,8 +613,8 @@ def test_build_inner_loop_launcher_sync_mode_interrupt_raises_typed_error(
 
     config = LoopsConfig(
         version=LATEST_LOOPS_CONFIG_VERSION,
-        provider_id="github_projects_v2",
-        provider_config={"url": "https://github.com/orgs/acme/projects/1"},
+        task_provider_id="github_projects_v2",
+        task_provider_config={"url": "https://github.com/orgs/acme/projects/1"},
         loop_config=OuterLoopConfig(sync_mode=True),
         inner_loop=InnerLoopCommandConfig(
             command=["echo", "hello"],
@@ -643,8 +663,8 @@ def test_load_config_preserves_explicit_version(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     payload = {
         "version": LATEST_LOOPS_CONFIG_VERSION,
-        "provider_id": "github_projects_v2",
-        "provider_config": {},
+        "task_provider_id": "github_projects_v2",
+        "task_provider_config": {},
     }
     config_path.write_text(json.dumps(payload))
 

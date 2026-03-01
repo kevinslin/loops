@@ -97,9 +97,9 @@ def test_outer_loop_pickup_live(tmp_path: Path) -> None:
 def write_live_config(*, config_path: Path, run_label: str) -> None:
     config_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "version": 1,
-        "provider_id": "github_projects_v2",
-        "provider_config": {
+        "version": 2,
+        "task_provider_id": "github_projects_v2",
+        "task_provider_config": {
             "url": LOOPS_INTEG_PROJECT_URL,
             "status_field": "Status",
             "filters": [
