@@ -211,7 +211,7 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
   - Selects invocation strategy (new session vs `resume <session_id>`) from `run_record.codex_session`.
   - Streams stdout/stderr into `agent.log` and appends the same output to `run.log`.
   - Extracts session id and a trailing `<state>...</state>` marker from output when the final line is marker-only (legacy `</>` close tag is also accepted for compatibility).
-  - Discovers PR URL from `/tmp/{current-dir}-devloop-pr` only (artifact written by the `push-pr` shortcut), and clears the artifact before each turn to avoid stale PR reuse.
+  - Discovers PR URL from artifact file only (path from `LOOPS_PR_ARTIFACT_FILE`; fallback `/tmp/{current-dir}-devloop-pr` for compatibility), and clears that artifact before each turn to avoid stale PR reuse.
   - Sets `needs_user_input=true` on non-zero exits, on trailing `NEEDS_INPUT` state markers, or on successful turns with no PR detected.
 
 - Review polling behavior (`loops/inner_loop.py:767`):
@@ -310,7 +310,7 @@ Key logs and emit sites:
 ## FAQ
 
 Q: Why can a successful Codex turn still transition to `NEEDS_INPUT`?
-A: If exit code is zero but no PR URL artifact is written to `/tmp/{current-dir}-devloop-pr`, the loop requests manual guidance.
+A: If exit code is zero but no PR URL artifact is written to the expected artifact path (`LOOPS_PR_ARTIFACT_FILE` or fallback `/tmp/{current-dir}-devloop-pr`), the loop requests manual guidance.
 
 Q: Why does review feedback not always re-trigger Codex?
 A: The loop resumes Codex only for new feedback events (`latest_review_submitted_at > review_addressed_at`): new `changes_requested` reviews, or new open-state feedback where the newest timestamp between `COMMENTED` PR review events and plain PR discussion comments has advanced. Duplicate events with unchanged timestamps are skipped.
@@ -338,7 +338,7 @@ A: Inner loop only. Signal producers append to queue; they do not mutate `run.js
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
-- 2026-03-01: Switched PR discovery from output scraping to `/tmp/{current-dir}-devloop-pr` artifact reads only, with per-turn artifact clearing to prevent stale PR reuse.
+- 2026-03-01: Switched PR discovery from output scraping to artifact-file reads only, using run-scoped `LOOPS_PR_ARTIFACT_FILE` (fallback `/tmp/{current-dir}-devloop-pr`) and per-turn artifact clearing to prevent stale PR reuse.
 - 2026-03-01: Switched runtime config transport to run-scoped `inner_loop_runtime_config.json`; env variables remain fallback inputs when runtime config omits keys or is unavailable. (019caae6-1189-7d83-a9cd-1665818fba36)
 - 2026-03-01: Updated prompt contract notes to require posting `a-review` output and `ag-judge` verdict/scores to PR comments. (019caaa4-f4d8-7822-a0d0-03315986d5ef)
 - 2026-03-01: Updated review-allowlist config references to `task_provider_config.allowlist` for config schema v2 alignment. (019caa8b-0807-7603-a519-4a6be2b8e53c)

@@ -41,6 +41,8 @@ from loops.run_record import RunRecord, Task, write_run_record
 from loops.task_provider import TaskProvider
 
 INNER_LOOP_RUNS_DIR_NAME = "jobs"
+DEVLOOP_PR_FILE_SUFFIX = "-devloop-pr"
+PR_ARTIFACT_FILE_ENV = "LOOPS_PR_ARTIFACT_FILE"
 LATEST_LOOPS_CONFIG_VERSION = 2
 
 
@@ -548,6 +550,9 @@ def build_inner_loop_launcher(
         )
         env = os.environ.copy()
         env["LOOPS_RUN_DIR"] = str(run_dir)
+        env[PR_ARTIFACT_FILE_ENV] = str(
+            Path("/tmp") / f"{run_dir.name}{DEVLOOP_PR_FILE_SUFFIX}"
+        )
         command = list(inner_loop.command)
         launches_loops_inner_loop = _is_loops_inner_loop_command(command)
         if inner_loop.env and not launches_loops_inner_loop:

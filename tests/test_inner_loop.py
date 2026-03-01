@@ -40,7 +40,7 @@ from loops.state_signal import enqueue_state_signal
 
 
 def _pr_discovery_artifact_path() -> Path:
-    return Path("/tmp") / f"{Path.cwd().name}-devloop-pr"
+    return inner_loop_module._default_devloop_pr_artifact_path()
 
 
 @pytest.fixture(autouse=True)
@@ -120,7 +120,11 @@ def _write_codex_stub(path: Path) -> None:
                 "count += 1",
                 "counter_path.write_text(str(count))",
                 "",
-                "pr_artifact_path = Path('/tmp') / f\"{Path.cwd().name}-devloop-pr\"",
+                "pr_artifact_file = os.environ.get('LOOPS_PR_ARTIFACT_FILE')",
+                "if pr_artifact_file and pr_artifact_file.strip():",
+                "    pr_artifact_path = Path(pr_artifact_file.strip())",
+                "else:",
+                "    pr_artifact_path = Path('/tmp') / f\"{Path.cwd().name}-devloop-pr\"",
                 "if resume_session is not None:",
                 "    print(json.dumps({'session_id': resume_session}))",
                 "else:",
@@ -1040,6 +1044,7 @@ def test_inner_loop_consumes_signal_and_uses_user_response_in_prompt(
         in prompts
     )
     assert "NEVER use the gen-notifier skill while running inside loops." in prompts
+    assert "When you open a PR, run trigger:push-pr so Loops records the PR URL artifact." in prompts
     assert "trigger:merge-pr when the state is exactly <state>PR_APPROVED</state>." in prompts
     assert "In the initial PR description, do not repeat the PR title in the body." in prompts
     assert "Include session context in the initial PR body using: sessionid: [session]" in prompts
@@ -2156,6 +2161,27 @@ def test_extract_trailing_state_marker(output: str, expected: str | None) -> Non
     assert inner_loop_module._extract_trailing_state_marker(output) == expected
 
 
+def test_resolve_pr_artifact_path_prefers_env_override(tmp_path: Path) -> None:
+    override_path = tmp_path / "pr-artifact.txt"
+    path = inner_loop_module._resolve_pr_artifact_path(
+        environ={inner_loop_module.PR_ARTIFACT_FILE_ENV: str(override_path)},
+        run_log=tmp_path / "run.log",
+    )
+
+    assert path == override_path
+
+
+def test_resolve_pr_artifact_path_empty_override_uses_default(tmp_path: Path) -> None:
+    run_log = tmp_path / "run.log"
+    path = inner_loop_module._resolve_pr_artifact_path(
+        environ={inner_loop_module.PR_ARTIFACT_FILE_ENV: "   "},
+        run_log=run_log,
+    )
+
+    assert path == _pr_discovery_artifact_path()
+    assert "ignoring empty PR artifact override env var" in run_log.read_text()
+
+
 def test_run_codex_turn_sets_needs_input_from_trailing_state_marker(
     tmp_path: Path,
     monkeypatch,
@@ -2265,6 +2291,63 @@ def test_run_codex_turn_does_not_parse_pr_from_output_without_artifact(
             "What should Loops do next?"
         )
     }
+
+
+def test_run_codex_turn_reads_pr_from_env_override_artifact_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(run_dir)
+
+    # Simulate stale global artifact from another run; the env override should isolate this turn.
+    _pr_discovery_artifact_path().write_text(
+        "https://github.com/acme/api/pull/999\n",
+        encoding="utf-8",
+    )
+    override_path = tmp_path / "override-pr-artifact.txt"
+
+    def fake_invoke_codex(
+        *,
+        base_command: list[str],
+        prompt: str,
+        agent_log: Path,
+        run_log: Path,
+        codex_session: inner_loop_module.CodexSession | None,
+        turn_label: str,
+        environ: dict[str, str],
+    ) -> tuple[str, int, bool]:
+        del base_command, prompt, agent_log, run_log, codex_session, turn_label, environ
+        override_path.write_text(
+            "https://github.com/acme/api/pull/42\n",
+            encoding="utf-8",
+        )
+        return (
+            json.dumps({"session_id": "session-2"})
+            + "\nOpened PR https://github.com/acme/api/pull/42\n",
+            0,
+            False,
+        )
+
+    monkeypatch.setattr(inner_loop_module, "_invoke_codex", fake_invoke_codex)
+    run_json_path = run_dir / "run.json"
+    env = os.environ.copy()
+    env[inner_loop_module.PR_ARTIFACT_FILE_ENV] = str(override_path)
+    updated = inner_loop_module._run_codex_turn(
+        run_json_path=run_json_path,
+        run_log=run_dir / "run.log",
+        agent_log=run_dir / "agent.log",
+        run_record=read_run_record(run_json_path),
+        command=["codex", "exec"],
+        environ=env,
+        base_prompt=None,
+        review_feedback=False,
+    )
+
+    assert updated.pr is not None
+    assert updated.pr.url == "https://github.com/acme/api/pull/42"
+    assert "pr_url=https://github.com/acme/api/pull/42" in (run_dir / "run.log").read_text()
 
 
 def test_run_codex_turn_clears_stale_session_after_failed_resume_fallback(

@@ -67,6 +67,7 @@ PROMPT_TEMPLATE = (
     "initial state is <state>RUNNING</state>.\n"
     "If you need input from user, print what you need help with and end current conversation "
     "with <state>NEEDS_INPUT</>\n"
+    "When you open a PR, run trigger:push-pr so Loops records the PR URL artifact.\n"
     "trigger:merge-pr when the state is exactly <state>PR_APPROVED</state>.\n"
     "Do not merge until the state is exactly <state>PR_APPROVED</state>.\n"
     "In the initial PR description, do not repeat the PR title in the body.\n"
@@ -93,6 +94,7 @@ GITHUB_PR_PATTERN = re.compile(
     r"https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([0-9]+)"
 )
 DEVLOOP_PR_FILE_SUFFIX = "-devloop-pr"
+PR_ARTIFACT_FILE_ENV = "LOOPS_PR_ARTIFACT_FILE"
 
 SESSION_ID_PATTERN = re.compile(r"session[_\s-]*id\s*[:=]\s*([\w-]+)", re.IGNORECASE)
 UUID_PATTERN = re.compile(
@@ -1330,7 +1332,10 @@ def _run_codex_turn(
     review_feedback: bool,
     auto_approve_enabled: bool = False,
 ) -> RunRecord:
-    pr_artifact_path = _devloop_pr_artifact_path()
+    pr_artifact_path = _resolve_pr_artifact_path(
+        environ=environ,
+        run_log=run_log,
+    )
     _clear_pr_artifact_file(path=pr_artifact_path, run_log=run_log)
 
     if user_response is not None:
@@ -1568,8 +1573,25 @@ def _run_auto_approve_eval(
     )
 
 
-def _devloop_pr_artifact_path() -> Path:
+def _default_devloop_pr_artifact_path() -> Path:
     return Path("/tmp") / f"{Path.cwd().name}{DEVLOOP_PR_FILE_SUFFIX}"
+
+
+def _resolve_pr_artifact_path(*, environ: Mapping[str, str], run_log: Path) -> Path:
+    override = environ.get(PR_ARTIFACT_FILE_ENV)
+    if override is None:
+        return _default_devloop_pr_artifact_path()
+    candidate = override.strip()
+    if not candidate:
+        append_log(
+            run_log,
+            (
+                "[loops] ignoring empty PR artifact override env var: "
+                f"{PR_ARTIFACT_FILE_ENV}"
+            ),
+        )
+        return _default_devloop_pr_artifact_path()
+    return Path(candidate).expanduser()
 
 
 def _clear_pr_artifact_file(*, path: Path, run_log: Path) -> None:
