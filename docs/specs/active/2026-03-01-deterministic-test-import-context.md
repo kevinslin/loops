@@ -116,7 +116,7 @@ Manual validation:
 
 ## Outputs
 
-- PR created from this spec: pending
+- PR created from this spec: https://github.com/kevinslin/loops/pull/68
 
 ## Manual Notes 
 
