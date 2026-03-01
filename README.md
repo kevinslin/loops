@@ -182,6 +182,7 @@ Notes:
 
 Upgrades `config.json` to the latest supported schema version and fills missing
 `loop_config` keys (and GitHub `task_provider_config` defaults) without overwriting existing values.
+When both legacy `provider_config` and `task_provider_config` exist, legacy keys are treated as fallback values for missing `task_provider_config` keys before default backfill.
 
 Options:
 

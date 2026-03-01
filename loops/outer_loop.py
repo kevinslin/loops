@@ -437,6 +437,14 @@ def upgrade_config_payload(payload: Any) -> tuple[dict[str, Any], bool]:
         changed = True
         if "task_provider_config" not in upgraded:
             upgraded["task_provider_config"] = legacy_provider_config
+        elif isinstance(legacy_provider_config, dict):
+            task_provider_config = upgraded.get("task_provider_config")
+            if isinstance(task_provider_config, dict):
+                merged_provider_config = dict(legacy_provider_config)
+                merged_provider_config.update(task_provider_config)
+                if merged_provider_config != task_provider_config:
+                    upgraded["task_provider_config"] = merged_provider_config
+                    changed = True
 
     existing_loop_payload = upgraded.get("loop_config")
     if existing_loop_payload is None:
