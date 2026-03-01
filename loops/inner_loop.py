@@ -1475,11 +1475,24 @@ def _ci_status_from_rollup(payload: dict[str, Any]) -> str:
         if not isinstance(item, dict):
             has_pending = True
             continue
+        state = str(item.get("state") or "").upper()
         status = str(item.get("status") or "").upper()
         conclusion_raw = item.get("conclusion")
         conclusion = (
             str(conclusion_raw).upper() if conclusion_raw is not None else ""
         )
+
+        # StatusContext entries can expose state without status/conclusion.
+        if state:
+            if state in CI_PENDING_STATUSES:
+                has_pending = True
+                continue
+            if state in CI_SUCCESS_CONCLUSIONS:
+                continue
+            if state in CI_FAILURE_CONCLUSIONS or state == "ERROR":
+                return "failure"
+            has_pending = True
+            continue
 
         if status in CI_PENDING_STATUSES:
             has_pending = True

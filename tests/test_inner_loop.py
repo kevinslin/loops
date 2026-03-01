@@ -2199,6 +2199,52 @@ def test_fetch_pr_status_sets_ci_status_from_rollup(monkeypatch) -> None:
     assert approved_by == ""
 
 
+def test_fetch_pr_status_sets_ci_status_from_status_context_state(monkeypatch) -> None:
+    payload = {
+        "url": "https://github.com/acme/api/pull/42",
+        "number": 42,
+        "reviewDecision": "APPROVED",
+        "mergedAt": None,
+        "latestReviews": [],
+        "comments": [],
+        "statusCheckRollup": [
+            {
+                "__typename": "StatusContext",
+                "context": "CodeRabbit",
+                "state": "SUCCESS",
+                "targetUrl": "",
+            }
+        ],
+    }
+
+    def fake_subprocess_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess(
+            args=["gh", "pr", "view"],
+            returncode=0,
+            stdout=json.dumps(payload),
+            stderr="",
+        )
+
+    monkeypatch.setattr(inner_loop_module.subprocess, "run", fake_subprocess_run)
+    settings = inner_loop_module.CommentApprovalSettings(
+        allowed_usernames=(),
+        pattern_text=r"^\s*/approve\b",
+        approval_regex=re.compile(r"^\s*/approve\b", re.IGNORECASE),
+    )
+    updated, approved_by_comment, approved_by = (
+        inner_loop_module._fetch_pr_status_with_gh_with_context(
+            RunPR(url="https://github.com/acme/api/pull/42"),
+            comment_approval=settings,
+        )
+    )
+
+    assert updated.review_status == "approved"
+    assert updated.ci_status == "success"
+    assert updated.ci_last_checked_at is not None
+    assert approved_by_comment is False
+    assert approved_by == ""
+
+
 def test_fetch_pr_status_uses_supported_gh_json_fields(monkeypatch) -> None:
     captured_args: list[str] = []
     payload = {
