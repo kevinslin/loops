@@ -49,7 +49,6 @@ from loops.run_record import (
     read_run_record,
     write_run_record,
 )
-from loops.state_signal import SIGNAL_QUEUE_FILE
 
 PROMPT_TEMPLATE = (
     "Use dev.do to implement the task and open a PR.\n" 
@@ -82,7 +81,6 @@ PROMPT_TEMPLATE = (
 PROMPT_STATE_RUNNING = "RUNNING"
 PROMPT_STATE_WAITING_ON_REVIEW = "WAITING_ON_REVIEW"
 PROMPT_STATE_PR_APPROVED = "PR_APPROVED"
-SIGNAL_OFFSET_FILE = "state_signals.offset"
 DEFAULT_MAX_ITERATIONS = 200
 DEFAULT_REVIEW_POLL_SECONDS = 5.0
 DEFAULT_MAX_REVIEW_POLL_SECONDS = 60.0
@@ -394,7 +392,6 @@ def run_inner_loop(
 
         for iteration in range(1, max_iterations + 1):
             run_record = read_run_record(run_json_path)
-            run_record = _apply_pending_signals(run_dir, run_record)
             state = _derive_state(
                 run_record,
                 auto_approve_enabled=runtime.auto_approve_enabled,
@@ -2568,101 +2565,6 @@ def _force_needs_input(
         ),
         auto_approve_enabled=auto_approve_enabled,
     )
-
-
-def _read_signal_offset(offset_path: Path) -> int:
-    if not offset_path.exists():
-        return 0
-    raw = offset_path.read_text().strip()
-    if not raw:
-        return 0
-    try:
-        value = int(raw)
-    except ValueError:
-        return 0
-    return max(value, 0)
-
-
-def _read_pending_signals(run_dir: Path) -> tuple[list[dict[str, Any]], int]:
-    queue_path = run_dir / SIGNAL_QUEUE_FILE
-    offset_path = run_dir / SIGNAL_OFFSET_FILE
-    if not queue_path.exists():
-        return [], 0
-
-    previous_offset = _read_signal_offset(offset_path)
-    file_size = queue_path.stat().st_size
-    if previous_offset > file_size:
-        previous_offset = 0
-    with queue_path.open("r", encoding="utf-8") as handle:
-        handle.seek(previous_offset)
-        chunk = handle.read()
-        new_offset = handle.tell()
-
-    signals: list[dict[str, Any]] = []
-    for line in chunk.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            payload = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
-            signals.append(payload)
-    return signals, new_offset
-
-
-def _write_signal_offset(run_dir: Path, offset: int) -> None:
-    offset_path = run_dir / SIGNAL_OFFSET_FILE
-    offset_path.write_text(str(max(offset, 0)))
-
-
-def _normalize_signal_payload(signal: dict[str, Any]) -> Optional[dict[str, Any]]:
-    payload = signal.get("payload")
-    if not isinstance(payload, dict):
-        return None
-    message = payload.get("message")
-    if not isinstance(message, str) or not message.strip():
-        return None
-    context = payload.get("context")
-    if context is not None and not isinstance(context, dict):
-        return None
-    normalized: dict[str, Any] = {"message": message.strip()}
-    if context is not None:
-        normalized["context"] = context
-    return normalized
-
-
-def _apply_pending_signals(run_dir: Path, run_record: RunRecord) -> RunRecord:
-    signals, new_offset = _read_pending_signals(run_dir)
-    if not signals:
-        queue_path = run_dir / SIGNAL_QUEUE_FILE
-        if queue_path.exists():
-            _write_signal_offset(run_dir, new_offset)
-        return run_record
-    run_log = run_dir / "run.log"
-    updated = run_record
-    for signal in signals:
-        state = str(signal.get("state") or "").upper()
-        if state != "NEEDS_INPUT":
-            append_log(run_log, f"[loops] ignoring unsupported signal state: {state}")
-            continue
-        payload = _normalize_signal_payload(signal)
-        if payload is None:
-            append_log(run_log, "[loops] ignoring NEEDS_INPUT signal with invalid payload")
-            continue
-        append_log(run_log, "[loops] signal applied: NEEDS_INPUT")
-        updated = replace(
-            updated,
-            needs_user_input=True,
-            needs_user_input_payload=payload,
-        )
-    if updated == run_record:
-        _write_signal_offset(run_dir, new_offset)
-        return run_record
-    written = write_run_record(run_dir / "run.json", updated)
-    _write_signal_offset(run_dir, new_offset)
-    return written
 
 
 def _resolve_configured_handoff_handler_name(

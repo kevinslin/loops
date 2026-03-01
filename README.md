@@ -67,8 +67,6 @@ Loops writes runtime state under `.loops/`:
       run.json
       run.log
       agent.log
-      state_signals.jsonl
-      state_signals.offset
 ```
 
 ## Configuration reference
@@ -126,7 +124,6 @@ Subcommands:
 - `init`: initialize `.loops/` structure and default config.
 - `run`: run the outer loop runner.
 - `inner-loop`: run inner loop for one run directory.
-- `signal`: enqueue a state signal for a run directory.
 - `doctor`: upgrade config schema/default keys in `config.json`.
 - `clean`: delete empty run directories and archive completed runs.
 
@@ -137,7 +134,6 @@ loops init
 loops doctor
 loops run --run-once
 loops inner-loop --run-dir .loops/jobs/2026-02-09-example-task-123
-loops signal --run-dir .loops/jobs/2026-02-09-example-task-123 --message "Need approval"
 loops clean --dry-run
 ```
 
@@ -258,7 +254,6 @@ Behavior summary:
 - Polls PR state with `gh pr view` when a PR is present.
 - In review polling, Loops treats a PR as approved if `reviewDecision=APPROVED` or if a matching approval comment from `loop_config.approval_comment_usernames` is newer than the latest `CHANGES_REQUESTED` review.
 - If `task_provider_config.allowlist` is configured, review polling filters PR comments/reviews to those actors before deriving feedback and review-status signals.
-- Applies pending signals from `state_signals.jsonl`.
 - Selects handoff behavior from run-scoped runtime config (or `LOOPS_HANDOFF_HANDLER` for direct/manual runs):
   - `stdin_handler`: prompt directly in terminal.
   - `gh_comment_handler`: comment on task issue and wait for `/loops-reply ...`.
@@ -266,44 +261,16 @@ Behavior summary:
 - If `run.json` is missing, task fields fall back to `LOOPS_TASK_*` env vars (or defaults).
 - Exact state-mapped prompt strings are documented in `DESIGN.md` under `### Prompt catalog`.
 
-### `loops signal`
-
-Enqueues state signals for an existing run directory. Current supported state: `NEEDS_INPUT`.
-
-Options:
-
-- `--run-dir PATH`: Run directory path. If omitted, uses `LOOPS_RUN_DIR`.
-- `--state TEXT`: Signal state. Default: `NEEDS_INPUT`.
-- `--message TEXT`: Required user-facing message.
-- `--context JSON_OBJECT`: Optional JSON object payload context.
-- `-h, --help`: Show help.
-
-Examples:
-
-```sh
-loops signal \
-  --run-dir .loops/jobs/2026-02-09-example-task-123 \
-  --message "Need approval to continue" \
-  --context '{"reason":"scope_change"}'
-```
-
 Direct module equivalents still exist:
 
 - `python -m loops`
 - `python -m loops.inner_loop`
-- `python -m loops.state_signal`
-
-Output on success:
-
-```json
-{"accepted": true, "signal": {"state": "NEEDS_INPUT", "payload": {"message": "...", "context": {}}, "created_at": "..."}}
-```
 
 ## Environment variables
 
 - `GITHUB_TOKEN` or `GH_TOKEN`: required for GitHub Projects provider startup checks (`GH_TOKEN` is accepted as alias fallback).
 - `CODEX_CMD`: command used for Codex execution fallback when run-scoped runtime config does not set it. Default: `codex exec --yolo`.
-- `LOOPS_RUN_DIR`: run directory for `loops.inner_loop` and `loops.state_signal` when `--run-dir` is not passed.
+- `LOOPS_RUN_DIR`: run directory for `loops.inner_loop` when `--run-dir` is not passed.
 - `LOOPS_PROMPT_FILE` / `CODEX_PROMPT_FILE`: optional base prompt file fallback when run-scoped runtime config does not set one.
 - `LOOPS_HANDOFF_HANDLER`: handoff strategy fallback for direct/manual inner-loop runs (`stdin_handler` or `gh_comment_handler`).
 - `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`: legacy fallback metadata used only when `run.json` is missing during `loops inner-loop --reset`.

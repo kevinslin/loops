@@ -34,12 +34,11 @@ from loops.providers.github_projects_v2 import (
     GITHUB_PROJECTS_V2_PROVIDER_ID,
     build_default_provider_config_payload,
 )
-from loops.state_signal import enqueue_state_signal
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
 def main() -> None:
-    """Loops CLI wrapper for setup, outer loop, inner loop, and signals."""
+    """Loops CLI wrapper for setup, outer loop, and inner loop."""
 
 
 @main.command("run")
@@ -127,54 +126,6 @@ def inner_loop_command(
         run_inner_loop(resolved_run_dir, prompt_file=prompt_file)
     except FileNotFoundError as exc:
         raise click.ClickException(str(exc)) from exc
-
-
-@main.command("signal")
-@click.option(
-    "--run-dir",
-    type=click.Path(file_okay=False, path_type=Path),
-    default=None,
-    help="Path to run directory (defaults to LOOPS_RUN_DIR).",
-)
-@click.option(
-    "--state",
-    type=str,
-    default="NEEDS_INPUT",
-    show_default=True,
-    help="Signal state to enqueue.",
-)
-@click.option(
-    "--message",
-    type=str,
-    required=True,
-    help="Prompt message to show when user input is required.",
-)
-@click.option(
-    "--context",
-    type=str,
-    default="",
-    help="Optional JSON object context for the signal payload.",
-)
-def signal_command(
-    run_dir: Optional[Path],
-    state: str,
-    message: str,
-    context: str,
-) -> None:
-    """Enqueue a state signal for an existing run directory."""
-
-    resolved_run_dir = _resolve_run_dir_option(run_dir)
-    parsed_context = _parse_context_option(context)
-    try:
-        signal = enqueue_state_signal(
-            resolved_run_dir,
-            state=state,
-            message=message,
-            context=parsed_context,
-        )
-    except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
-    click.echo(json.dumps({"accepted": True, "signal": signal}, ensure_ascii=True))
 
 
 @main.command("init")
@@ -342,20 +293,6 @@ def _resolve_run_dir_option(run_dir: Optional[Path]) -> Path:
     if env_run_dir:
         return Path(env_run_dir)
     raise click.ClickException("LOOPS_RUN_DIR is required (or pass --run-dir)")
-
-
-def _parse_context_option(raw_context: str) -> dict[str, Any]:
-    """Parse --context JSON into an object."""
-
-    if not raw_context.strip():
-        return {}
-    try:
-        parsed = json.loads(raw_context)
-    except json.JSONDecodeError as exc:
-        raise click.ClickException("--context must be valid JSON") from exc
-    if not isinstance(parsed, dict):
-        raise click.ClickException("--context JSON must be an object")
-    return parsed
 
 
 def _build_default_config() -> dict[str, Any]:
