@@ -37,7 +37,7 @@ Close the loop on building a coding agent harness that can pick up tasks, execut
 - `OuterState`: Outer-loop dedupe ledger persisted in `.loops/outer_state.json`.
 - `StateSignal`: Append-only state intent entry in `state_signals.jsonl`, consumed by the inner loop.
 - `Handoff`: `NEEDS_INPUT` user-input collection path (`stdin_handler` or `gh_comment_handler`).
-- `Trigger`: Named inner-loop transition action such as `trigger:fix-pr`, `trigger:merge-pr`, and `trigger:auto-approve-eval`.
+- `Trigger`: Named inner-loop transition action such as `trigger:fix-pr` and `trigger:merge-pr`.
 
 Type/interface mapping (section 2 and runtime):
 - `Task` concept -> `Task` type.
@@ -454,7 +454,7 @@ Precedence rule: `NEEDS_INPUT` has priority over `DONE`; if `needs_user_input=tr
 - **If PR submitted → `WAITING_ON_REVIEW`**: set S:WAITING_ON_REVIEW. Run review poll script. If changes requested AND `latest_review_submitted_at > review_addressed_at` (new review event), exec trigger:fix-pr and record `review_addressed_at`. Also, if status is open but a new feedback event is observed (`latest_review_submitted_at > review_addressed_at`) from the newest timestamp between `COMMENTED` PR review events and plain PR discussion comments, resume trigger:fix-pr and record `review_addressed_at` so the same feedback is not reprocessed.
   - Always poll CI and persist `pr.ci_status`.
   - If `review_status` is approved, derive `PR_APPROVED` via the manual path (unchanged).
-  - If `review_status` is not approved and `ci_status == success` and `auto_approve_enabled=true` and `run_record.auto_approve` is unset, run trigger:auto-approve-eval once (judge book fixed to `references/jb.coding.md`) and persist `{ verdict, impact, risk, size, judged_at, summary }` on `RunRecord`.
+  - If `review_status` is not approved and `ci_status == success` and `auto_approve_enabled=true` and `run_record.auto_approve` is unset, run one direct auto-approve evaluation Codex turn (prompt instructs `$ag-judge`, judge book fixed to `references/jb.coding.md`) and persist `{ verdict, impact, risk, size, judged_at, summary }` on `RunRecord`.
   - In that additional path, `auto_approve.verdict == APPROVE` allows next-cycle transition to `PR_APPROVED`.
   - In that additional path, `auto_approve.verdict in {REJECT, ESCALATE}` remains blocked in `WAITING_ON_REVIEW` and does not re-run auto-approve.
 - **If manual approval is present or the additional auto-approve path passes → `PR_APPROVED`**: set S:PR_APPROVED. Run trigger:merge-pr. On success, derive DONE from `pr.merged_at`. Retry: re-run trigger (idempotent).
@@ -492,7 +492,7 @@ Precedence rule: `NEEDS_INPUT` has priority over `DONE`; if `needs_user_input=tr
 
 Inline additional path while in WAITING_ON_REVIEW when review is not already approved:
   - CI must be green (`pr.ci_status == success`)
-  - if `auto_approve_enabled=true` and `auto_approve` is unset, run trigger:auto-approve-eval once
+  - if `auto_approve_enabled=true` and `auto_approve` is unset, run one direct `$ag-judge` evaluation turn
   - `auto_approve.verdict == APPROVE` allows transitioning to PR_APPROVED
 
 From any non-DONE state:
@@ -530,8 +530,25 @@ schedules next poll timing. Handler boundaries in `loops/inner_loop.py` are:
 | Trigger | Invoked from | Description |
 |---------|-------------|-------------|
 | `trigger:fix-pr` | `WAITING_ON_REVIEW` | Resume Codex to address review feedback and update the PR. |
-| `trigger:auto-approve-eval` | `WAITING_ON_REVIEW` | Run `$ag-judge` once when review is not already approved and CI is green, then persist verdict/scores on `RunRecord.auto_approve`. |
 | `trigger:merge-pr` | `PR_APPROVED` | Merge the PR and run post-merge cleanup. Idempotent. |
+
+Auto-approve evaluation is not a trigger. When eligible in `WAITING_ON_REVIEW`, the inner loop runs a dedicated Codex turn that directly instructs `$ag-judge`, then persists the verdict on `RunRecord.auto_approve`.
+
+### Skill contract
+
+The inner loop relies on a small explicit skill surface. These skills are part of the runtime contract, not optional guidance.
+
+| Skill / contract | Where Loops invokes or enforces it | How it makes Loops work |
+|---|---|---|
+| `dev.do` | Base prompt for Codex turns (`RUNNING` and follow-up turns) | Keeps task execution in a single end-to-end implementation workflow (implement -> open/update PR -> continue until terminal state). |
+| `a-review` | Base prompt contract (`RUNNING` only; exactly once per conversation) | Provides an in-turn quality gate before review polling; Loops requires posting the result to PR comments so reviewers and later turns share context. |
+| `trigger:fix-pr` | `WAITING_ON_REVIEW` when new review/comment feedback is detected | Re-enters Codex to apply concrete reviewer feedback and updates `review_addressed_at` to prevent duplicate processing. |
+| `$ag-judge` (direct, no trigger) | `WAITING_ON_REVIEW` when review is not approved, CI is green, and auto-approve is enabled | Produces one structured approval verdict (`APPROVE|REJECT|ESCALATE`) with impact/risk/size scores that Loops persists on `RunRecord.auto_approve` to decide whether `PR_APPROVED` is reachable without manual approval. |
+| `trigger:merge-pr` | `PR_APPROVED` path and cleanup prompt | Performs merge/cleanup in an idempotent way; Loops keeps polling until `pr.merged_at` confirms transition to `DONE`. |
+| Signals skill (`$needs_input` pattern via `NEEDS_INPUT`) | Signal queue (`state_signals.jsonl`) and trailing state markers (`<state>NEEDS_INPUT</>`) | Lets the model request human input without writing `run.json` directly; inner loop remains the single writer and orchestrates handoff/resume. |
+| `gen-notifier` (forbidden) | Base prompt hard guardrail | Prevents out-of-band desktop notification side effects from inside harness-managed runs; keeps Loops control flow deterministic and contained to run artifacts/logs. |
+
+Practical invariant: if this skill contract changes, update `loops/inner_loop.py` prompt builders, `tests/test_inner_loop.py` prompt assertions, and related flow docs in `docs/flows/`.
 
 ### CLI callers
 
@@ -627,7 +644,7 @@ Prompt-related configuration and runtime inputs:
 - Prompt contract requires posting `a-review` output to PR comments when `a-review` is run, including explicit no-findings comments.
 - Prompt contract requires posting `ag-judge` verdict and impact/risk/size scores to PR comments during auto-approve evaluation turns.
 - When approval is detected (GitHub review decision or an allowlisted approval signal newer than latest `CHANGES_REQUESTED` review), the loop derives `PR_APPROVED` via the existing manual path. If `task_provider_config.allowlist` is set, review polling first filters PR comments/reviews to allowlisted actors.
-- If review is not already approved, CI is green, and `auto_approve_enabled=true` with no stored judgement on `RunRecord.auto_approve`, the loop runs `trigger:auto-approve-eval` once (`$ag-judge`, judge book fixed to `references/jb.coding.md`) and stores verdict/scores on `RunRecord`.
+- If review is not already approved, CI is green, and `auto_approve_enabled=true` with no stored judgement on `RunRecord.auto_approve`, the loop runs one dedicated Codex evaluation turn that directly invokes `$ag-judge` (judge book fixed to `references/jb.coding.md`) and stores verdict/scores on `RunRecord`.
 - In that additional path, `auto_approve.verdict == APPROVE` allows transition to `PR_APPROVED`; `REJECT`/`ESCALATE` keep the run blocked in `WAITING_ON_REVIEW` with no auto re-run (single evaluation per conversation).
 
 ## 8. Error handling and recovery
