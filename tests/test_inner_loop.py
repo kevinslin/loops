@@ -2346,6 +2346,194 @@ def test_fetch_pr_status_approves_from_allowlisted_comment(monkeypatch) -> None:
     assert approved_by == "maintainer"
 
 
+def test_fetch_pr_status_reacts_with_thumbs_up_for_allowlisted_comment(
+    monkeypatch,
+) -> None:
+    payload = {
+        "url": "https://github.com/acme/api/pull/42",
+        "number": 42,
+        "reviewDecision": "REVIEW_REQUIRED",
+        "mergedAt": None,
+        "latestReviews": [],
+        "comments": [
+            {
+                "id": "IC_kwDOAAABBBCCCDD",
+                "author": {"login": "maintainer"},
+                "body": "/approve",
+                "createdAt": "2026-02-09T01:00:00Z",
+                "reactionGroups": [],
+            }
+        ],
+    }
+    calls: list[list[str]] = []
+
+    def fake_subprocess_run(args, **_kwargs):
+        call_args = [str(part) for part in args]
+        calls.append(call_args)
+        if call_args[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(
+                args=call_args,
+                returncode=0,
+                stdout=json.dumps(payload),
+                stderr="",
+            )
+        if call_args[:3] == ["gh", "api", "graphql"]:
+            return subprocess.CompletedProcess(
+                args=call_args,
+                returncode=0,
+                stdout=json.dumps({"data": {"addReaction": {"reaction": {"content": "THUMBS_UP"}}}}),
+                stderr="",
+            )
+        raise AssertionError(f"unexpected subprocess args: {call_args}")
+
+    monkeypatch.setattr(inner_loop_module.subprocess, "run", fake_subprocess_run)
+    settings = inner_loop_module.CommentApprovalSettings(
+        allowed_usernames=("maintainer",),
+        pattern_text=r"^\s*/approve\b",
+        approval_regex=re.compile(r"^\s*/approve\b", re.IGNORECASE),
+        review_actor_usernames=("*",),
+    )
+    updated, approved_by_comment, approved_by = (
+        inner_loop_module._fetch_pr_status_with_gh_with_context(
+            RunPR(url="https://github.com/acme/api/pull/42"),
+            comment_approval=settings,
+        )
+    )
+
+    assert updated.review_status == "approved"
+    assert approved_by_comment is True
+    assert approved_by == "maintainer"
+    reaction_call = next(
+        (call for call in calls if call[:3] == ["gh", "api", "graphql"]),
+        None,
+    )
+    assert reaction_call is not None
+    assert "subjectId=IC_kwDOAAABBBCCCDD" in reaction_call
+
+
+def test_fetch_pr_status_skips_reaction_when_viewer_already_reacted(
+    monkeypatch,
+) -> None:
+    payload = {
+        "url": "https://github.com/acme/api/pull/42",
+        "number": 42,
+        "reviewDecision": "REVIEW_REQUIRED",
+        "mergedAt": None,
+        "latestReviews": [],
+        "comments": [
+            {
+                "id": "IC_kwDOAAABBBCCCDD",
+                "author": {"login": "maintainer"},
+                "body": "/approve",
+                "createdAt": "2026-02-09T01:00:00Z",
+                "reactionGroups": [
+                    {
+                        "content": "THUMBS_UP",
+                        "viewerHasReacted": True,
+                    }
+                ],
+            }
+        ],
+    }
+    calls: list[list[str]] = []
+
+    def fake_subprocess_run(args, **_kwargs):
+        call_args = [str(part) for part in args]
+        calls.append(call_args)
+        if call_args[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(
+                args=call_args,
+                returncode=0,
+                stdout=json.dumps(payload),
+                stderr="",
+            )
+        if call_args[:3] == ["gh", "api", "graphql"]:
+            raise AssertionError("reaction call should be skipped when already reacted")
+        raise AssertionError(f"unexpected subprocess args: {call_args}")
+
+    monkeypatch.setattr(inner_loop_module.subprocess, "run", fake_subprocess_run)
+    settings = inner_loop_module.CommentApprovalSettings(
+        allowed_usernames=("maintainer",),
+        pattern_text=r"^\s*/approve\b",
+        approval_regex=re.compile(r"^\s*/approve\b", re.IGNORECASE),
+        review_actor_usernames=("*",),
+    )
+    updated, approved_by_comment, approved_by = (
+        inner_loop_module._fetch_pr_status_with_gh_with_context(
+            RunPR(url="https://github.com/acme/api/pull/42"),
+            comment_approval=settings,
+        )
+    )
+
+    assert updated.review_status == "approved"
+    assert approved_by_comment is True
+    assert approved_by == "maintainer"
+    assert all(call[:3] != ["gh", "api", "graphql"] for call in calls)
+
+
+def test_fetch_pr_status_reaction_failure_does_not_block_approval(
+    monkeypatch,
+) -> None:
+    payload = {
+        "url": "https://github.com/acme/api/pull/42",
+        "number": 42,
+        "reviewDecision": "REVIEW_REQUIRED",
+        "mergedAt": None,
+        "latestReviews": [],
+        "comments": [
+            {
+                "id": "IC_kwDOAAABBBCCCDD",
+                "author": {"login": "maintainer"},
+                "body": "/approve",
+                "createdAt": "2026-02-09T01:00:00Z",
+                "reactionGroups": [],
+            }
+        ],
+    }
+
+    def fake_subprocess_run(args, **_kwargs):
+        call_args = [str(part) for part in args]
+        if call_args[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(
+                args=call_args,
+                returncode=0,
+                stdout=json.dumps(payload),
+                stderr="",
+            )
+        if call_args[:3] == ["gh", "api", "graphql"]:
+            return subprocess.CompletedProcess(
+                args=call_args,
+                returncode=1,
+                stdout="",
+                stderr="rate limit reached",
+            )
+        raise AssertionError(f"unexpected subprocess args: {call_args}")
+
+    monkeypatch.setattr(inner_loop_module.subprocess, "run", fake_subprocess_run)
+    settings = inner_loop_module.CommentApprovalSettings(
+        allowed_usernames=("maintainer",),
+        pattern_text=r"^\s*/approve\b",
+        approval_regex=re.compile(r"^\s*/approve\b", re.IGNORECASE),
+        review_actor_usernames=("*",),
+    )
+    messages: list[str] = []
+    updated, approved_by_comment, approved_by = (
+        inner_loop_module._fetch_pr_status_with_gh_with_context(
+            RunPR(url="https://github.com/acme/api/pull/42"),
+            comment_approval=settings,
+            log_message=messages.append,
+        )
+    )
+
+    assert updated.review_status == "approved"
+    assert approved_by_comment is True
+    assert approved_by == "maintainer"
+    assert any(
+        "failed to add thumbs-up reaction to approval comment" in message
+        for message in messages
+    )
+
+
 def test_fetch_pr_status_approves_from_allowlisted_review(monkeypatch) -> None:
     payload = {
         "url": "https://github.com/acme/api/pull/42",

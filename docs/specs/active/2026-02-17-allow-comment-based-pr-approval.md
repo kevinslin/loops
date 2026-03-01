@@ -227,5 +227,6 @@ Manual validation:
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+- 2026-03-01: Added deterministic best-effort 👍 reactions when an allowlisted plain PR comment is the winning approval signal in review polling. (019cab4c-0485-7542-b9eb-ff1c83ca0942)
 - 2026-02-17: Created initial feature spec for allowlisted comment-based PR approval override. (019c68ed-a6c5-78e0-891a-6b70a1a1450c)
 - 2026-02-17: Implemented `OuterLoopConfig`-driven comment approval override, tests, and docs updates. (019c68ed-a6c5-78e0-891a-6b70a1a1450c)
