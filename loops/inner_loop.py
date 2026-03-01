@@ -65,7 +65,8 @@ SIGNAL_OFFSET_FILE = "state_signals.offset"
 DEFAULT_MAX_ITERATIONS = 200
 DEFAULT_REVIEW_POLL_SECONDS = 5.0
 DEFAULT_MAX_REVIEW_POLL_SECONDS = 60.0
-DEFAULT_MAX_IDLE_POLLS = 20
+# With poll backoff (5s, 10s, 20s, 40s, then 60s), 49 idle polls is ~45m before escalation.
+DEFAULT_MAX_IDLE_POLLS = 49
 WAITING_STATES = {"WAITING_ON_REVIEW", "PR_APPROVED"}
 GITHUB_PR_PATTERN = re.compile(
     r"https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([0-9]+)"

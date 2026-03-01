@@ -452,7 +452,7 @@ Precedence rule: `NEEDS_INPUT` has priority over `DONE`; if `needs_user_input=tr
   - In that additional path, `auto_approve.verdict == APPROVE` allows next-cycle transition to `PR_APPROVED`.
   - In that additional path, `auto_approve.verdict in {REJECT, ESCALATE}` remains blocked in `WAITING_ON_REVIEW` and does not re-run auto-approve.
 - **If manual approval is present or the additional auto-approve path passes → `PR_APPROVED`**: set S:PR_APPROVED. Run trigger:merge-pr. On success, derive DONE from `pr.merged_at`. Retry: re-run trigger (idempotent).
-- **Bounded wait guardrail (review + approved states)**: `WAITING_ON_REVIEW` and `PR_APPROVED` use idle-poll escalation. If status polling fails repeatedly or the state does not progress for `max_idle_polls` consecutive polls (default `20`), force `NEEDS_INPUT` with a manual-guidance payload. Poll backoff grows from `initial_poll_seconds` (default `5s`) up to `max_poll_seconds` (default `60s`).
+- **Bounded wait guardrail (review + approved states)**: `WAITING_ON_REVIEW` and `PR_APPROVED` use idle-poll escalation. If status polling fails repeatedly or the state does not progress for `max_idle_polls` consecutive polls (default `49`, about 45 minutes with the default backoff), force `NEEDS_INPUT` with a manual-guidance payload. Poll backoff grows from `initial_poll_seconds` (default `5s`) up to `max_poll_seconds` (default `60s`).
 
 ### State transitions (ASCII)
 
