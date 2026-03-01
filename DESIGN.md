@@ -357,7 +357,7 @@ Task provider (GitHub Projects V2)
 #### Clean CLI (run artifact janitor)
 - Purpose: clean stale run artifacts under `LOOPS_ROOT`.
 - Interface: scans `jobs/` run directories and classifies actions:
-  - delete run dir when both `run.log` and `agent.log` exist and are empty.
+  - delete run dir when both `run.log` and `agent.log` exist and are empty and the run is not in an active state.
   - archive run dir when `run.json.last_state == "DONE"` (unless already classified for deletion).
 - Archive target: move completed runs to `ARCHIVE_ROOT`, adding numeric suffixes on name collisions (`-1`, `-2`, ...).
 - `--dry-run`: reports planned delete/archive actions without mutating filesystem state.

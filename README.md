@@ -205,7 +205,7 @@ loops clean --loops-root /path/to/.loops
 
 Behavior summary:
 
-- A run is deleted when both `run.log` and `agent.log` exist and are byte-empty.
+- A run is deleted when both `run.log` and `agent.log` exist and are byte-empty, and the run is not in an active state.
 - A run is archived when `run.json` exists and `last_state == "DONE"`.
 - Empty-run deletion takes precedence over archiving when both conditions match.
 - Completed runs are moved to `.loops/.archive/`, and name collisions are resolved by appending `-1`, `-2`, etc.

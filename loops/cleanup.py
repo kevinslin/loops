@@ -13,6 +13,7 @@ RUN_LOG_FILE = "run.log"
 AGENT_LOG_FILE = "agent.log"
 RUN_RECORD_FILE = "run.json"
 ARCHIVE_DIR_NAME = ".archive"
+ACTIVE_RUN_STATES = {"RUNNING", "WAITING_ON_REVIEW", "NEEDS_INPUT", "PR_APPROVED"}
 
 
 @dataclass(frozen=True)
@@ -50,10 +51,11 @@ def build_clean_plan(loops_root: Path) -> CleanPlan:
 
     run_dirs = sorted(path for path in runs_root.iterdir() if path.is_dir())
     for run_dir in run_dirs:
-        if _is_empty_run_dir(run_dir):
+        run_state = _read_run_state(run_dir)
+        if _is_empty_run_dir(run_dir) and _can_delete_empty_run(run_state):
             delete_runs.append(run_dir)
             continue
-        if _is_completed_run_dir(run_dir):
+        if run_state == "DONE":
             destination = _reserve_archive_destination(
                 archive_root,
                 run_dir.name,
@@ -121,15 +123,15 @@ def _is_empty_run_dir(run_dir: Path) -> bool:
         return False
 
 
-def _is_completed_run_dir(run_dir: Path) -> bool:
+def _read_run_state(run_dir: Path) -> str | None:
     run_record_path = run_dir / RUN_RECORD_FILE
     if not run_record_path.is_file():
-        return False
+        return None
     try:
         run_record = read_run_record(run_record_path)
-    except (KeyError, TypeError, ValueError):
-        return False
-    return run_record.last_state == "DONE"
+    except (KeyError, OSError, TypeError, ValueError):
+        return "INVALID"
+    return run_record.last_state
 
 
 def _existing_archive_names(archive_root: Path) -> set[str]:
@@ -154,3 +156,13 @@ def _reserve_archive_destination(
             reserved_names.add(candidate)
             return archive_root / candidate
         suffix += 1
+
+
+def _can_delete_empty_run(run_state: str | None) -> bool:
+    if run_state is None:
+        return True
+    if run_state == "DONE":
+        return True
+    if run_state in ACTIVE_RUN_STATES:
+        return False
+    return False

@@ -236,6 +236,43 @@ def test_clean_applies_deletes_and_archives_runs(tmp_path: Path) -> None:
     assert (archived_done / "run.json").exists()
 
 
+def test_clean_does_not_delete_active_runs_with_empty_logs(tmp_path: Path) -> None:
+    runner = CliRunner()
+    loops_root = tmp_path / ".loops"
+    jobs_root = loops_root / "jobs"
+    jobs_root.mkdir(parents=True)
+
+    active_empty_run = jobs_root / "active-empty-run"
+    active_empty_run.mkdir()
+    (active_empty_run / "run.log").write_text("")
+    (active_empty_run / "agent.log").write_text("")
+    write_run_record(
+        active_empty_run / "run.json",
+        RunRecord(
+            task=Task(
+                provider_id="github_projects_v2",
+                id="active-empty",
+                title="Active empty run",
+                status="In progress",
+                url="https://github.com/acme/api/issues/3",
+                created_at="2026-03-01T00:00:00Z",
+                updated_at="2026-03-01T00:00:00Z",
+            ),
+            pr=None,
+            codex_session=None,
+            needs_user_input=False,
+            last_state="RUNNING",
+            updated_at="",
+        ),
+    )
+
+    result = runner.invoke(main, ["clean", "--loops-root", str(loops_root)])
+
+    assert result.exit_code == 0, result.output
+    assert "Deleted 0 empty run dir(s)." in result.output
+    assert active_empty_run.exists()
+
+
 def test_clean_uses_suffix_when_archive_target_exists(tmp_path: Path) -> None:
     runner = CliRunner()
     loops_root = tmp_path / ".loops"
