@@ -122,6 +122,11 @@ CI_FAILURE_CONCLUSIONS = {
     "STALE",
 }
 CI_PENDING_STATUSES = {"EXPECTED", "PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED"}
+GH_ADD_REACTION_MUTATION = (
+    "mutation($subjectId:ID!){"
+    "addReaction(input:{subjectId:$subjectId,content:THUMBS_UP}){reaction{content}}"
+    "}"
+)
 
 
 @dataclass(frozen=True)
@@ -136,6 +141,15 @@ class CommentApprovalSettings:
     @property
     def enabled(self) -> bool:
         return bool(self.allowed_usernames)
+
+
+@dataclass(frozen=True)
+class ApprovalSignal:
+    timestamp: str
+    author: str
+    source: str
+    event_node_id: str | None = None
+    viewer_has_thumbs_up_reaction: bool = False
 
 
 @dataclass(frozen=True)
@@ -1911,13 +1925,13 @@ def _load_comment_approval_settings(
 def _extract_latest_allowlisted_approval_comment(
     payload: dict[str, Any],
     comment_approval: CommentApprovalSettings,
-) -> tuple[str, str] | None:
+) -> ApprovalSignal | None:
     if not comment_approval.enabled:
         return None
     comments = payload.get("comments")
     if not isinstance(comments, list) or not comments:
         return None
-    latest: tuple[str, str] | None = None
+    latest: ApprovalSignal | None = None
     for comment in comments:
         if not isinstance(comment, dict):
             continue
@@ -1936,21 +1950,28 @@ def _extract_latest_allowlisted_approval_comment(
         comment_timestamp = updated_at if isinstance(updated_at, str) else created_at
         if not isinstance(comment_timestamp, str):
             continue
-        if latest is None or comment_timestamp > latest[0]:
-            latest = (comment_timestamp, author_login)
+        signal = ApprovalSignal(
+            timestamp=comment_timestamp,
+            author=author_login,
+            source="comment",
+            event_node_id=_extract_event_node_id(comment),
+            viewer_has_thumbs_up_reaction=_viewer_has_thumbs_up_reaction(comment),
+        )
+        if latest is None or signal.timestamp > latest.timestamp:
+            latest = signal
     return latest
 
 
 def _extract_latest_allowlisted_approval_review(
     payload: dict[str, Any],
     comment_approval: CommentApprovalSettings,
-) -> tuple[str, str] | None:
+) -> ApprovalSignal | None:
     if not comment_approval.enabled:
         return None
     reviews = payload.get("reviews")
     if not isinstance(reviews, list) or not reviews:
         return None
-    latest: tuple[str, str] | None = None
+    latest: ApprovalSignal | None = None
     for review in reviews:
         if not isinstance(review, dict):
             continue
@@ -1970,8 +1991,14 @@ def _extract_latest_allowlisted_approval_review(
         submitted_at = review.get("submittedAt")
         if not isinstance(submitted_at, str):
             continue
-        if latest is None or submitted_at > latest[0]:
-            latest = (submitted_at, author_login)
+        signal = ApprovalSignal(
+            timestamp=submitted_at,
+            author=author_login,
+            source="review",
+            event_node_id=_extract_event_node_id(review),
+        )
+        if latest is None or signal.timestamp > latest.timestamp:
+            latest = signal
     return latest
 
 
@@ -2046,25 +2073,117 @@ def _select_newer_feedback_signal(
 
 def _select_newer_approval_signal(
     *,
-    approval_comment: tuple[str, str] | None,
-    approval_review: tuple[str, str] | None,
-) -> tuple[str, str, str] | None:
-    latest: tuple[str, str, str] | None = None
+    approval_comment: ApprovalSignal | None,
+    approval_review: ApprovalSignal | None,
+) -> ApprovalSignal | None:
+    latest: ApprovalSignal | None = None
     if approval_comment is not None:
-        latest = (
-            approval_comment[0],
-            approval_comment[1],
-            "comment",
-        )
+        latest = approval_comment
     if approval_review is not None:
-        review_signal = (
-            approval_review[0],
-            approval_review[1],
-            "review",
-        )
-        if latest is None or review_signal[0] > latest[0]:
-            latest = review_signal
+        if latest is None or approval_review.timestamp > latest.timestamp:
+            latest = approval_review
     return latest
+
+
+def _extract_event_node_id(event: dict[str, Any]) -> str | None:
+    event_id = event.get("id")
+    if not isinstance(event_id, str):
+        return None
+    normalized = event_id.strip()
+    if not normalized:
+        return None
+    return normalized
+
+
+def _viewer_has_thumbs_up_reaction(event: dict[str, Any]) -> bool:
+    reaction_groups = event.get("reactionGroups")
+    if not isinstance(reaction_groups, list):
+        return False
+    for group in reaction_groups:
+        if not isinstance(group, dict):
+            continue
+        if str(group.get("content") or "").upper() != "THUMBS_UP":
+            continue
+        viewer_has_reacted = group.get("viewerHasReacted")
+        if isinstance(viewer_has_reacted, bool):
+            return viewer_has_reacted
+    return False
+
+
+def _react_to_approval_comment_with_thumbs_up(
+    *,
+    approval_signal: ApprovalSignal,
+    pr_url: str,
+    log_message: Optional[Callable[[str], None]] = None,
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    def _log(message: str) -> None:
+        if log_message is None:
+            return
+        log_message(message)
+
+    if approval_signal.source != "comment":
+        return
+    if approval_signal.viewer_has_thumbs_up_reaction:
+        _log(
+            (
+                "[loops] approval comment already has viewer thumbs-up reaction; "
+                f"skipping reaction add: pr_url={pr_url} approver={approval_signal.author}"
+            )
+        )
+        return
+    if approval_signal.event_node_id is None:
+        _log(
+            (
+                "[loops] approval comment is missing node id; cannot add reaction: "
+                f"pr_url={pr_url} approver={approval_signal.author}"
+            )
+        )
+        return
+
+    result = subprocess.run(
+        [
+            "gh",
+            "api",
+            "graphql",
+            "-f",
+            f"query={GH_ADD_REACTION_MUTATION}",
+            "-f",
+            f"subjectId={approval_signal.event_node_id}",
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        env=os.environ.copy() if environ is None else dict(environ),
+    )
+    if result.returncode == 0:
+        _log(
+            (
+                "[loops] added thumbs-up reaction to approval comment: "
+                f"pr_url={pr_url} approver={approval_signal.author}"
+            )
+        )
+        return
+
+    error_output = (result.stderr.strip() or result.stdout.strip())
+    normalized_error = error_output.casefold()
+    if "reaction" in normalized_error and "already" in normalized_error:
+        _log(
+            (
+                "[loops] thumbs-up reaction already exists on approval comment; "
+                f"continuing: pr_url={pr_url} approver={approval_signal.author}"
+            )
+        )
+        return
+    _log(
+        (
+            "[loops] failed to add thumbs-up reaction to approval comment; "
+            f"continuing without reaction: pr_url={pr_url} "
+            f"approver={approval_signal.author} "
+            f"stderr={error_output or '-'}"
+        )
+    )
 
 
 def _should_resume_review_feedback(pr: RunPR) -> bool:
@@ -2231,7 +2350,9 @@ def _fetch_pr_status_with_gh_with_context(
             approval_review=latest_approval_review,
         )
         if latest_approval_signal is not None:
-            approval_timestamp, approval_author, approval_source = latest_approval_signal
+            approval_timestamp = latest_approval_signal.timestamp
+            approval_author = latest_approval_signal.author
+            approval_source = latest_approval_signal.source
             if (
                 latest_changes_requested_at is None
                 or approval_timestamp > latest_changes_requested_at
@@ -2240,6 +2361,12 @@ def _fetch_pr_status_with_gh_with_context(
                 approved_by_comment = True
                 approved_by = approval_author
                 latest_review_submitted_at = approval_timestamp
+                _react_to_approval_comment_with_thumbs_up(
+                    approval_signal=latest_approval_signal,
+                    pr_url=pr.url,
+                    log_message=_log,
+                    environ=environ,
+                )
             else:
                 _log(
                     (

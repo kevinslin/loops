@@ -454,6 +454,7 @@ Precedence rule: `NEEDS_INPUT` has priority over `DONE`; if `needs_user_input=tr
 - **If PR submitted → `WAITING_ON_REVIEW`**: set S:WAITING_ON_REVIEW. Run review poll script. If changes requested AND `latest_review_submitted_at > review_addressed_at` (new review event), exec trigger:fix-pr and record `review_addressed_at`. Also, if status is open but a new feedback event is observed (`latest_review_submitted_at > review_addressed_at`) from the newest timestamp between `COMMENTED` PR review events and plain PR discussion comments, resume trigger:fix-pr and record `review_addressed_at` so the same feedback is not reprocessed.
   - Always poll CI and persist `pr.ci_status`.
   - If `review_status` is approved, derive `PR_APPROVED` via the manual path (unchanged).
+  - If approval comes from an allowlisted plain PR comment, add a 👍 reaction to that comment in the polling path (idempotent best effort; failures are logged and do not block approval).
   - If `review_status` is not approved and `ci_status == success` and `auto_approve_enabled=true` and `run_record.auto_approve` is unset, run one direct auto-approve evaluation Codex turn (prompt instructs `$ag-judge`, judge book fixed to `references/jb.coding.md`) and persist `{ verdict, impact, risk, size, judged_at, summary }` on `RunRecord`.
   - In that additional path, `auto_approve.verdict == APPROVE` allows next-cycle transition to `PR_APPROVED`.
   - In that additional path, `auto_approve.verdict in {REJECT, ESCALATE}` remains blocked in `WAITING_ON_REVIEW` and does not re-run auto-approve.
@@ -645,6 +646,7 @@ Prompt-related configuration and runtime inputs:
 - Prompt contract requires posting `ag-judge` verdict and impact/risk/size scores to PR comments during auto-approve evaluation turns.
 - When approval is detected (GitHub review decision or an allowlisted approval signal newer than latest `CHANGES_REQUESTED` review), the loop derives `PR_APPROVED` via the existing manual path. If `task_provider_config.allowlist` is set, review polling first filters PR comments/reviews to allowlisted actors.
 - If review is not already approved, CI is green, and `auto_approve_enabled=true` with no stored judgement on `RunRecord.auto_approve`, the loop runs one dedicated Codex evaluation turn that directly invokes `$ag-judge` (judge book fixed to `references/jb.coding.md`) and stores verdict/scores on `RunRecord`.
+- When approval is detected from a plain PR comment signal, review polling adds a 👍 reaction on that approval comment (best effort, idempotent, and non-blocking).
 - In that additional path, `auto_approve.verdict == APPROVE` allows transition to `PR_APPROVED`; `REJECT`/`ESCALATE` keep the run blocked in `WAITING_ON_REVIEW` with no auto re-run (single evaluation per conversation).
 
 ## 8. Error handling and recovery
