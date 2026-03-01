@@ -69,6 +69,12 @@ PROMPT_TEMPLATE = (
     "with <state>NEEDS_INPUT</>\n"
     "trigger:merge-pr when the state is exactly <state>PR_APPROVED</state>.\n"
     "Do not merge until the state is exactly <state>PR_APPROVED</state>.\n"
+    "In the initial PR description, do not repeat the PR title in the body.\n"
+    "Include session context in the initial PR body using: sessionid: [session]\n"
+    "When posting PR progress comments, avoid duplicate messages by checking your latest "
+    "PR comment before posting a new one.\n"
+    "When posting markdown comments with backticks via gh, use --body-file or a single-quoted "
+    "heredoc to avoid shell interpolation issues.\n"
     "Task: {task}\n"
 )
 PROMPT_STATE_RUNNING = "RUNNING"

@@ -1027,6 +1027,13 @@ def test_inner_loop_consumes_signal_and_uses_user_response_in_prompt(
     )
     assert "NEVER use the gen-notifier skill while running inside loops." in prompts
     assert "trigger:merge-pr when the state is exactly <state>PR_APPROVED</state>." in prompts
+    assert "In the initial PR description, do not repeat the PR title in the body." in prompts
+    assert "Include session context in the initial PR body using: sessionid: [session]" in prompts
+    assert (
+        "When posting PR progress comments, avoid duplicate messages by checking your latest "
+        "PR comment before posting a new one."
+        in prompts
+    )
     assert (
         "If you need input from user, print what you need help with and end current "
         "conversation with <state>NEEDS_INPUT</>"
