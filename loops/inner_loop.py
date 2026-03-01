@@ -204,7 +204,7 @@ def reset_run_record(run_dir: Path) -> RunRecord:
             runtime_auto_approve_enabled=(
                 runtime_config.auto_approve_enabled if runtime_config is not None else None
             ),
-            allow_env_fallback=runtime_config is None,
+            allow_env_fallback=True,
         ),
     )
     append_log(
@@ -306,7 +306,7 @@ def run_inner_loop(
             runtime_handoff_handler=(
                 runtime_config.handoff_handler if runtime_config is not None else None
             ),
-            allow_env_fallback=runtime_config is None,
+            allow_env_fallback=True,
             environ=runtime_environ,
         )
         initial_run_record = read_run_record(run_json_path)
@@ -332,7 +332,7 @@ def run_inner_loop(
             runtime_auto_approve_enabled=(
                 runtime_config.auto_approve_enabled if runtime_config is not None else None
             ),
-            allow_env_fallback=runtime_config is None,
+            allow_env_fallback=True,
             environ=runtime_environ,
         )
         runtime = InnerLoopRuntimeContext(
@@ -891,7 +891,7 @@ def _configure_log_streaming(
     environ: Mapping[str, str],
 ) -> dict[str, str]:
     configured = dict(environ)
-    if runtime_config is None:
+    if runtime_config is None or runtime_config.stream_logs_stdout is None:
         return configured
     if runtime_config.stream_logs_stdout:
         configured[STREAM_LOGS_STDOUT_ENV] = "1"

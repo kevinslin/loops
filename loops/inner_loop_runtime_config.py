@@ -19,9 +19,10 @@ INNER_LOOP_RUNTIME_CONFIG_FILE = "inner_loop_runtime_config.json"
 class InnerLoopRuntimeConfig:
     """Run-scoped inner-loop runtime settings materialized by the outer loop."""
 
-    handoff_handler: str = DEFAULT_HANDOFF_HANDLER
-    auto_approve_enabled: bool = False
-    stream_logs_stdout: bool = False
+    # Keep runtime knobs optional so omitted keys can still fall back to process env.
+    handoff_handler: str | None = None
+    auto_approve_enabled: bool | None = None
+    stream_logs_stdout: bool | None = None
     approval_comment_usernames: tuple[str, ...] = ()
     approval_comment_pattern: str = DEFAULT_APPROVAL_COMMENT_PATTERN
     review_actor_usernames: tuple[str, ...] = ()
@@ -29,13 +30,16 @@ class InnerLoopRuntimeConfig:
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
-            "handoff_handler": self.handoff_handler,
-            "auto_approve_enabled": self.auto_approve_enabled,
-            "stream_logs_stdout": self.stream_logs_stdout,
             "approval_comment_usernames": list(self.approval_comment_usernames),
             "approval_comment_pattern": self.approval_comment_pattern,
             "review_actor_usernames": list(self.review_actor_usernames),
         }
+        if self.handoff_handler is not None:
+            payload["handoff_handler"] = self.handoff_handler
+        if self.auto_approve_enabled is not None:
+            payload["auto_approve_enabled"] = self.auto_approve_enabled
+        if self.stream_logs_stdout is not None:
+            payload["stream_logs_stdout"] = self.stream_logs_stdout
         if self.env:
             payload["env"] = dict(sorted(self.env.items()))
         return payload
@@ -72,18 +76,24 @@ def read_inner_loop_runtime_config(run_dir: Path) -> Optional[InnerLoopRuntimeCo
     if not isinstance(payload, Mapping):
         raise TypeError("inner loop runtime config must be an object")
 
-    raw_handoff_handler = payload.get("handoff_handler", DEFAULT_HANDOFF_HANDLER)
-    if not isinstance(raw_handoff_handler, str):
-        raise TypeError("handoff_handler must be a string")
-    handoff_handler = validate_handoff_handler_name(raw_handoff_handler)
+    handoff_handler: str | None = None
+    if "handoff_handler" in payload:
+        raw_handoff_handler = payload.get("handoff_handler")
+        if not isinstance(raw_handoff_handler, str):
+            raise TypeError("handoff_handler must be a string")
+        handoff_handler = validate_handoff_handler_name(raw_handoff_handler)
 
-    auto_approve_enabled = payload.get("auto_approve_enabled", False)
-    if not isinstance(auto_approve_enabled, bool):
-        raise TypeError("auto_approve_enabled must be a boolean")
+    auto_approve_enabled: bool | None = None
+    if "auto_approve_enabled" in payload:
+        auto_approve_enabled = payload.get("auto_approve_enabled")
+        if not isinstance(auto_approve_enabled, bool):
+            raise TypeError("auto_approve_enabled must be a boolean")
 
-    stream_logs_stdout = payload.get("stream_logs_stdout", False)
-    if not isinstance(stream_logs_stdout, bool):
-        raise TypeError("stream_logs_stdout must be a boolean")
+    stream_logs_stdout: bool | None = None
+    if "stream_logs_stdout" in payload:
+        stream_logs_stdout = payload.get("stream_logs_stdout")
+        if not isinstance(stream_logs_stdout, bool):
+            raise TypeError("stream_logs_stdout must be a boolean")
 
     raw_approval_usernames = payload.get("approval_comment_usernames", ())
     if isinstance(raw_approval_usernames, tuple):

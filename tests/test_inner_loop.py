@@ -22,6 +22,7 @@ from loops.handoff_handlers import HandoffResult
 from loops.inner_loop_runtime_config import (
     INNER_LOOP_RUNTIME_CONFIG_FILE,
     InnerLoopRuntimeConfig,
+    read_inner_loop_runtime_config,
     write_inner_loop_runtime_config,
 )
 from loops import inner_loop as inner_loop_module
@@ -1735,6 +1736,43 @@ def test_inner_loop_reads_handoff_handler_from_runtime_config(
         )
 
 
+def test_inner_loop_runtime_config_omitted_runtime_keys_are_none(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / INNER_LOOP_RUNTIME_CONFIG_FILE).write_text("{}")
+
+    runtime_config = read_inner_loop_runtime_config(run_dir)
+
+    assert runtime_config is not None
+    assert runtime_config.handoff_handler is None
+    assert runtime_config.auto_approve_enabled is None
+    assert runtime_config.stream_logs_stdout is None
+
+
+def test_inner_loop_runtime_config_omitted_handoff_uses_env_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        needs_user_input=True,
+        needs_user_input_payload={"message": "Need manual input"},
+    )
+    (run_dir / INNER_LOOP_RUNTIME_CONFIG_FILE).write_text("{}")
+    monkeypatch.setenv("LOOPS_HANDOFF_HANDLER", "gh_comment_handler")
+
+    with pytest.raises(ValueError, match="requires provider_id='github_projects_v2'"):
+        run_inner_loop(
+            run_dir,
+            sleep_fn=lambda _seconds: None,
+            max_iterations=1,
+        )
+
+
 def test_inner_loop_runtime_config_codex_cmd_overrides_process_env(
     tmp_path: Path,
     monkeypatch,
@@ -1846,6 +1884,101 @@ def test_inner_loop_runtime_config_log_streaming_does_not_mutate_process_env(
     )
 
     assert os.environ.get("LOOPS_STREAM_LOGS_STDOUT") == "1"
+
+
+def test_inner_loop_runtime_config_omitted_stream_logs_uses_env_fallback(
+    tmp_path: Path,
+    monkeypatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(run_dir)
+    (run_dir / INNER_LOOP_RUNTIME_CONFIG_FILE).write_text("{}")
+    monkeypatch.setenv("LOOPS_STREAM_LOGS_STDOUT", "1")
+    monkeypatch.setattr(
+        inner_loop_module,
+        "_run_codex_turn",
+        lambda **kwargs: kwargs["run_record"],
+    )
+
+    run_inner_loop(
+        run_dir,
+        sleep_fn=lambda _seconds: None,
+        max_iterations=1,
+    )
+
+    captured = capsys.readouterr()
+    assert "[loops] iteration 1 enter: state=RUNNING" in captured.out
+
+
+def test_inner_loop_runtime_config_omitted_auto_approve_uses_env_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        pr=RunPR(
+            url="https://github.com/acme/api/pull/42",
+            number=42,
+            repo="acme/api",
+            review_status="open",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:00Z",
+        ),
+    )
+    (run_dir / INNER_LOOP_RUNTIME_CONFIG_FILE).write_text("{}")
+    monkeypatch.setenv("LOOPS_AUTO_APPROVE_ENABLED", "1")
+
+    def pr_status_fetcher(pr: RunPR) -> RunPR:
+        return RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="open",
+            ci_status="success",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:01Z",
+        )
+
+    eval_calls = {"count": 0}
+
+    def fake_run_auto_approve_eval(*, run_record, runtime, control):
+        eval_calls["count"] += 1
+        del control
+        return write_run_record(
+            runtime.run_json_path,
+            replace(
+                run_record,
+                auto_approve=RunAutoApprove(
+                    verdict="REJECT",
+                    impact=2,
+                    risk=4,
+                    size=2,
+                    judged_at="2026-02-09T00:00:01Z",
+                    summary="Risk remains too high for auto-merge.",
+                ),
+            ),
+            auto_approve_enabled=runtime.auto_approve_enabled,
+        )
+
+    monkeypatch.setattr(inner_loop_module, "_run_auto_approve_eval", fake_run_auto_approve_eval)
+
+    result = run_inner_loop(
+        run_dir,
+        pr_status_fetcher=pr_status_fetcher,
+        user_handoff_handler=lambda _payload: HandoffResult.waiting(),
+        sleep_fn=lambda _seconds: None,
+        max_iterations=8,
+        max_idle_polls=2,
+    )
+
+    assert result.last_state == "NEEDS_INPUT"
+    assert result.auto_approve is not None
+    assert result.auto_approve.verdict == "REJECT"
+    assert eval_calls["count"] == 1
 
 
 def test_inner_loop_runtime_config_keeps_process_env_codex_fallback(
