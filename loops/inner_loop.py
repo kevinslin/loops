@@ -39,11 +39,16 @@ from loops.run_record import (
 from loops.state_signal import SIGNAL_QUEUE_FILE
 
 PROMPT_TEMPLATE = (
-    "Use dev.do to implement the task, open a PR, wait for review, address feedback, "
-    "and trigger:merge-pr when the state is exactly <state>PR_APPROVED</state>.\n"
-    'If needing input from user, use "$needs_input" skill to request user input.\n'
+    "Use dev.do to implement the task and open a PR.\n" 
+    "You are running inside the loops test harness. Wait only for review from the "
+    "a-review subagent. NEVER wait for human PR "
+    "review/comments inside the agent; the harness monitors review activity and "
+    "will re-invoke you when feedback arrives.\n"
     "The current inner-loop state is passed via a trailing <state>...</state> tag; "
     "initial state is <state>RUNNING</state>.\n"
+    "If you need input from user, print what you need help with and end current conversation "
+    "with <state>NEEDS_INPUT</>\n"
+    "trigger:merge-pr when the state is exactly <state>PR_APPROVED</state>.\n"
     "Do not merge until the state is exactly <state>PR_APPROVED</state>.\n"
     "Task: {task}\n"
 )
@@ -87,6 +92,38 @@ class CommentApprovalSettings:
     @property
     def enabled(self) -> bool:
         return bool(self.allowed_usernames)
+
+
+@dataclass(frozen=True)
+class InnerLoopRuntimeContext:
+    run_dir: Path
+    run_json_path: Path
+    run_log: Path
+    agent_log: Path
+    command: list[str]
+    base_prompt: Optional[str]
+    user_handoff_handler: UserHandoffHandler
+    pr_status_fetcher: PRStatusFetcher
+    sleep_fn: SleepFn
+    initial_poll_seconds: float
+    max_poll_seconds: float
+    max_idle_polls: int
+    non_interactive_default_handoff: bool
+
+
+@dataclass
+class LoopControlState:
+    backoff_seconds: float
+    idle_polls: int = 0
+    next_user_response: Optional[str] = None
+    cleanup_executed_for_pr: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class StateHandlerResult:
+    run_record: RunRecord
+    action: str
+    terminate: bool = False
 
 
 def reset_run_record(run_dir: Path) -> RunRecord:
@@ -210,10 +247,22 @@ def run_inner_loop(
     non_interactive_default_handoff = (
         using_default_handoff_handler and not _has_interactive_stdin()
     )
-    backoff_seconds = initial_poll_seconds
-    idle_polls = 0
-    next_user_response: Optional[str] = None
-    cleanup_executed_for_pr: Optional[str] = None
+    runtime = InnerLoopRuntimeContext(
+        run_dir=run_dir,
+        run_json_path=run_json_path,
+        run_log=run_log,
+        agent_log=agent_log,
+        command=command,
+        base_prompt=base_prompt,
+        user_handoff_handler=user_handoff_handler,
+        pr_status_fetcher=pr_status_fetcher,
+        sleep_fn=sleep_fn,
+        initial_poll_seconds=initial_poll_seconds,
+        max_poll_seconds=max_poll_seconds,
+        max_idle_polls=max_idle_polls,
+        non_interactive_default_handoff=non_interactive_default_handoff,
+    )
+    control = LoopControlState(backoff_seconds=initial_poll_seconds)
 
     for iteration in range(1, max_iterations + 1):
         run_record = read_run_record(run_json_path)
@@ -224,8 +273,8 @@ def run_inner_loop(
             iteration=iteration,
             state=state,
             run_record=run_record,
-            backoff_seconds=backoff_seconds,
-            idle_polls=idle_polls,
+            backoff_seconds=control.backoff_seconds,
+            idle_polls=control.idle_polls,
         )
 
         if state == "DONE":
@@ -236,475 +285,32 @@ def run_inner_loop(
                 next_state=state,
                 run_record=run_record,
                 action="done_exit",
-                backoff_seconds=backoff_seconds,
-                idle_polls=idle_polls,
+                backoff_seconds=control.backoff_seconds,
+                idle_polls=control.idle_polls,
             )
             return run_record
 
-        if state == "NEEDS_INPUT":
-            response = _handle_needs_input(
-                run_record,
-                user_handoff_handler,
-                run_log,
-            )
-            if response is None:
-                if non_interactive_default_handoff:
-                    append_log(
-                        run_log,
-                        "[loops] non-interactive mode; exiting while waiting for user input",
-                    )
-                    terminal_record = read_run_record(run_json_path)
-                    _log_iteration_exit(
-                        run_log,
-                        iteration=iteration,
-                        next_state=derive_run_state(
-                            terminal_record.pr,
-                            terminal_record.needs_user_input,
-                        ),
-                        run_record=terminal_record,
-                        action="needs_input_non_interactive_exit",
-                        backoff_seconds=backoff_seconds,
-                        idle_polls=idle_polls,
-                    )
-                    return terminal_record
-                sleep_fn(min(backoff_seconds, max_poll_seconds))
-                backoff_seconds = min(backoff_seconds * 2, max_poll_seconds)
-                _log_iteration_exit(
-                    run_log,
-                    iteration=iteration,
-                    next_state=derive_run_state(
-                        run_record.pr,
-                        run_record.needs_user_input,
-                    ),
-                    run_record=run_record,
-                    action="needs_input_waiting",
-                    backoff_seconds=backoff_seconds,
-                    idle_polls=idle_polls,
-                )
-                continue
-
-            next_user_response = response
-            run_record = write_run_record(
-                run_json_path,
-                replace(
-                    run_record,
-                    needs_user_input=False,
-                    needs_user_input_payload=None,
-                ),
-            )
-            backoff_seconds = initial_poll_seconds
-            idle_polls = 0
-            _log_iteration_exit(
-                run_log,
-                iteration=iteration,
-                next_state=derive_run_state(
-                    run_record.pr,
-                    run_record.needs_user_input,
-                ),
-                run_record=run_record,
-                action="needs_input_cleared",
-                backoff_seconds=backoff_seconds,
-                idle_polls=idle_polls,
-            )
-            continue
-
-        if state == "RUNNING":
-            run_record = _run_codex_turn(
-                run_json_path=run_json_path,
-                run_log=run_log,
-                agent_log=agent_log,
-                run_record=run_record,
-                command=command,
-                base_prompt=base_prompt,
-                user_response=next_user_response,
-                review_feedback=False,
-            )
-            next_user_response = None
-            cleanup_executed_for_pr = None
-            backoff_seconds = initial_poll_seconds
-            idle_polls = 0
-            _log_iteration_exit(
-                run_log,
-                iteration=iteration,
-                next_state=derive_run_state(
-                    run_record.pr,
-                    run_record.needs_user_input,
-                ),
-                run_record=run_record,
-                action="codex_turn",
-                backoff_seconds=backoff_seconds,
-                idle_polls=idle_polls,
-            )
-            continue
-
-        if state == "WAITING_ON_REVIEW":
-            if run_record.pr is None:
-                run_record = _force_needs_input(
-                    run_json_path,
-                    run_record,
-                    message="Run is waiting on review but no PR metadata exists.",
-                )
-                _log_iteration_exit(
-                    run_log,
-                    iteration=iteration,
-                    next_state=derive_run_state(
-                        run_record.pr,
-                        run_record.needs_user_input,
-                    ),
-                    run_record=run_record,
-                    action="review_missing_pr",
-                    backoff_seconds=backoff_seconds,
-                    idle_polls=idle_polls,
-                )
-                continue
-            try:
-                updated_pr = pr_status_fetcher(run_record.pr)
-            except Exception as exc:
-                append_log(run_log, f"[loops] failed to poll PR status: {exc}")
-                previous_state = derive_run_state(
-                    run_record.pr,
-                    run_record.needs_user_input,
-                )
-                run_record, idle_polls = _increment_idle_polls(
-                    run_json_path=run_json_path,
-                    run_record=run_record,
-                    idle_polls=idle_polls,
-                    max_idle_polls=max_idle_polls,
-                    message=(
-                        "PR polling has been idle for too long. "
-                        "Please check review status manually."
-                    ),
-                )
-                next_state = derive_run_state(
-                    run_record.pr,
-                    run_record.needs_user_input,
-                )
-                if next_state not in WAITING_STATES:
-                    _log_iteration_exit(
-                        run_log,
-                        iteration=iteration,
-                        next_state=next_state,
-                        run_record=run_record,
-                        action="review_poll_error",
-                        backoff_seconds=backoff_seconds,
-                        idle_polls=idle_polls,
-                    )
-                    continue
-                if previous_state != next_state:
-                    backoff_seconds = initial_poll_seconds
-                    idle_polls = 0
-                    _log_iteration_exit(
-                        run_log,
-                        iteration=iteration,
-                        next_state=next_state,
-                        run_record=run_record,
-                        action="review_poll_error",
-                        backoff_seconds=backoff_seconds,
-                        idle_polls=idle_polls,
-                    )
-                    continue
-                sleep_fn(min(backoff_seconds, max_poll_seconds))
-                backoff_seconds = min(backoff_seconds * 2, max_poll_seconds)
-                _log_iteration_exit(
-                    run_log,
-                    iteration=iteration,
-                    next_state=next_state,
-                    run_record=run_record,
-                    action="review_poll_error",
-                    backoff_seconds=backoff_seconds,
-                    idle_polls=idle_polls,
-                )
-                continue
-
-            run_record = write_run_record(
-                run_json_path,
-                replace(run_record, pr=updated_pr),
-            )
-            if run_record.pr is not None and _should_resume_review_feedback(run_record.pr):
-                if run_record.pr.review_status == "changes_requested":
-                    append_log(run_log, "[loops] review changes requested; resuming codex")
-                else:
-                    append_log(run_log, "[loops] new PR comment feedback detected; resuming codex")
-                run_record = _run_codex_turn(
-                    run_json_path=run_json_path,
-                    run_log=run_log,
-                    agent_log=agent_log,
-                    run_record=run_record,
-                    command=command,
-                    base_prompt=base_prompt,
-                    user_response=next_user_response,
-                    review_feedback=True,
-                )
-                next_user_response = None
-                cleanup_executed_for_pr = None
-                backoff_seconds = initial_poll_seconds
-                idle_polls = 0
-                _log_iteration_exit(
-                    run_log,
-                    iteration=iteration,
-                    next_state=derive_run_state(
-                        run_record.pr,
-                        run_record.needs_user_input,
-                    ),
-                    run_record=run_record,
-                    action="review_feedback_codex_turn",
-                    backoff_seconds=backoff_seconds,
-                    idle_polls=idle_polls,
-                )
-                continue
-            if (
-                derive_run_state(run_record.pr, run_record.needs_user_input)
-                == "WAITING_ON_REVIEW"
-            ):
-                previous_state = "WAITING_ON_REVIEW"
-                run_record, idle_polls = _increment_idle_polls(
-                    run_json_path=run_json_path,
-                    run_record=run_record,
-                    idle_polls=idle_polls,
-                    max_idle_polls=max_idle_polls,
-                    message=(
-                        "PR has not changed after repeated polls. "
-                        "Please provide manual guidance."
-                    ),
-                )
-                next_state = derive_run_state(
-                    run_record.pr,
-                    run_record.needs_user_input,
-                )
-                if next_state not in WAITING_STATES:
-                    _log_iteration_exit(
-                        run_log,
-                        iteration=iteration,
-                        next_state=next_state,
-                        run_record=run_record,
-                        action="review_poll",
-                        backoff_seconds=backoff_seconds,
-                        idle_polls=idle_polls,
-                    )
-                    continue
-                if previous_state != next_state:
-                    backoff_seconds = initial_poll_seconds
-                    idle_polls = 0
-                    _log_iteration_exit(
-                        run_log,
-                        iteration=iteration,
-                        next_state=next_state,
-                        run_record=run_record,
-                        action="review_poll",
-                        backoff_seconds=backoff_seconds,
-                        idle_polls=idle_polls,
-                    )
-                    continue
-            else:
-                idle_polls = 0
-                backoff_seconds = initial_poll_seconds
-            next_state = derive_run_state(run_record.pr, run_record.needs_user_input)
-            sleep_fn(min(backoff_seconds, max_poll_seconds))
-            backoff_seconds = min(backoff_seconds * 2, max_poll_seconds)
-            _log_iteration_exit(
-                run_log,
-                iteration=iteration,
-                next_state=next_state,
-                run_record=run_record,
-                action="review_poll",
-                backoff_seconds=backoff_seconds,
-                idle_polls=idle_polls,
-            )
-            continue
-
-        if state == "PR_APPROVED":
-            if run_record.pr is None:
-                run_record = _force_needs_input(
-                    run_json_path,
-                    run_record,
-                    message="Run is PR_APPROVED but no PR metadata exists.",
-                )
-                _log_iteration_exit(
-                    run_log,
-                    iteration=iteration,
-                    next_state=derive_run_state(
-                        run_record.pr,
-                        run_record.needs_user_input,
-                    ),
-                    run_record=run_record,
-                    action="approved_missing_pr",
-                    backoff_seconds=backoff_seconds,
-                    idle_polls=idle_polls,
-                )
-                continue
-
-            # Run cleanup once for a given PR URL, then only poll until merged.
-            if cleanup_executed_for_pr != run_record.pr.url:
-                cleanup_prompt = _build_cleanup_prompt(run_record.task.url, base_prompt)
-                output, exit_code, _resume_fallback_used = _invoke_codex(
-                    base_command=command,
-                    prompt=cleanup_prompt,
-                    agent_log=agent_log,
-                    run_log=run_log,
-                    codex_session=run_record.codex_session,
-                    turn_label="cleanup turn",
-                )
-                append_log(run_log, output)
-                if exit_code != 0:
-                    run_record = _force_needs_input(
-                        run_json_path,
-                        run_record,
-                        message="Cleanup failed after PR approval. Please advise.",
-                        context={"exit_code": exit_code},
-                    )
-                    _log_iteration_exit(
-                        run_log,
-                        iteration=iteration,
-                        next_state=derive_run_state(
-                            run_record.pr,
-                            run_record.needs_user_input,
-                        ),
-                        run_record=run_record,
-                        action="cleanup_failed",
-                        backoff_seconds=backoff_seconds,
-                        idle_polls=idle_polls,
-                    )
-                    continue
-                cleanup_executed_for_pr = run_record.pr.url
-
-            try:
-                updated_pr = pr_status_fetcher(run_record.pr)
-            except Exception as exc:
-                append_log(run_log, f"[loops] failed to poll merge status: {exc}")
-                previous_state = derive_run_state(
-                    run_record.pr,
-                    run_record.needs_user_input,
-                )
-                run_record, idle_polls = _increment_idle_polls(
-                    run_json_path=run_json_path,
-                    run_record=run_record,
-                    idle_polls=idle_polls,
-                    max_idle_polls=max_idle_polls,
-                    message=(
-                        "Merge polling has been idle for too long. "
-                        "Please check merge status manually."
-                    ),
-                )
-                next_state = derive_run_state(
-                    run_record.pr,
-                    run_record.needs_user_input,
-                )
-                if next_state not in WAITING_STATES:
-                    _log_iteration_exit(
-                        run_log,
-                        iteration=iteration,
-                        next_state=next_state,
-                        run_record=run_record,
-                        action="merge_poll_error",
-                        backoff_seconds=backoff_seconds,
-                        idle_polls=idle_polls,
-                    )
-                    continue
-                if previous_state != next_state and next_state in WAITING_STATES:
-                    backoff_seconds = initial_poll_seconds
-                    idle_polls = 0
-                    _log_iteration_exit(
-                        run_log,
-                        iteration=iteration,
-                        next_state=next_state,
-                        run_record=run_record,
-                        action="merge_poll_error",
-                        backoff_seconds=backoff_seconds,
-                        idle_polls=idle_polls,
-                    )
-                    continue
-                sleep_fn(min(backoff_seconds, max_poll_seconds))
-                backoff_seconds = min(backoff_seconds * 2, max_poll_seconds)
-                _log_iteration_exit(
-                    run_log,
-                    iteration=iteration,
-                    next_state=next_state,
-                    run_record=run_record,
-                    action="merge_poll_error",
-                    backoff_seconds=backoff_seconds,
-                    idle_polls=idle_polls,
-                )
-                continue
-
-            run_record = write_run_record(
-                run_json_path,
-                replace(run_record, pr=updated_pr),
-            )
-            previous_state = derive_run_state(
-                run_record.pr,
-                run_record.needs_user_input,
-            )
-            if (
-                derive_run_state(run_record.pr, run_record.needs_user_input)
-                == "PR_APPROVED"
-            ):
-                run_record, idle_polls = _increment_idle_polls(
-                    run_json_path=run_json_path,
-                    run_record=run_record,
-                    idle_polls=idle_polls,
-                    max_idle_polls=max_idle_polls,
-                    message=(
-                        "PR is still approved but not merged after repeated polls. "
-                        "Please provide manual guidance."
-                    ),
-                )
-                next_state = derive_run_state(
-                    run_record.pr,
-                    run_record.needs_user_input,
-                )
-                if next_state not in WAITING_STATES:
-                    _log_iteration_exit(
-                        run_log,
-                        iteration=iteration,
-                        next_state=next_state,
-                        run_record=run_record,
-                        action="approved_poll",
-                        backoff_seconds=backoff_seconds,
-                        idle_polls=idle_polls,
-                    )
-                    continue
-
-            next_state = derive_run_state(run_record.pr, run_record.needs_user_input)
-            if (
-                previous_state == "PR_APPROVED"
-                and next_state in WAITING_STATES
-                and next_state != previous_state
-            ):
-                backoff_seconds = initial_poll_seconds
-                idle_polls = 0
-                _log_iteration_exit(
-                    run_log,
-                    iteration=iteration,
-                    next_state=next_state,
-                    run_record=run_record,
-                    action="approved_poll",
-                    backoff_seconds=backoff_seconds,
-                    idle_polls=idle_polls,
-                )
-                continue
-            if next_state not in WAITING_STATES:
-                _log_iteration_exit(
-                    run_log,
-                    iteration=iteration,
-                    next_state=next_state,
-                    run_record=run_record,
-                    action="approved_poll",
-                    backoff_seconds=backoff_seconds,
-                    idle_polls=idle_polls,
-                )
-                continue
-            sleep_fn(min(backoff_seconds, max_poll_seconds))
-            backoff_seconds = min(backoff_seconds * 2, max_poll_seconds)
-            _log_iteration_exit(
-                run_log,
-                iteration=iteration,
-                next_state=next_state,
-                run_record=run_record,
-                action="approved_poll",
-                backoff_seconds=backoff_seconds,
-                idle_polls=idle_polls,
-            )
-            continue
+        transition = _handle_state(
+            state=state,
+            run_record=run_record,
+            runtime=runtime,
+            control=control,
+        )
+        next_state = derive_run_state(
+            transition.run_record.pr,
+            transition.run_record.needs_user_input,
+        )
+        _log_iteration_exit(
+            run_log,
+            iteration=iteration,
+            next_state=next_state,
+            run_record=transition.run_record,
+            action=transition.action,
+            backoff_seconds=control.backoff_seconds,
+            idle_polls=control.idle_polls,
+        )
+        if transition.terminate:
+            return transition.run_record
 
     final_record = read_run_record(run_json_path)
     final_record = _force_needs_input(
@@ -723,6 +329,338 @@ def run_inner_loop(
         ),
     )
     return final_record
+
+
+def _handle_state(
+    *,
+    state: str,
+    run_record: RunRecord,
+    runtime: InnerLoopRuntimeContext,
+    control: LoopControlState,
+) -> StateHandlerResult:
+    if state == "NEEDS_INPUT":
+        return _handle_needs_input_state(
+            run_record=run_record,
+            runtime=runtime,
+            control=control,
+        )
+    if state == "RUNNING":
+        return _handle_running_state(
+            run_record=run_record,
+            runtime=runtime,
+            control=control,
+        )
+    if state == "WAITING_ON_REVIEW":
+        return _handle_waiting_on_review_state(
+            run_record=run_record,
+            runtime=runtime,
+            control=control,
+        )
+    if state == "PR_APPROVED":
+        return _handle_pr_approved_state(
+            run_record=run_record,
+            runtime=runtime,
+            control=control,
+        )
+    raise ValueError(f"unsupported state: {state}")
+
+
+def _handle_needs_input_state(
+    *,
+    run_record: RunRecord,
+    runtime: InnerLoopRuntimeContext,
+    control: LoopControlState,
+) -> StateHandlerResult:
+    response = _handle_needs_input(
+        run_record,
+        runtime.user_handoff_handler,
+        runtime.run_log,
+    )
+    if response is None:
+        if runtime.non_interactive_default_handoff:
+            append_log(
+                runtime.run_log,
+                "[loops] non-interactive mode; exiting while waiting for user input",
+            )
+            terminal_record = read_run_record(runtime.run_json_path)
+            return StateHandlerResult(
+                run_record=terminal_record,
+                action="needs_input_non_interactive_exit",
+                terminate=True,
+            )
+        _sleep_with_backoff(control=control, runtime=runtime)
+        return StateHandlerResult(
+            run_record=run_record,
+            action="needs_input_waiting",
+        )
+
+    control.next_user_response = response
+    cleared_record = write_run_record(
+        runtime.run_json_path,
+        replace(
+            run_record,
+            needs_user_input=False,
+            needs_user_input_payload=None,
+        ),
+    )
+    control.backoff_seconds = runtime.initial_poll_seconds
+    control.idle_polls = 0
+    return StateHandlerResult(
+        run_record=cleared_record,
+        action="needs_input_cleared",
+    )
+
+
+def _handle_running_state(
+    *,
+    run_record: RunRecord,
+    runtime: InnerLoopRuntimeContext,
+    control: LoopControlState,
+) -> StateHandlerResult:
+    updated_record = _run_codex_turn(
+        run_json_path=runtime.run_json_path,
+        run_log=runtime.run_log,
+        agent_log=runtime.agent_log,
+        run_record=run_record,
+        command=runtime.command,
+        base_prompt=runtime.base_prompt,
+        user_response=control.next_user_response,
+        review_feedback=False,
+    )
+    control.next_user_response = None
+    control.cleanup_executed_for_pr = None
+    control.backoff_seconds = runtime.initial_poll_seconds
+    control.idle_polls = 0
+    return StateHandlerResult(run_record=updated_record, action="codex_turn")
+
+
+def _handle_waiting_on_review_state(
+    *,
+    run_record: RunRecord,
+    runtime: InnerLoopRuntimeContext,
+    control: LoopControlState,
+) -> StateHandlerResult:
+    if run_record.pr is None:
+        missing_pr_record = _force_needs_input(
+            runtime.run_json_path,
+            run_record,
+            message="Run is waiting on review but no PR metadata exists.",
+        )
+        return StateHandlerResult(
+            run_record=missing_pr_record,
+            action="review_missing_pr",
+        )
+    try:
+        updated_pr = runtime.pr_status_fetcher(run_record.pr)
+    except Exception as exc:
+        append_log(runtime.run_log, f"[loops] failed to poll PR status: {exc}")
+        previous_state = derive_run_state(
+            run_record.pr,
+            run_record.needs_user_input,
+        )
+        run_record, control.idle_polls = _increment_idle_polls(
+            run_json_path=runtime.run_json_path,
+            run_record=run_record,
+            idle_polls=control.idle_polls,
+            max_idle_polls=runtime.max_idle_polls,
+            message=(
+                "PR polling has been idle for too long. "
+                "Please check review status manually."
+            ),
+        )
+        next_state = derive_run_state(
+            run_record.pr,
+            run_record.needs_user_input,
+        )
+        if next_state not in WAITING_STATES:
+            return StateHandlerResult(run_record=run_record, action="review_poll_error")
+        if previous_state != next_state:
+            control.backoff_seconds = runtime.initial_poll_seconds
+            control.idle_polls = 0
+            return StateHandlerResult(run_record=run_record, action="review_poll_error")
+        _sleep_with_backoff(control=control, runtime=runtime)
+        return StateHandlerResult(run_record=run_record, action="review_poll_error")
+
+    run_record = write_run_record(
+        runtime.run_json_path,
+        replace(run_record, pr=updated_pr),
+    )
+    if run_record.pr is not None and _should_resume_review_feedback(run_record.pr):
+        if run_record.pr.review_status == "changes_requested":
+            append_log(runtime.run_log, "[loops] review changes requested; resuming codex")
+        else:
+            append_log(runtime.run_log, "[loops] new PR comment feedback detected; resuming codex")
+        run_record = _run_codex_turn(
+            run_json_path=runtime.run_json_path,
+            run_log=runtime.run_log,
+            agent_log=runtime.agent_log,
+            run_record=run_record,
+            command=runtime.command,
+            base_prompt=runtime.base_prompt,
+            user_response=control.next_user_response,
+            review_feedback=True,
+        )
+        control.next_user_response = None
+        control.cleanup_executed_for_pr = None
+        control.backoff_seconds = runtime.initial_poll_seconds
+        control.idle_polls = 0
+        return StateHandlerResult(
+            run_record=run_record,
+            action="review_feedback_codex_turn",
+        )
+    if derive_run_state(run_record.pr, run_record.needs_user_input) == "WAITING_ON_REVIEW":
+        run_record, control.idle_polls = _increment_idle_polls(
+            run_json_path=runtime.run_json_path,
+            run_record=run_record,
+            idle_polls=control.idle_polls,
+            max_idle_polls=runtime.max_idle_polls,
+            message=(
+                "PR has not changed after repeated polls. "
+                "Please provide manual guidance."
+            ),
+        )
+        next_state = derive_run_state(
+            run_record.pr,
+            run_record.needs_user_input,
+        )
+        if next_state not in WAITING_STATES:
+            return StateHandlerResult(run_record=run_record, action="review_poll")
+        if next_state != "WAITING_ON_REVIEW":
+            control.backoff_seconds = runtime.initial_poll_seconds
+            control.idle_polls = 0
+            return StateHandlerResult(run_record=run_record, action="review_poll")
+    else:
+        control.idle_polls = 0
+        control.backoff_seconds = runtime.initial_poll_seconds
+
+    _sleep_with_backoff(control=control, runtime=runtime)
+    return StateHandlerResult(run_record=run_record, action="review_poll")
+
+
+def _handle_pr_approved_state(
+    *,
+    run_record: RunRecord,
+    runtime: InnerLoopRuntimeContext,
+    control: LoopControlState,
+) -> StateHandlerResult:
+    if run_record.pr is None:
+        missing_pr_record = _force_needs_input(
+            runtime.run_json_path,
+            run_record,
+            message="Run is PR_APPROVED but no PR metadata exists.",
+        )
+        return StateHandlerResult(
+            run_record=missing_pr_record,
+            action="approved_missing_pr",
+        )
+
+    if control.cleanup_executed_for_pr != run_record.pr.url:
+        cleanup_prompt = _build_cleanup_prompt(run_record.task.url, runtime.base_prompt)
+        output, exit_code, _resume_fallback_used = _invoke_codex(
+            base_command=runtime.command,
+            prompt=cleanup_prompt,
+            agent_log=runtime.agent_log,
+            run_log=runtime.run_log,
+            codex_session=run_record.codex_session,
+            turn_label="cleanup turn",
+        )
+        append_log(runtime.run_log, output)
+        if exit_code != 0:
+            failed_cleanup_record = _force_needs_input(
+                runtime.run_json_path,
+                run_record,
+                message="Cleanup failed after PR approval. Please advise.",
+                context={"exit_code": exit_code},
+            )
+            return StateHandlerResult(
+                run_record=failed_cleanup_record,
+                action="cleanup_failed",
+            )
+        control.cleanup_executed_for_pr = run_record.pr.url
+
+    try:
+        updated_pr = runtime.pr_status_fetcher(run_record.pr)
+    except Exception as exc:
+        append_log(runtime.run_log, f"[loops] failed to poll merge status: {exc}")
+        previous_state = derive_run_state(
+            run_record.pr,
+            run_record.needs_user_input,
+        )
+        run_record, control.idle_polls = _increment_idle_polls(
+            run_json_path=runtime.run_json_path,
+            run_record=run_record,
+            idle_polls=control.idle_polls,
+            max_idle_polls=runtime.max_idle_polls,
+            message=(
+                "Merge polling has been idle for too long. "
+                "Please check merge status manually."
+            ),
+        )
+        next_state = derive_run_state(
+            run_record.pr,
+            run_record.needs_user_input,
+        )
+        if next_state not in WAITING_STATES:
+            return StateHandlerResult(run_record=run_record, action="merge_poll_error")
+        if previous_state != next_state:
+            control.backoff_seconds = runtime.initial_poll_seconds
+            control.idle_polls = 0
+            return StateHandlerResult(run_record=run_record, action="merge_poll_error")
+        _sleep_with_backoff(control=control, runtime=runtime)
+        return StateHandlerResult(run_record=run_record, action="merge_poll_error")
+
+    run_record = write_run_record(
+        runtime.run_json_path,
+        replace(run_record, pr=updated_pr),
+    )
+    previous_state = derive_run_state(
+        run_record.pr,
+        run_record.needs_user_input,
+    )
+    if derive_run_state(run_record.pr, run_record.needs_user_input) == "PR_APPROVED":
+        run_record, control.idle_polls = _increment_idle_polls(
+            run_json_path=runtime.run_json_path,
+            run_record=run_record,
+            idle_polls=control.idle_polls,
+            max_idle_polls=runtime.max_idle_polls,
+            message=(
+                "PR is still approved but not merged after repeated polls. "
+                "Please provide manual guidance."
+            ),
+        )
+        next_state = derive_run_state(
+            run_record.pr,
+            run_record.needs_user_input,
+        )
+        if next_state not in WAITING_STATES:
+            return StateHandlerResult(run_record=run_record, action="approved_poll")
+
+    next_state = derive_run_state(run_record.pr, run_record.needs_user_input)
+    if (
+        previous_state == "PR_APPROVED"
+        and next_state in WAITING_STATES
+        and next_state != previous_state
+    ):
+        control.backoff_seconds = runtime.initial_poll_seconds
+        control.idle_polls = 0
+        return StateHandlerResult(run_record=run_record, action="approved_poll")
+    if next_state not in WAITING_STATES:
+        return StateHandlerResult(run_record=run_record, action="approved_poll")
+
+    _sleep_with_backoff(control=control, runtime=runtime)
+    return StateHandlerResult(run_record=run_record, action="approved_poll")
+
+
+def _sleep_with_backoff(
+    *,
+    control: LoopControlState,
+    runtime: InnerLoopRuntimeContext,
+) -> None:
+    runtime.sleep_fn(min(control.backoff_seconds, runtime.max_poll_seconds))
+    control.backoff_seconds = min(
+        control.backoff_seconds * 2,
+        runtime.max_poll_seconds,
+    )
 
 
 def _build_reset_task_from_env(run_dir: Path) -> Task:
@@ -941,7 +879,8 @@ def _build_comment_feedback_prompt(
     )
     prompt += (
         f"\nPR {pr_url} has new discussion comments. Review the feedback, address "
-        "requested changes, update the PR, and summarize what changed.\n"
+        "requested changes, update the PR, and summarize what changed. If there "
+        "are no changes requested, summarize that and end the current turn.\n"
     )
     return _append_state_tag(prompt, PROMPT_STATE_WAITING_ON_REVIEW)
 

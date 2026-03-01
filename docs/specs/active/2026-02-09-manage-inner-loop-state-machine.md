@@ -169,7 +169,7 @@ From any non-DONE state:
 - `_handle_state` behavior is encoded in explicit state branches inside `run_inner_loop`.
 - `NEEDS_INPUT` blocks until handoff returns a non-empty response.
 - `PR_APPROVED` runs trigger:merge-pr once per PR URL, then polls for merge with bounded idle escalation to `NEEDS_INPUT`.
-- Default inner-loop prompt includes: `If needing input from user, use "$needs_input" skill to request user input.`
+- Default inner-loop prompt includes explicit `NEEDS_INPUT` tag guidance and clarifies that in-turn waiting is only for `a-review` subagent completion (human review waiting is handled by the harness).
 
 ---
 
@@ -189,7 +189,7 @@ From any non-DONE state:
 
 ### Phase 3: Implement inner-loop orchestrator + handlers
 - [x] Refactor `run_inner_loop` into a persistent state loop.
-- [x] Ensure `PROMPT_TEMPLATE` includes explicit `$needs_input` instruction.
+- [x] Ensure `PROMPT_TEMPLATE` includes explicit `NEEDS_INPUT` tag guidance and no in-turn human-review waiting.
 - [x] `RUNNING`: invoke Codex, persist session/output-derived PR metadata.
 - [x] `WAITING_ON_REVIEW`: poll PR status with backoff and persist changes.
 - [x] `NEEDS_INPUT`: block for user handoff, persist response, clear input flag.

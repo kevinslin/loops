@@ -52,14 +52,14 @@ function run_inner_loop(run_dir):
 
     if state == DONE:
       return run_record
-    if state == NEEDS_INPUT:
-      handle handoff; either wait/backoff or clear needs_input and continue
-    if state == RUNNING:
-      run codex turn; write run.json updates and append run.log/agent.log
-    if state == WAITING_ON_REVIEW:
-      poll PR; react to changes requested/approval/idle thresholds
-    if state == PR_APPROVED:
-      run cleanup prompt once, poll merge state until DONE or idle-escalate to NEEDS_INPUT
+    transition = dispatch_state_handler(state, run_record, runtime, control)
+    // handlers:
+    // - handle_needs_input_state
+    // - handle_running_state
+    // - handle_waiting_on_review_state
+    // - handle_pr_approved_state
+    if transition.terminate:
+      return transition.run_record
 
   force NEEDS_INPUT and return
 ```
@@ -186,96 +186,11 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
       return record
     }
 
-    if (state === "NEEDS_INPUT") {
-      handoffResult = handleNeedsInput(record.payload, configuredHandler)
-      // built-ins:
-      // - stdin_handler: immediate response from terminal input
-      // - gh_comment_handler: post/poll issue comments until /loops-reply arrives
-      response = handoffResult.responseOrNull
-      if (response == null) {
-        if (nonInteractiveDefaultHandoff) {
-          return readRunRecord(runJsonPath)
-        }
-        sleepWithBackoff()
-        continue
-      }
-
-      record = writeRunRecord(clearNeedsInput(record))
-      nextUserResponse = response
-      resetBackoffAndIdlePolls()
-      continue
+    transition = handleState(state, record, runtime, control)
+    logIterationExit(iteration, transition.action, transition.record, control)
+    if (transition.terminate) {
+      return transition.record
     }
-
-    if (state === "RUNNING") {
-      record = runCodexTurn(record, basePrompt, nextUserResponse, reviewFeedback=false)
-      nextUserResponse = null
-      cleanupExecutedForPr = null
-      resetBackoffAndIdlePolls()
-      continue
-    }
-
-    if (state === "WAITING_ON_REVIEW") {
-      if (!record.pr) {
-        record = forceNeedsInput("Run is waiting on review but no PR metadata exists.")
-        continue
-      }
-
-      try {
-        updatedPr = prStatusFetcher(record.pr)
-        record = writeRunRecord({ ...record, pr: updatedPr })
-      } catch {
-        maybeEscalateToNeedsInputAfterIdlePolls()
-        sleepWithBackoff()
-        continue
-      }
-
-      if (
-        (record.pr.reviewStatus === "changes_requested" && isNewReview(record.pr)) ||
-        (record.pr.reviewStatus === "open" && hasNewFeedbackEvent(record.pr))
-      ) {
-        record = runCodexTurn(record, basePrompt, nextUserResponse, reviewFeedback=true)
-        nextUserResponse = null
-        cleanupExecutedForPr = null
-        resetBackoffAndIdlePolls()
-        continue
-      }
-
-      maybeEscalateIfStaleWaitingOnReview()
-      sleepWithBackoff()
-      continue
-    }
-
-    // state === "PR_APPROVED"
-    if (!record.pr) {
-      record = forceNeedsInput("Run is PR_APPROVED but no PR metadata exists.")
-      continue
-    }
-
-    if (cleanupExecutedForPr !== record.pr.url) {
-      [output, exitCode] = runCodex(cleanupPrompt(record.task.url), agentLog)
-      if (exitCode !== 0) {
-        record = forceNeedsInput("Cleanup failed after PR approval. Please advise.")
-        continue
-      }
-      cleanupExecutedForPr = record.pr.url
-    }
-
-    try {
-      updatedPr = prStatusFetcher(record.pr)
-      record = writeRunRecord({ ...record, pr: updatedPr })
-    } catch {
-      maybeEscalateIfMergePollingErrors()
-      sleepWithBackoff()
-      continue
-    }
-
-    if (deriveRunState(record.pr, record.needsUserInput) === "PR_APPROVED") {
-      maybeEscalateIfStaleApprovedState()
-    } else {
-      resetBackoffAndIdlePolls()
-    }
-
-    sleepWithBackoff()
   }
 
   return forceNeedsInput("Inner loop reached max iterations without DONE. Please provide guidance.")
@@ -286,6 +201,7 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
 
 - Codex turn behavior (`loops/inner_loop.py:601`):
   - Builds prompt (standard vs review-feedback path).
+  - Base prompt contract says Codex may wait for the `a-review` subagent but must not wait for human PR comments/reviews because the outer harness performs comment monitoring and re-invokes Codex when needed.
   - Selects invocation strategy (new session vs `resume <session_id>`) from `run_record.codex_session`.
   - Streams stdout/stderr into `agent.log` and appends the same output to `run.log`.
   - Extracts session id and PR URL from output.
@@ -335,8 +251,8 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
 | - read run.json                                                |
 | - apply pending signals                                        |
 | - derive state                                                 |
-| - branch: RUNNING / WAITING_ON_REVIEW / NEEDS_INPUT /         |
-|           PR_APPROVED / DONE                                  |
+| - dispatch to state handler                                    |
+|   (running/review/input/approved)                              |
 +---------------------+-------------------------+---------------+
                       |                         |
                       v                         v
@@ -387,6 +303,9 @@ A: If exit code is zero but no PR is detected in output, the loop requests manua
 Q: Why does review feedback not always re-trigger Codex?
 A: The loop resumes Codex only for new feedback events (`latest_review_submitted_at > review_addressed_at`): new `changes_requested` reviews, or new open-state feedback where the newest timestamp between `COMMENTED` PR review events and plain PR discussion comments has advanced. Duplicate events with unchanged timestamps are skipped.
 
+Q: Should Codex ever wait for human PR comments/reviews inside a turn?
+A: No. Prompt contract tells Codex to end the turn after handling current feedback; the harness performs polling/comment monitoring and re-invokes Codex when new feedback appears. The only allowed wait inside a turn is for the critical `a-review` subagent.
+
 Q: When does inner loop reuse the same Codex session?
 A: After the first successful turn stores `codex_session.id`, follow-up turns (review-feedback turns and PR-approved cleanup turns) attempt `codex exec resume <session_id>`; if `CODEX_CMD` is not codex-shaped, the loop logs fallback and runs the base command.
 
@@ -404,6 +323,8 @@ A: Inner loop only. Signal producers append to queue; they do not mutate `run.js
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+- 2026-02-28: Documented prompt contract forbidding in-turn human-review waiting and limiting in-turn waiting to `a-review` subagent completion. (019ca6dd-2edd-75c0-91e9-96d280d202ac)
+- 2026-02-28: Refactored flow sudocode to match kernel+dispatch runtime structure (`run_inner_loop` dispatching to per-state handlers). (019ca688-39ba-7f12-9fba-23a0aeac144c)
 - 2026-02-28: Documented bounded idle escalation in `PR_APPROVED` merge polling and aligned pseudocode with the runtime guardrail. (019ca583-faf1-7f72-95c8-b8e9cdd16046)
 - 2026-02-16: Created inner-loop flow doc for runtime state-machine behavior and integration points. (019c6863-d581-7f83-9809-fabbefa042e8)
 - 2026-02-17: Documented allowlisted comment-based approval detection and ordering guard against newer changes-requested reviews. (019c68ed-a6c5-78e0-891a-6b70a1a1450c)
