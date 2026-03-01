@@ -118,6 +118,7 @@ None identified.
 | `LOOPS_PROMPT_FILE` | `loops/inner_loop.py:489` | unset | Optional base prompt prepended to generated prompts. |
 | `CODEX_PROMPT_FILE` | `loops/inner_loop.py:489` | unset | Secondary fallback prompt file when `LOOPS_PROMPT_FILE` is unset. |
 | `LOOPS_HANDOFF_HANDLER` | `loops/inner_loop.py` handoff resolver | `stdin_handler` | Selects built-in NEEDS_INPUT handoff strategy (`stdin_handler` or `gh_comment_handler`). |
+| `LOOPS_LOG_TIMESTAMP_PRECISION` | `loops/logging_utils.py` | `2` | Controls local `run.log` timestamp fractional precision without timezone suffix. |
 | `LOOPS_STREAM_LOGS_STDOUT` | `loops/logging_utils.py` | unset | When set to truthy values (for example `1`), inner-loop `run.log` writes are mirrored to stdout. |
 | `GITHUB_TOKEN` / `GH_TOKEN` | Read by `gh` subprocess invoked from `loops/inner_loop.py:767` | environment-dependent | Determines whether PR status polling via `gh pr view` succeeds in review/merge polling states. |
 
@@ -129,6 +130,7 @@ None identified.
 | `--prompt-file` | CLI option | `loops/cli.py:84`, `loops/inner_loop.py:489` | Overrides prompt-file env fallbacks and changes all Codex prompts for the run. |
 | `loop_config.approval_comment_usernames` / `loop_config.approval_comment_pattern` | Config file fields (outer loop) | `loops/outer_loop.py` -> written to `inner_loop_approval_config.json` | Controls comment-based approval override behavior in review polling. |
 | `loop_config.handoff_handler` | Config file field (outer loop) | `loops/outer_loop.py` -> `LOOPS_HANDOFF_HANDLER` | Controls whether NEEDS_INPUT uses stdin prompts or GitHub issue comments. |
+| `loop_config.log_timestamp_precision` | Config file field (outer loop) | `loops/outer_loop.py` -> `LOOPS_LOG_TIMESTAMP_PRECISION` | Controls local `run.log` timestamp fractional precision without timezone suffix. |
 | Signal payload (`--message`, `--context`) | Signal queue input | `loops/state_signal.py:49`, consumed by `loops/inner_loop.py:941` | Causes state transition to `NEEDS_INPUT` with structured handoff payload. |
 | `run.json` content (`pr`, `needs_user_input`, `needs_user_input_payload`) | Persisted state | `loops/run_record.py:183`, `loops/run_record.py:139` | Determines the branch selected by each loop iteration. |
 | `run_inner_loop(...)` polling params | Function args | `loops/inner_loop.py:58` | Controls max iterations, poll backoff, and idle escalation thresholds. |
@@ -204,6 +206,7 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
 - Codex turn behavior (`loops/inner_loop.py:601`):
   - Builds prompt (standard vs review-feedback path).
   - Base prompt contract says Codex may wait for the `a-review` subagent but must not wait for human PR comments/reviews because the outer harness performs comment monitoring and re-invokes Codex when needed.
+  - Base prompt contract explicitly forbids using the `gen-notifier` skill while running inside loops.
   - Selects invocation strategy (new session vs `resume <session_id>`) from `run_record.codex_session`.
   - Streams stdout/stderr into `agent.log` and appends the same output to `run.log`.
   - Extracts session id and PR URL from output.
@@ -331,6 +334,8 @@ A: Inner loop only. Signal producers append to queue; they do not mutate `run.js
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+- 2026-02-28: Added base-prompt guardrail that forbids `gen-notifier` skill usage while running inside loops. (019ca742-f800-78a3-a5f3-11d807a04164)
+- 2026-02-28: Documented `LOOPS_LOG_TIMESTAMP_PRECISION` and `loop_config.log_timestamp_precision` as the source for local no-timezone `run.log` timestamp precision. (019ca742-f800-78a3-a5f3-11d807a04164)
 - 2026-02-28: Clarified `PR_APPROVED` derivation to keep manual approval path unchanged and add conditional auto-approve path only when review is not already approved, CI is green, and `auto_approve_enabled` is true. (019ca742-f800-78a3-a5f3-11d807a04164)
 - 2026-02-28: Simplified auto-approve flow to keep old state topology and run CI + one-time `$ag-judge` gating inline within `WAITING_ON_REVIEW`, with judgement stored on `RunRecord.auto_approve`. (019ca742-f800-78a3-a5f3-11d807a04164)
 - 2026-02-28: Documented prompt contract forbidding in-turn human-review waiting and limiting in-turn waiting to `a-review` subagent completion. (019ca6dd-2edd-75c0-91e9-96d280d202ac)

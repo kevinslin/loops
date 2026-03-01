@@ -45,6 +45,7 @@ PROMPT_TEMPLATE = (
     "a-review subagent. NEVER wait for human PR "
     "review/comments inside the agent; the harness monitors review activity and "
     "will re-invoke you when feedback arrives.\n"
+    "NEVER use the gen-notifier skill while running inside loops.\n"
     "Spawn the a-review subagent exactly once per conversation, only while state is "
     "<state>RUNNING</state>.Do not spawn a-review again in "
     "<state>WAITING_ON_REVIEW</state> or any later turn.\n"

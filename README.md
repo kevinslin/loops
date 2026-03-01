@@ -92,6 +92,8 @@ Top-level config file: `.loops/config.json`
 - `loop_config.task_ready_status` (string, default `"Ready"`)
 - `loop_config.approval_comment_usernames` (string[], default `[]`): allowlisted GitHub usernames whose approval comments can mark a PR as approved.
 - `loop_config.approval_comment_pattern` (string, default `^\s*/approve\b`): regex used to match approval comments from allowlisted usernames.
+- `loop_config.auto_approve_enabled` (boolean, default `false`): enables one-time `$ag-judge` auto-approval evaluation when review is not already approved and CI is green.
+- `loop_config.log_timestamp_precision` (integer, default `2`): fractional-second digits (`0-6`) for `oloops.log` and `run.log` timestamp prefixes.
 - `loop_config.handoff_handler` (string, default `"stdin_handler"`): built-in NEEDS_INPUT handoff strategy. Supported values:
   - `stdin_handler`: prompt on stdin/stdout (interactive mode).
   - `gh_comment_handler`: post handoff prompts to the task GitHub issue and wait for `/loops-reply ...` comments.
@@ -165,6 +167,7 @@ Notes:
 - Outer loop filters tasks by `loop_config.task_ready_status`.
 - With `loop_config.sync_mode=true`, inner loop runs in the foreground and can prompt for user input in the same terminal.
 - With `loop_config.sync_mode=true`, outer-loop logs (`oloops.log`) and inner-loop orchestration logs (`run.log`) are also mirrored to stdout.
+- Log timestamps are local-time strings without timezone suffix and use `loop_config.log_timestamp_precision` fractional digits.
 - With `emit_on_first_run=false`, first run initializes dedupe state but does not launch tasks.
 - `--task-url` does not change `provider_config.url`; it selects one task after polling by URL match and runs only that task.
 - `--task-url` forces foreground execution for that run (`sync_mode=true`) so targeted runs are interactive and deterministic.
@@ -269,6 +272,7 @@ Output on success:
 - `LOOPS_PROMPT_FILE` / `CODEX_PROMPT_FILE`: optional base prompt file for inner loop.
 - `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`: set by outer loop when launching inner loops.
 - `LOOPS_HANDOFF_HANDLER`: handoff strategy for inner loop (`stdin_handler` or `gh_comment_handler`). Outer loop sets this from `loop_config.handoff_handler`.
+- `LOOPS_LOG_TIMESTAMP_PRECISION`: log timestamp fractional precision used by inner-loop `run.log` writes. Outer loop sets this from `loop_config.log_timestamp_precision`.
 
 ## Development
 

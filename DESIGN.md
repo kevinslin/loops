@@ -57,6 +57,8 @@ type OuterLoopConfig = {
     approval_comment_pattern: string
     // run ag-judge before merge when review and CI gates are satisfied
     auto_approve_enabled: boolean
+    // fractional second digits for log timestamps (0-6), default 2
+    log_timestamp_precision: number
     // NEEDS_INPUT handoff strategy
     // stdin_handler | gh_comment_handler
     handoff_handler: string
@@ -224,6 +226,7 @@ type OuterLoopConfig = {
     approval_comment_usernames?: string[]
     approval_comment_pattern?: string
     auto_approve_enabled?: boolean
+    log_timestamp_precision?: number
     handoff_handler?: string
 }
 
@@ -260,6 +263,7 @@ Notes:
 - `loop_config.approval_comment_pattern` controls which comment bodies count as approval signals.
 - `loop_config.auto_approve_enabled` enables the additional auto-approve path while the PR is still not approved.
 - Auto-approve defaults are fixed when enabled: CI green is required and `ag-judge` uses `references/jb.coding.md`.
+- `loop_config.log_timestamp_precision` controls log timestamp fractional precision (0-6, default `2`) for outer-loop and inner-loop log files.
 - `loop_config.handoff_handler` selects built-in NEEDS_INPUT handoff behavior (`stdin_handler` default, `gh_comment_handler` for issue-comment handoff).
 - `inner_loop` is optional when running via the CLI; if omitted, the CLI uses
   a canonical default builder for `python -m loops.inner_loop` with `append_task_url=false`.
@@ -522,6 +526,7 @@ Base template (always present in Codex turns):
 ```text
 Use dev.do to implement the task, open a PR, wait only for review from the a-review subagent, address feedback, and trigger:merge-pr when the state is exactly <state>PR_APPROVED</state>.
 You are running inside the loops test harness. NEVER wait for human PR review/comments inside the agent; the harness monitors review activity and will re-invoke you when feedback arrives.
+NEVER use the gen-notifier skill while running inside loops.
 The current inner-loop state is passed via a trailing <state>...</state> tag; initial state is <state>RUNNING</state>.
 If you need input from user, print what you need help with and end current conversation with <state>NEEDS_INPUT</>
 When review is not already approved and CI is green, if auto-approve is enabled and no verdict exists yet, run $ag-judge once (judge book: references/jb.coding.md) and return one verdict: APPROVE, REJECT, or ESCALATE.
@@ -609,6 +614,7 @@ Prompt-related configuration and runtime inputs:
 - Outer loop per-task scheduling entries include the created inner-loop run directory path.
 - Inner loop orchestration logs + Codex output mirror: `[INNER_LOOP_ROOT]/run.log`.
 - Agent/Codex logs: `[INNER_LOOP_ROOT]/agent.log`.
+- Log timestamps are local-time ISO-like strings without timezone suffix, with fractional precision from `loop_config.log_timestamp_precision` (default `2`).
 - In `sync_mode=true`, outer-loop and inner-loop log lines are mirrored to stdout while still being persisted to files.
 
 ### Metrics (optional)
