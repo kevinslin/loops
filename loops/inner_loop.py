@@ -115,10 +115,6 @@ class CommentApprovalSettings:
     def enabled(self) -> bool:
         return bool(self.allowed_usernames)
 
-    @property
-    def review_actor_filter_enabled(self) -> bool:
-        return bool(self.review_actor_usernames)
-
 
 @dataclass(frozen=True)
 class InnerLoopRuntimeContext:
@@ -1899,8 +1895,6 @@ def _fetch_pr_status_with_gh_with_context(
             f"pr_url={pr.url} "
             f"comment_approval_enabled={'yes' if comment_approval.enabled else 'no'} "
             f"approval_allowlisted_usernames={len(comment_approval.allowed_usernames)} "
-            "review_actor_filter_enabled="
-            f"{'yes' if comment_approval.review_actor_filter_enabled else 'no'} "
             "review_actor_allowlisted_usernames="
             f"{len(comment_approval.review_actor_usernames)}"
         )
@@ -1967,7 +1961,7 @@ def _fetch_pr_status_with_gh_with_context(
     review_decision_raw = payload.get("reviewDecision")
     effective_payload = payload
     latest_changes_requested_at: Optional[str]
-    if comment_approval.review_actor_filter_enabled:
+    if comment_approval.review_actor_usernames:
         (
             effective_payload,
             dropped_comments,
