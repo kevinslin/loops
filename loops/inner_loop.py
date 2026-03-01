@@ -77,7 +77,7 @@ UUID_PATTERN = re.compile(
     re.IGNORECASE,
 )
 TRAILING_STATE_MARKER_PATTERN = re.compile(
-    r"<state>\s*([A-Za-z_]+)\s*</(?:state)?>",
+    r"^\s*<state>\s*([A-Za-z_]+)\s*</(?:state)?>\s*$",
     re.IGNORECASE,
 )
 STATE_MARKER_VALUES = {"RUNNING", "WAITING_ON_REVIEW", "NEEDS_INPUT", "PR_APPROVED", "DONE"}
@@ -552,8 +552,8 @@ def _handle_waiting_on_review_state(
         if run_record.pr.ci_status == "success":
             review_status = run_record.pr.review_status or "open"
             # Keep the old manual-approval behavior: if already approved, derive PR_APPROVED
-            # directly. Auto-approve evaluation is only for still-waiting review states.
-            if review_status not in {"approved", "changes_requested"}:
+            # directly. Auto-approve evaluation applies to any not-yet-approved state.
+            if review_status != "approved":
                 verdict = (
                     run_record.auto_approve.verdict
                     if run_record.auto_approve is not None
@@ -1023,7 +1023,7 @@ def _build_auto_approve_eval_prompt(
         state=None,
     )
     prompt += (
-        f"\nPR {pr_url} has review approval and green CI. "
+        f"\nPR {pr_url} is not yet review-approved and has green CI. "
         "Run $ag-judge (judge book: references/jb.coding.md) against current diff, "
         "review threads, and CI evidence. Return exactly one JSON object on one line "
         'with keys: {"verdict":"APPROVE|REJECT|ESCALATE","impact":1-5,'

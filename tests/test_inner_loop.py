@@ -342,6 +342,77 @@ def test_handle_waiting_on_review_state_runs_auto_approve_once(
     assert evaluations["count"] == 1
 
 
+def test_handle_waiting_on_review_state_runs_auto_approve_for_changes_requested_without_new_feedback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    reviewed_at = "2026-02-09T00:00:01Z"
+    _write_run_record(
+        run_dir,
+        pr=RunPR(
+            url="https://github.com/acme/api/pull/42",
+            number=42,
+            repo="acme/api",
+            review_status="changes_requested",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:00Z",
+            latest_review_submitted_at=reviewed_at,
+            review_addressed_at=reviewed_at,
+        ),
+    )
+    run_record = read_run_record(run_dir / "run.json")
+    runtime = _runtime_context(
+        run_dir,
+        auto_approve_enabled=True,
+        pr_status_fetcher=lambda pr: RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="changes_requested",
+            ci_status="success",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:02Z",
+            latest_review_submitted_at=reviewed_at,
+            review_addressed_at=reviewed_at,
+        ),
+    )
+    control = inner_loop_module.LoopControlState(backoff_seconds=5.0)
+    evaluations = {"count": 0}
+
+    def fake_run_auto_approve_eval(*, run_record, runtime, control):
+        evaluations["count"] += 1
+        return write_run_record(
+            runtime.run_json_path,
+            replace(
+                run_record,
+                auto_approve=RunAutoApprove(
+                    verdict="REJECT",
+                    impact=2,
+                    risk=4,
+                    size=2,
+                    judged_at="2026-02-09T00:00:03Z",
+                    summary="Too risky to auto-merge.",
+                ),
+            ),
+            auto_approve_enabled=runtime.auto_approve_enabled,
+        )
+
+    monkeypatch.setattr(inner_loop_module, "_run_auto_approve_eval", fake_run_auto_approve_eval)
+
+    result = inner_loop_module._handle_waiting_on_review_state(
+        run_record=run_record,
+        runtime=runtime,
+        control=control,
+    )
+
+    assert result.action == "auto_approve_eval"
+    assert evaluations["count"] == 1
+    assert result.run_record.auto_approve is not None
+    assert result.run_record.auto_approve.verdict == "REJECT"
+
+
 def test_handle_waiting_on_review_state_skips_auto_approve_until_ci_green(
     tmp_path: Path,
     monkeypatch,
@@ -1675,8 +1746,10 @@ def test_invoke_codex_retries_without_resume_on_resume_failure(
     [
         ("work complete\n<state>NEEDS_INPUT</state>\n", "NEEDS_INPUT"),
         ("work complete\n<state>needs_input</>\n", "NEEDS_INPUT"),
-        ("work complete\nstatus: <state>WAITING_ON_REVIEW</state>\n", "WAITING_ON_REVIEW"),
+        ("work complete\n   <state>WAITING_ON_REVIEW</state>   \n", "WAITING_ON_REVIEW"),
         ("work complete\n<state>NEEDS_INPUT</state>\nfollow up\n", None),
+        ("work complete\nstatus: <state>WAITING_ON_REVIEW</state>\n", None),
+        ("work complete\n<state>RUNNING</state> <state>NEEDS_INPUT</state>\n", None),
         ("work complete\n<state>UNKNOWN</state>\n", None),
     ],
 )
