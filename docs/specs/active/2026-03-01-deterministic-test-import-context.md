@@ -125,3 +125,4 @@ Manual validation:
 ## Changelog
 - 2026-03-01: Created feature spec for deterministic pytest import context in worktrees. (019caa54-4d1b-7712-9f8c-de8271aa0e30)
 - 2026-03-01: Implemented pytest path guard, regression test, README update, and passing verification runs. (019caa54-4d1b-7712-9f8c-de8271aa0e30)
+- 2026-03-01: Hardened path dedupe to canonicalize aliases (symlink/trailing-slash variants) with added regression coverage. (019caa54-4d1b-7712-9f8c-de8271aa0e30)

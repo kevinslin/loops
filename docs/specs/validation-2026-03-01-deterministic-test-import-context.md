@@ -30,12 +30,12 @@ context once implementation is complete.
 
 ### Unit Testing
 
-- `python -m pytest tests/test_test_import_context.py -q` (`1 passed`)
+- `python -m pytest tests/test_test_import_context.py -q` (`2 passed`)
 
 ### Integration and End-to-End Testing
 
 - `python -m pytest tests/test_outer_loop.py tests/test_inner_loop.py -q` (`118 passed`)
-- `python -m pytest -q` (`196 passed, 1 skipped`)
+- `python -m pytest -q` (`197 passed, 1 skipped`)
 
 ### Manual Testing Needed
 
@@ -86,3 +86,4 @@ context once implementation is complete.
 ## Changelog
 - 2026-03-01: Created validation spec for deterministic pytest import-path behavior. (019caa54-4d1b-7712-9f8c-de8271aa0e30)
 - 2026-03-01: Recorded executed validation results for deterministic import-path guard implementation. (019caa54-4d1b-7712-9f8c-de8271aa0e30)
+- 2026-03-01: Updated validation results after canonical-path dedupe hardening. (019caa54-4d1b-7712-9f8c-de8271aa0e30)
