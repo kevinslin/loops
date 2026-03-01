@@ -404,6 +404,11 @@ def test_normalize_argv_preserves_known_subcommands() -> None:
     assert _normalize_argv(clean_argv) == clean_argv
 
 
+def test_normalize_argv_preserves_removed_signal_subcommand() -> None:
+    argv = ["python", "signal", "--message", "Need help"]
+    assert _normalize_argv(argv) == argv
+
+
 def test_normalize_argv_routes_legacy_flags_to_run() -> None:
     argv = ["python", "--run-once"]
     assert _normalize_argv(argv) == ["python", "run", "--run-once"]
@@ -427,6 +432,14 @@ def test_entrypoint_normalizes_argv_before_invoking_click(monkeypatch) -> None:
 
     assert captured["prog_name"] == "loops"
     assert captured["argv"] == ["loops", "run", "--run-once"]
+
+
+def test_removed_signal_command_errors_explicitly() -> None:
+    runner = CliRunner()
+    result = runner.invoke(main, ["signal", "--message", "Need help"])
+
+    assert result.exit_code != 0
+    assert "No such command 'signal'" in result.output
 
 
 def test_inner_loop_reset_creates_initial_run_record_when_missing(

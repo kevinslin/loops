@@ -1,6 +1,6 @@
 # Inner Loop Flow
 
-Last updated: 2026-02-28
+Last updated: 2026-03-01
 
 ## Overview
 
@@ -16,11 +16,10 @@ It is intended as a fast context-recapture artifact for humans and LLM agents ch
 
 ## Terminology
 
-- `Run directory`: Per-task folder under `.loops/jobs/<run>/` containing `run.json`, `run.log`, `agent.log`, and signal files.
+- `Run directory`: Per-task folder under `.loops/jobs/<run>/` containing `run.json`, `run.log`, and `agent.log`.
 - `Run record`: The `RunRecord` payload persisted in `run.json`.
 - `Derived state`: `RUNNING | WAITING_ON_REVIEW | NEEDS_INPUT | PR_APPROVED | DONE`, computed from `pr` + `needs_user_input`.
 - `Auto-approve gate`: inline branch inside `WAITING_ON_REVIEW` that applies only when review is not already approved, CI is green, and `auto_approve_enabled` is true; it runs one-time `$ag-judge` evaluation.
-- `Signal queue`: Append-only `state_signals.jsonl` used to request `NEEDS_INPUT` without direct `run.json` writes.
 - `Single-writer model`: Inner loop is the only writer of `run.json`.
 
 ## Purpose / Question Answered
@@ -48,7 +47,6 @@ function run_inner_loop(run_dir):
 
   while iteration <= max_iterations:
     run_record = read_run_record(run_json)
-    run_record = apply_pending_signals(run_dir, run_record)
     state = derive_run_state(run_record.pr, run_record.needs_user_input)
 
     if state == DONE:
@@ -85,7 +83,7 @@ sequenceDiagram
 
     O->>I: start process (LOOPS_RUN_DIR + env)
     loop each iteration
-        I->>FS: read run.json + apply pending signals
+        I->>FS: read run.json
         I->>I: derive state
         alt RUNNING / review feedback
             I->>C: run codex turn
@@ -130,7 +128,6 @@ None identified.
 | `loop_config.approval_comment_usernames` / `loop_config.approval_comment_pattern` | Config file fields (outer loop) | `loops/outer_loop.py` -> written to `inner_loop_runtime_config.json` | Controls comment-based approval override behavior in review polling. |
 | `task_provider_config.allowlist` (GitHub provider) | Config file field (outer loop/provider) | `loops/cli.py` + `loops/outer_loop.py` -> resolved and written to `inner_loop_runtime_config.json` as `review_actor_usernames` | Filters review-phase PR comments/reviews to allowlisted actors during polling. |
 | `loop_config.handoff_handler`, `loop_config.auto_approve_enabled`, `loop_config.sync_mode`, `inner_loop.env` | Config file fields (outer loop) | `loops/outer_loop.py` -> written to `inner_loop_runtime_config.json` | Controls runtime handoff strategy, auto-approve gate, log mirroring, and optional run-scoped env payload for inner-loop subprocess behavior. |
-| Signal payload (`--message`, `--context`) | Signal queue input | `loops/state_signal.py:49`, consumed by `loops/inner_loop.py:941` | Causes state transition to `NEEDS_INPUT` with structured handoff payload. |
 | `run.json` content (`pr`, `needs_user_input`, `needs_user_input_payload`, `stream_logs_stdout`) | Persisted state | `loops/run_record.py` | Determines state-machine branch selection and exposes effective log-streaming mode for observability. |
 | `run_inner_loop(...)` polling params | Function args | `loops/inner_loop.py:58` | Controls max iterations, poll backoff, and idle escalation thresholds. |
 
@@ -149,13 +146,12 @@ None identified.
 | comment-approval settings (`usernames`, `pattern`) plus review-actor allowlist (`review_actor_usernames`) | Written by outer loop to `inner_loop_runtime_config.json` | Loaded once at run start before default PR poller closure creation | Used on each `WAITING_ON_REVIEW` poll to evaluate comment-based approval and review-feedback filtering | Yes |
 | runtime settings (`handoff_handler`, `auto_approve_enabled`, `stream_logs_stdout`, optional `env`) | Written by outer loop launcher to `inner_loop_runtime_config.json` | Loaded once at run start before handoff/codex resolution | Used to configure handoff behavior, auto-approve gate, and optional runtime env overrides | Yes |
 | `run_record.stream_logs_stdout` | Written to `run.json` on run creation/reset and at inner-loop startup when effective value changes | Reloaded each iteration with `run.json` | Provides a durable snapshot of effective `run.log` stdout mirroring for diagnostics | Yes |
-| `needs_user_input` | Written in `_run_codex_turn`, `_force_needs_input`, signal apply path (`loops/inner_loop.py:601`, `loops/inner_loop.py:857`, `loops/inner_loop.py:941`) | Reloaded at top of each iteration (`loops/inner_loop.py:87`) | Used by `derive_run_state` (`loops/inner_loop.py:89`, `loops/run_record.py:139`) | Yes |
+| `needs_user_input` | Written in `_run_codex_turn` and `_force_needs_input` (`loops/inner_loop.py`) | Reloaded at top of each iteration (`loops/inner_loop.py`) | Used by `derive_run_state` (`loops/run_record.py`) | Yes |
 | `pr.review_status` | Updated from Codex output or PR poll (`loops/inner_loop.py:635`, `loops/inner_loop.py:259`, `loops/inner_loop.py:392`) | Reloaded each iteration (`loops/inner_loop.py:87`) | Branches into `WAITING_ON_REVIEW`/`PR_APPROVED` (`loops/inner_loop.py:208`, `loops/inner_loop.py:325`) | Yes |
 | `pr.merged_at` | Written by PR status poll (`loops/inner_loop.py:767`, persisted at `loops/inner_loop.py:392`) | Reloaded each iteration (`loops/inner_loop.py:87`) | Triggers `DONE` via `derive_run_state` (`loops/run_record.py:142`) | Yes |
 | `pr.latest_review_submitted_at` and `pr.review_addressed_at` | Written in gh fetch + review-feedback codex completion (`loops/inner_loop.py:767`, `loops/inner_loop.py:659`) | Reloaded each iteration (`loops/inner_loop.py:87`) | Checked by `_is_new_review` gate (`loops/inner_loop.py:727`) | Yes |
 | `codex_session.id` | Extracted and persisted after Codex turn (`loops/inner_loop.py`) | Reloaded each iteration (`loops/inner_loop.py:87`) | Drives `codex exec resume <session_id>` for follow-up turns and remains durable session metadata | Yes |
 | `handoff_gh_comment_state.json` | Written by `gh_comment_handler` after prompt/reply detection | Reloaded on each NEEDS_INPUT iteration when handler is `gh_comment_handler` | Enforces idempotent prompt posting and reply de-duplication | Yes |
-| Signal queue offset (`state_signals.offset`) | Written after successful signal consume (`loops/inner_loop.py:923`, `loops/inner_loop.py:941`) | Read before queue consume (`loops/inner_loop.py:878`) | Prevents duplicate signal application (`loops/inner_loop.py:945`) | Yes |
 
 ### Inner loop state-machine execution
 
@@ -182,7 +178,6 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
 
   for (iteration = 1; iteration <= maxIterations; iteration++) {
     record = readRunRecord(runJsonPath)
-    record = applyPendingSignals(runDir, record)
     state = deriveRunState(record.pr, record.needsUserInput)
     logIterationEnter(iteration, state, record, backoff, idlePolls)
 
@@ -247,22 +242,21 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
 - It can return early in non-interactive `NEEDS_INPUT` mode to hand control back to caller (`loops/inner_loop.py:119`).
 - It escalates to `NEEDS_INPUT` on repeated polling idleness (both review and approved states) or iteration cap (`loops/inner_loop.py:233`, `loops/inner_loop.py:409`).
 
-**File(s)**: `loops/inner_loop.py`, `loops/run_record.py`, `loops/state_signal.py`, `loops/outer_loop.py`, `loops/cli.py`
+**File(s)**: `loops/inner_loop.py`, `loops/run_record.py`, `loops/outer_loop.py`, `loops/cli.py`
 
 ## Architecture Diagram
 
 ```text
-+------------------+          +------------------------------+
-| outer_loop       |          | signal producer              |
-| launcher         |          | (loops signal / state_signal)|
-| sets env + run   |          | writes state_signals.jsonl   |
-+---------+--------+          +---------------+--------------+
-          |                                   |
-          v                                   v
++------------------+
+| outer_loop       |
+| launcher         |
+| sets env + run   |
++---------+--------+
+          |
+          v
 +---------------------------------------------------------------+
 | inner_loop.run_inner_loop                                     |
 | - read run.json                                                |
-| - apply pending signals                                        |
 | - derive state                                                 |
 | - dispatch to state handler                                    |
 |   (running/review/input/approved)                              |
@@ -291,7 +285,7 @@ Useful derived metrics from logs/files:
 - Iterations per run (count `iteration ... enter` in `run.log`).
 - Codex failures (count `codex exit code` log entries).
 - Review polling instability (count `failed to poll PR status` / `failed to poll merge status`).
-- Signal-driven handoffs (count `signal applied: NEEDS_INPUT`).
+- NEEDS_INPUT handoffs (count transitions where `needs_user_input` is true in `run.json`).
 - Time-to-done (first and last timestamps around run lifecycle in `run.log` + `run.json.updated_at`).
 
 ## Logs
@@ -303,8 +297,6 @@ Key logs and emit sites:
 - Codex invocation or exit failures: `loops/inner_loop.py:567`, `loops/inner_loop.py:642`.
 - Missing PR after successful turn: `loops/inner_loop.py:655`.
 - Review/merge polling failures: `loops/inner_loop.py:231`, `loops/inner_loop.py:375`.
-- Signal accepted (producer): `loops/state_signal.py:75`.
-- Signal applied/ignored (consumer): `loops/inner_loop.py:952`, `loops/inner_loop.py:956`, `loops/inner_loop.py:960`.
 - Agent streamed output destination: `agent.log` (also mirrored to `run.log`).
 - In sync mode (via `inner_loop_runtime_config.json` with `stream_logs_stdout=true`), each `run.log` line is also emitted to stdout.
 
@@ -332,13 +324,14 @@ Q: Where is auto-approve judgement persisted?
 A: On top-level `RunRecord.auto_approve`, not under `RunPR`. The gate runs once per conversation when review is not already approved and CI is green.
 
 Q: Who owns `run.json` updates?
-A: Inner loop only. Signal producers append to queue; they do not mutate `run.json` (`loops/state_signal.py:49`, `loops/inner_loop.py:941`).
+A: Inner loop only.
 
 ## Manual Notes 
 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+- 2026-03-01: Removed state-signal queue references after deleting `loops signal`/`loops.state_signal`; NEEDS_INPUT now documents direct `run.json` handoff behavior. (019cabbd-8be2-7f00-ba1e-0856ed6096dc)
 - 2026-03-01: Added deterministic best-effort 👍 reactions for allowlisted plain-comment approval signals during `WAITING_ON_REVIEW` polling. (019cab4c-0485-7542-b9eb-ff1c83ca0942)
 - 2026-03-01: Documented `run.json.stream_logs_stdout` persistence as the effective log-streaming snapshot loaded from runtime config/env fallbacks. (019cab67-3061-7ce1-81c1-e30f80798fb0)
 - 2026-03-01: Switched runtime config transport to run-scoped `inner_loop_runtime_config.json`; env variables remain fallback inputs when runtime config omits keys or is unavailable. (019caae6-1189-7d83-a9cd-1665818fba36)

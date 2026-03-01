@@ -39,7 +39,7 @@ Reference: https://openai.com/index/harness-engineering/
 
 ### Current State
 - Core architecture and contracts exist in [DESIGN.md](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/DESIGN.md), [ref.inner-loop.md](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/docs/flows/ref.inner-loop.md), and [ref.outer-loop.md](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/docs/flows/ref.outer-loop.md).
-- Runtime behavior is implemented in [outer_loop.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/loops/outer_loop.py), [inner_loop.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/loops/inner_loop.py), [run_record.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/loops/run_record.py), [state_signal.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/loops/state_signal.py), and [github_projects_v2.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/loops/providers/github_projects_v2.py).
+- Runtime behavior is implemented in [outer_loop.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/loops/outer_loop.py), [inner_loop.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/loops/inner_loop.py), [run_record.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/loops/run_record.py), and [github_projects_v2.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/loops/providers/github_projects_v2.py).
 - Test coverage is strong at unit level in [tests/test_inner_loop.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/tests/test_inner_loop.py), [tests/test_outer_loop.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/tests/test_outer_loop.py), [tests/test_cli.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/tests/test_cli.py), and provider/run-record tests.
 - Gaps for harness engineering:
   - No repo-local automated checker that verifies docs and runtime invariants stay aligned.
@@ -56,7 +56,6 @@ Reference: https://openai.com/index/harness-engineering/
 - [outer_loop.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/loops/outer_loop.py)
 - [inner_loop.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/loops/inner_loop.py)
 - [run_record.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/loops/run_record.py)
-- [state_signal.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/loops/state_signal.py)
 - [github_projects_v2.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/loops/providers/github_projects_v2.py)
 - [tests/test_outer_loop.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/tests/test_outer_loop.py)
 - [tests/test_inner_loop.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/tests/test_inner_loop.py)
@@ -70,7 +69,7 @@ Reference: https://openai.com/index/harness-engineering/
 | Loop config defaults | `build_default_loop_config_payload` in `loops/outer_loop.py` | JSON object in config payload | `loops init`, `loops doctor`, `load_config` | outer-loop runner and launcher wiring | Yes |
 | Run state derivation | `derive_run_state` in `loops/run_record.py` | enum string | on every `write_run_record` and loop iteration | inner-loop state dispatch in `run_inner_loop` | Yes |
 | Outer dedupe ledger | `.loops/outer_state.json` via `read_outer_state`/`write_outer_state` | JSON snapshot | start/end of `run_once` | task selection and emit gate | Yes |
-| Signal queue offset | `state_signals.offset` in run dir | integer byte offset | `_apply_pending_signals` | subsequent signal consume iterations | Yes |
+| NEEDS_INPUT payload | `needs_user_input_payload` in `run.json` | JSON object | `_run_codex_turn` / `_force_needs_input` | handoff handlers + next Codex prompt | Yes |
 | Documentation contract | `DESIGN.md` + flow docs + AGENTS.md | markdown sections + invariants | currently manual updates | human and LLM agents | No (currently not mechanically validated) |
 | Runtime artifact contract | `.loops/jobs/<run>/run.json`, logs, signal files | files + JSON | outer-loop run materialization and inner-loop writes | operators and debugging agents | Partially (schema exists, but no global artifact validator) |
 
@@ -111,7 +110,6 @@ Implement harness engineering as five practical workstreams aligned to OpenAI gu
   - [loops/inner_loop.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/loops/inner_loop.py)
   - [loops/run_record.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/loops/run_record.py)
   - [loops/logging_utils.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/loops/logging_utils.py)
-  - [loops/state_signal.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/loops/state_signal.py)
   - [loops/providers/github_projects_v2.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/loops/providers/github_projects_v2.py)
 - Existing test suites to extend:
   - [tests/test_cli.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/tests/test_cli.py)
@@ -170,7 +168,7 @@ Implement harness engineering as five practical workstreams aligned to OpenAI gu
 - [ ] Cover end-to-end scenarios not currently asserted as one flow:
   - outer-loop selection and run materialization.
   - handoff to inner loop with expected env contract.
-  - signal queue consumption plus resume behavior.
+  - NEEDS_INPUT handoff behavior plus resume behavior.
   - review feedback loops including comment-based feedback and approval paths.
 - [ ] Reuse and extend existing behaviors already unit-tested in:
   - [tests/test_outer_loop.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/tests/test_outer_loop.py)
@@ -224,7 +222,7 @@ Mechanical checks:
 
 Manual validation:
 - Run one `loops run --run-once` scenario with a deterministic inner-loop stub and confirm run artifacts include parseable structured events.
-- Trigger `NEEDS_INPUT` via `loops signal --message ...` and confirm signal-to-state transition appears in both `run.json` and structured artifact output.
+- Trigger `NEEDS_INPUT` via run-state mutation (for example failing Codex turn or fixture with `needs_user_input=true`) and confirm transition appears in both `run.json` and structured artifact output.
 - Run janitor in dry-run and apply modes on a fixture `.loops/` tree and verify only stale runs are removed.
 
 ### Done Criteria
