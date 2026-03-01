@@ -21,7 +21,6 @@ from loops.outer_loop import (
     LATEST_LOOPS_CONFIG_VERSION,
     LoopsConfig,
     OuterLoopConfig,
-    PR_ARTIFACT_FILE_ENV,
     OuterLoopRunner,
     SyncModeInterruptedError,
     build_provider,
@@ -643,7 +642,6 @@ def test_build_inner_loop_launcher_sync_mode_uses_subprocess_run(
     env = captured["env"]
     assert isinstance(env, dict)
     assert env["LOOPS_RUN_DIR"] == str(run_dir)
-    assert env[PR_ARTIFACT_FILE_ENV] == f"/tmp/{run_dir.name}-devloop-pr"
     assert "LOOPS_TASK_ID" not in env
     assert "LOOPS_HANDOFF_HANDLER" not in env
     assert "LOOPS_AUTO_APPROVE_ENABLED" not in env
@@ -733,7 +731,6 @@ def test_build_inner_loop_launcher_writes_runtime_env_to_run_config(
     env = captured["env"]
     assert isinstance(env, dict)
     assert env["LOOPS_RUN_DIR"] == str(run_dir)
-    assert env[PR_ARTIFACT_FILE_ENV] == f"/tmp/{run_dir.name}-devloop-pr"
     assert env["CODEX_CMD"] == "codex exec --json"
     assert env["CUSTOM_VAR"] == "present"
 
@@ -775,7 +772,6 @@ def test_build_inner_loop_launcher_does_not_inject_runtime_env_for_loops_inner_l
     env = captured["env"]
     assert isinstance(env, dict)
     assert env["LOOPS_RUN_DIR"] == str(run_dir)
-    assert env[PR_ARTIFACT_FILE_ENV] == f"/tmp/{run_dir.name}-devloop-pr"
     assert "CODEX_CMD" not in env
     assert "CUSTOM_VAR" not in env
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 import re
@@ -94,7 +95,6 @@ GITHUB_PR_PATTERN = re.compile(
     r"https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([0-9]+)"
 )
 DEVLOOP_PR_FILE_SUFFIX = "-devloop-pr"
-PR_ARTIFACT_FILE_ENV = "LOOPS_PR_ARTIFACT_FILE"
 RUN_DIR_ENV = "LOOPS_RUN_DIR"
 
 SESSION_ID_PATTERN = re.compile(r"session[_\s-]*id\s*[:=]\s*([\w-]+)", re.IGNORECASE)
@@ -1393,7 +1393,7 @@ def _run_codex_turn(
     discovered_pr = _extract_pr_from_artifact_file(
         path=pr_artifact_path,
         run_log=run_log,
-    )
+    ) if (not review_feedback and not run_record.needs_user_input) else None
     pr = _merge_pr_records(run_record.pr, discovered_pr)
     requested_state = _extract_trailing_state_marker(output)
     if requested_state is not None:
@@ -1414,17 +1414,17 @@ def _run_codex_turn(
                 "Provide guidance."
             )
         }
-    elif pr is None:
+    elif not review_feedback and not run_record.needs_user_input and pr is None:
         needs_user_input = True
         needs_user_input_payload = {
             "message": (
-                "Codex run completed without opening a PR or requesting input. "
+                "Codex run completed but PR was not found in the PR artifact file. "
                 "What should Loops do next?"
             )
         }
         append_log(
             run_log,
-            "[loops] no PR detected after codex run; requesting user input",
+            "[loops] PR artifact missing after codex run; requesting user input",
         )
     elif review_feedback:
         # Record which review event we addressed so we don't re-invoke
@@ -1578,42 +1578,18 @@ def _default_devloop_pr_artifact_path() -> Path:
     return Path("/tmp") / f"{Path.cwd().name}{DEVLOOP_PR_FILE_SUFFIX}"
 
 
+def _run_scoped_pr_artifact_path(run_dir: Path) -> Path:
+    run_dir_resolved = run_dir.expanduser().resolve()
+    run_dir_hash = hashlib.sha1(str(run_dir_resolved).encode("utf-8")).hexdigest()
+    return Path("/tmp") / f"{run_dir_hash}{DEVLOOP_PR_FILE_SUFFIX}"
+
+
 def _resolve_pr_artifact_path(*, environ: Mapping[str, str], run_log: Path) -> Path:
-    override = environ.get(PR_ARTIFACT_FILE_ENV)
-    if override is None:
-        run_dir_value = environ.get(RUN_DIR_ENV)
-        if run_dir_value is not None:
-            run_dir_candidate = run_dir_value.strip()
-            if run_dir_candidate:
-                run_dir_name = Path(run_dir_candidate).expanduser().name
-                if run_dir_name:
-                    return Path("/tmp") / f"{run_dir_name}{DEVLOOP_PR_FILE_SUFFIX}"
-            else:
-                append_log(
-                    run_log,
-                    (
-                        "[loops] ignoring empty run-dir env var while resolving PR "
-                        f"artifact path: {RUN_DIR_ENV}"
-                    ),
-                )
-        return _default_devloop_pr_artifact_path()
-    candidate = override.strip()
-    if candidate:
-        return Path(candidate).expanduser()
-    append_log(
-        run_log,
-        (
-            "[loops] ignoring empty PR artifact override env var: "
-            f"{PR_ARTIFACT_FILE_ENV}"
-        ),
-    )
     run_dir_value = environ.get(RUN_DIR_ENV)
     if run_dir_value is not None:
         run_dir_candidate = run_dir_value.strip()
         if run_dir_candidate:
-            run_dir_name = Path(run_dir_candidate).expanduser().name
-            if run_dir_name:
-                return Path("/tmp") / f"{run_dir_name}{DEVLOOP_PR_FILE_SUFFIX}"
+            return _run_scoped_pr_artifact_path(Path(run_dir_candidate))
         else:
             append_log(
                 run_log,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
 import json
 import os
 import pytest
@@ -89,6 +90,7 @@ def _write_codex_stub(path: Path) -> None:
             [
                 "#!/usr/bin/env python3",
                 "import json",
+                "import hashlib",
                 "import os",
                 "import sys",
                 "from pathlib import Path",
@@ -120,9 +122,11 @@ def _write_codex_stub(path: Path) -> None:
                 "count += 1",
                 "counter_path.write_text(str(count))",
                 "",
-                "pr_artifact_file = os.environ.get('LOOPS_PR_ARTIFACT_FILE')",
-                "if pr_artifact_file and pr_artifact_file.strip():",
-                "    pr_artifact_path = Path(pr_artifact_file.strip())",
+                "run_dir_value = os.environ.get('LOOPS_RUN_DIR')",
+                "if run_dir_value and run_dir_value.strip():",
+                "    run_dir_resolved = Path(run_dir_value.strip()).expanduser().resolve()",
+                "    run_dir_hash = hashlib.sha1(str(run_dir_resolved).encode('utf-8')).hexdigest()",
+                "    pr_artifact_path = Path('/tmp') / f\"{run_dir_hash}-devloop-pr\"",
                 "else:",
                 "    pr_artifact_path = Path('/tmp') / f\"{Path.cwd().name}-devloop-pr\"",
                 "if resume_session is not None:",
@@ -2161,51 +2165,34 @@ def test_extract_trailing_state_marker(output: str, expected: str | None) -> Non
     assert inner_loop_module._extract_trailing_state_marker(output) == expected
 
 
-def test_resolve_pr_artifact_path_prefers_env_override(tmp_path: Path) -> None:
-    override_path = tmp_path / "pr-artifact.txt"
-    path = inner_loop_module._resolve_pr_artifact_path(
-        environ={inner_loop_module.PR_ARTIFACT_FILE_ENV: str(override_path)},
-        run_log=tmp_path / "run.log",
-    )
+def test_run_scoped_pr_artifact_path_hashes_run_dir(tmp_path: Path) -> None:
+    run_dir = tmp_path / "jobs" / "2026-03-01-task-1"
+    run_dir_hash = hashlib.sha1(
+        str(run_dir.expanduser().resolve()).encode("utf-8")
+    ).hexdigest()
+    path = inner_loop_module._run_scoped_pr_artifact_path(run_dir)
+    assert path == Path("/tmp") / f"{run_dir_hash}-devloop-pr"
 
-    assert path == override_path
 
-
-def test_resolve_pr_artifact_path_uses_run_dir_env_when_no_override(tmp_path: Path) -> None:
+def test_resolve_pr_artifact_path_uses_run_dir_env(tmp_path: Path) -> None:
     run_dir = tmp_path / "jobs" / "2026-03-01-task-1"
     path = inner_loop_module._resolve_pr_artifact_path(
         environ={inner_loop_module.RUN_DIR_ENV: str(run_dir)},
         run_log=tmp_path / "run.log",
     )
 
-    assert path == Path("/tmp") / f"{run_dir.name}-devloop-pr"
+    assert path == inner_loop_module._run_scoped_pr_artifact_path(run_dir)
 
 
-def test_resolve_pr_artifact_path_empty_override_uses_default(tmp_path: Path) -> None:
+def test_resolve_pr_artifact_path_empty_run_dir_uses_default(tmp_path: Path) -> None:
     run_log = tmp_path / "run.log"
     path = inner_loop_module._resolve_pr_artifact_path(
-        environ={inner_loop_module.PR_ARTIFACT_FILE_ENV: "   "},
+        environ={inner_loop_module.RUN_DIR_ENV: "   "},
         run_log=run_log,
     )
 
     assert path == _pr_discovery_artifact_path()
-    assert "ignoring empty PR artifact override env var" in run_log.read_text()
-
-
-def test_resolve_pr_artifact_path_empty_override_uses_run_dir_env(tmp_path: Path) -> None:
-    run_log = tmp_path / "run.log"
-    run_dir = tmp_path / "jobs" / "2026-03-01-task-2"
-    path = inner_loop_module._resolve_pr_artifact_path(
-        environ={
-            inner_loop_module.PR_ARTIFACT_FILE_ENV: "   ",
-            inner_loop_module.RUN_DIR_ENV: str(run_dir),
-        },
-        run_log=run_log,
-    )
-
-    assert path == Path("/tmp") / f"{run_dir.name}-devloop-pr"
-    log_output = run_log.read_text()
-    assert "ignoring empty PR artifact override env var" in log_output
+    assert "ignoring empty run-dir env var while resolving PR artifact path" in run_log.read_text()
 
 
 def test_run_codex_turn_sets_needs_input_from_trailing_state_marker(
@@ -2313,13 +2300,13 @@ def test_run_codex_turn_does_not_parse_pr_from_output_without_artifact(
     assert updated.needs_user_input is True
     assert updated.needs_user_input_payload == {
         "message": (
-            "Codex run completed without opening a PR or requesting input. "
+            "Codex run completed but PR was not found in the PR artifact file. "
             "What should Loops do next?"
         )
     }
 
 
-def test_run_codex_turn_reads_pr_from_env_override_artifact_path(
+def test_run_codex_turn_reads_pr_from_run_dir_scoped_artifact_path(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -2327,12 +2314,12 @@ def test_run_codex_turn_reads_pr_from_env_override_artifact_path(
     run_dir.mkdir()
     _write_run_record(run_dir)
 
-    # Simulate stale global artifact from another run; the env override should isolate this turn.
+    # Simulate stale global artifact from another run; run-dir-scoped artifact should isolate this turn.
     _pr_discovery_artifact_path().write_text(
         "https://github.com/acme/api/pull/999\n",
         encoding="utf-8",
     )
-    override_path = tmp_path / "override-pr-artifact.txt"
+    run_scoped_path = inner_loop_module._run_scoped_pr_artifact_path(run_dir)
 
     def fake_invoke_codex(
         *,
@@ -2345,7 +2332,7 @@ def test_run_codex_turn_reads_pr_from_env_override_artifact_path(
         environ: dict[str, str],
     ) -> tuple[str, int, bool]:
         del base_command, prompt, agent_log, run_log, codex_session, turn_label, environ
-        override_path.write_text(
+        run_scoped_path.write_text(
             "https://github.com/acme/api/pull/42\n",
             encoding="utf-8",
         )
@@ -2359,7 +2346,7 @@ def test_run_codex_turn_reads_pr_from_env_override_artifact_path(
     monkeypatch.setattr(inner_loop_module, "_invoke_codex", fake_invoke_codex)
     run_json_path = run_dir / "run.json"
     env = os.environ.copy()
-    env[inner_loop_module.PR_ARTIFACT_FILE_ENV] = str(override_path)
+    env[inner_loop_module.RUN_DIR_ENV] = str(run_dir)
     updated = inner_loop_module._run_codex_turn(
         run_json_path=run_json_path,
         run_log=run_dir / "run.log",
@@ -2374,6 +2361,57 @@ def test_run_codex_turn_reads_pr_from_env_override_artifact_path(
     assert updated.pr is not None
     assert updated.pr.url == "https://github.com/acme/api/pull/42"
     assert "pr_url=https://github.com/acme/api/pull/42" in (run_dir / "run.log").read_text()
+
+
+def test_run_codex_turn_does_not_discover_pr_during_review_feedback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    existing_pr = RunPR(
+        url="https://github.com/acme/api/pull/42",
+        number=42,
+        repo="acme/api",
+        review_status="open",
+    )
+    _write_run_record(run_dir, pr=existing_pr)
+    run_scoped_path = inner_loop_module._run_scoped_pr_artifact_path(run_dir)
+
+    def fake_invoke_codex(
+        *,
+        base_command: list[str],
+        prompt: str,
+        agent_log: Path,
+        run_log: Path,
+        codex_session: inner_loop_module.CodexSession | None,
+        turn_label: str,
+        environ: dict[str, str],
+    ) -> tuple[str, int, bool]:
+        del base_command, prompt, agent_log, run_log, codex_session, turn_label, environ
+        run_scoped_path.write_text(
+            "https://github.com/acme/api/pull/99\n",
+            encoding="utf-8",
+        )
+        return (json.dumps({"session_id": "session-2"}) + "\nreview handled\n", 0, False)
+
+    monkeypatch.setattr(inner_loop_module, "_invoke_codex", fake_invoke_codex)
+    run_json_path = run_dir / "run.json"
+    env = os.environ.copy()
+    env[inner_loop_module.RUN_DIR_ENV] = str(run_dir)
+    updated = inner_loop_module._run_codex_turn(
+        run_json_path=run_json_path,
+        run_log=run_dir / "run.log",
+        agent_log=run_dir / "agent.log",
+        run_record=read_run_record(run_json_path),
+        command=["codex", "exec"],
+        environ=env,
+        base_prompt=None,
+        review_feedback=True,
+    )
+
+    assert updated.pr is not None
+    assert updated.pr.url == existing_pr.url
 
 
 def test_run_codex_turn_clears_stale_session_after_failed_resume_fallback(

@@ -520,7 +520,7 @@ schedules next poll timing. Handler boundaries in `loops/inner_loop.py` are:
 
 - `run.json` is authoritative for lifecycle state.
 - Model output text is not authoritative for state transitions.
-- PR discovery is file-based via `LOOPS_PR_ARTIFACT_FILE` (run-scoped, set by launcher); if unset, inner loop derives `/tmp/{run-dir-name}-devloop-pr` from `LOOPS_RUN_DIR`, then falls back to `/tmp/{current-dir}-devloop-pr`. Inner loop does not scrape PR URLs from model output text.
+- PR discovery is file-based and hardcoded: inner loop derives `/tmp/{sha1(LOOPS_RUN_DIR)}-devloop-pr` when `LOOPS_RUN_DIR` is set, then falls back to `/tmp/{current-dir}-devloop-pr`. Inner loop does not scrape PR URLs from model output text.
 - Model tools request state changes through the signals skill, which appends to `state_signals.jsonl`.
 - Inner loop consumes queued signals in-order and is the only process that persists resulting state to `run.json`.
 - For `NEEDS_INPUT`, the inner loop sets `needs_user_input=true`, persists `needs_user_input_payload`, and blocks on user handoff until a response is available.
