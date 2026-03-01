@@ -8,16 +8,16 @@ by the user to confirm the feature implementation and testing is adequate
 It should be updated during the development process, then kept as a record for later
 context once implementation is complete.
 
-**Feature Plan:** [2026-03-01-deterministic-test-import-context.md](/Users/kevinlin/.worktrees/loops/dev/deterministic-test-import-context/docs/specs/active/2026-03-01-deterministic-test-import-context.md)
+**Feature Plan:** [2026-03-01-deterministic-test-import-context.md](active/2026-03-01-deterministic-test-import-context.md)
 
-**Implementation Plan:** [2026-03-01-deterministic-test-import-context.md](/Users/kevinlin/.worktrees/loops/dev/deterministic-test-import-context/docs/specs/active/2026-03-01-deterministic-test-import-context.md)
+**Implementation Plan:** [2026-03-01-deterministic-test-import-context.md](active/2026-03-01-deterministic-test-import-context.md)
 
 ## Stage 4: Validation Stage
 
 > AGENT INSTRUCTIONS:
 > 
 > Review all implementation and testing done to date and fill in the sections below with
-> automated validation that has been done and remaining manual validatin needed.
+> automated validation that has been done and remaining manual validation needed.
 
 ## Validation Planning
 
@@ -26,7 +26,7 @@ context once implementation is complete.
 ## Automated Validation (Testing Performed)
 
 > Describe the testing already performed and any additional testing needed to validate
-> this feature is working end to end and reviewable by the user.
+> this feature is working end-to-end and reviewable by the user.
 
 ### Unit Testing
 
@@ -59,7 +59,7 @@ context once implementation is complete.
 > - Sanity checking database state or file state, especially if the user has not seen
 >   these
 >
-> - All visual or UX changes to any web or GUI interfaces.
+> - All visual or UX changes to any web or GUIs.
 >
 > - The most common workflows involving these UX changes
 > 

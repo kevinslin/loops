@@ -32,9 +32,9 @@ Recent development sessions observed path bleed where pytest imported `loops` fr
 - There is no repo-level pytest guard that enforces local worktree import precedence.
 
 ### Required Pre-Read 
-- [DESIGN.md](/Users/kevinlin/.worktrees/loops/dev/deterministic-test-import-context/DESIGN.md)
-- [README.md](/Users/kevinlin/.worktrees/loops/dev/deterministic-test-import-context/README.md)
-- [tests](/Users/kevinlin/.worktrees/loops/dev/deterministic-test-import-context/tests)
+- [DESIGN.md](../../../DESIGN.md)
+- [README.md](../../../README.md)
+- [tests](../../../tests)
 
 ### Constraints
 - Keep behavior simple and test-only.
@@ -49,9 +49,9 @@ Recent development sessions observed path bleed where pytest imported `loops` fr
 Add `tests/conftest.py` with a small helper that guarantees repository root is placed at index 0 of `sys.path` at test session startup.
 
 ### Integration Points / Touchpoints
-- [tests/conftest.py](/Users/kevinlin/.worktrees/loops/dev/deterministic-test-import-context/tests/conftest.py): enforce import-path priority at pytest startup.
-- [tests/test_test_import_context.py](/Users/kevinlin/.worktrees/loops/dev/deterministic-test-import-context/tests/test_test_import_context.py): regression coverage for path-priority helper.
-- [README.md](/Users/kevinlin/.worktrees/loops/dev/deterministic-test-import-context/README.md): document deterministic test invocation expectations.
+- [tests/conftest.py](../../../tests/conftest.py): enforce import-path priority at pytest startup.
+- [tests/test_test_import_context.py](../../../tests/test_test_import_context.py): regression coverage for path-priority helper.
+- [README.md](../../../README.md): document deterministic test invocation expectations.
 
 ### Resolved Ambiguities / Decisions
 - Decision: fix at pytest session layer (`tests/conftest.py`) rather than relying only on shell env.
@@ -96,7 +96,7 @@ Manual validation:
 - [x] Documentation reflects deterministic test guidance.
 
 ### Separate Validation Spec (Optional)
-- [Feature Validation Spec](/Users/kevinlin/.worktrees/loops/dev/deterministic-test-import-context/docs/specs/validation-2026-03-01-deterministic-test-import-context.md)
+- [Feature Validation Spec](../validation-2026-03-01-deterministic-test-import-context.md)
 
 ---
 
