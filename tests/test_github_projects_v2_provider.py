@@ -11,6 +11,16 @@ from loops.providers.github_projects_v2 import (
 )
 
 
+def test_provider_config_allowlist_normalizes_on_provider() -> None:
+    provider = GithubProjectsV2TaskProvider(
+        GithubProjectsV2TaskProviderConfig(
+            url="https://github.com/orgs/acme/projects/1",
+            allowlist=["Maintainer", "review-bot", "maintainer"],
+        )
+    )
+    assert provider.review_actor_allowlist == ("maintainer", "review-bot")
+
+
 def test_parse_project_url_org() -> None:
     locator = parse_project_url("https://github.com/orgs/acme/projects/42")
     assert locator.owner_type == "organization"

@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from loops.approval_config import normalize_approval_usernames
 from loops.provider_types import LoopsProviderConfig, SecretRequirement
 from loops.run_record import Task
 
@@ -26,6 +27,7 @@ class GithubProjectsV2TaskProviderConfig(BaseModel):
     page_size: int = Field(default=50, gt=0)
     github_token: str | None = None
     filters: list[str] = Field(default_factory=list)
+    allowlist: list[str] = Field(default_factory=list)
 
 
 GITHUB_PROJECTS_V2_PROVIDER_CONFIG = LoopsProviderConfig(
@@ -56,6 +58,7 @@ def build_default_provider_config_payload(
         "url": defaults.url,
         "status_field": defaults.status_field,
         "page_size": defaults.page_size,
+        "allowlist": list(defaults.allowlist),
     }
 
 
@@ -227,6 +230,7 @@ class GithubProjectsV2TaskProvider:
         self.config = config
         self.gh_bin = gh_bin
         self.filters = _parse_filters(config.filters)
+        self.review_actor_allowlist = normalize_approval_usernames(config.allowlist)
 
     def poll(self, limit: int | None = None) -> list[Task]:
         if limit is not None and limit <= 0:

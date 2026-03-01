@@ -496,7 +496,12 @@ def test_doctor_upgrades_legacy_config(tmp_path: Path) -> None:
     assert "Upgraded config to version" in result.output
     payload = json.loads(config_path.read_text())
     assert payload["version"] == LATEST_LOOPS_CONFIG_VERSION
-    assert payload["provider_config"]["url"] == "https://github.com/orgs/acme/projects/7"
+    assert payload["provider_config"] == {
+        "allowlist": [],
+        "page_size": 50,
+        "status_field": "Status",
+        "url": "https://github.com/orgs/acme/projects/7",
+    }
     assert payload["loop_config"]["task_ready_status"] == "Todo"
     assert payload["loop_config"]["parallel_tasks"] is False
     assert payload["loop_config"]["approval_comment_usernames"] == []

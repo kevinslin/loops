@@ -30,6 +30,10 @@ from loops.handoff_handlers import (
 )
 from loops.logging_utils import STREAM_LOGS_STDOUT_ENV, format_log_timestamp
 from loops.provider_types import LoopsProviderConfig, SecretRequirement
+from loops.providers.github_projects_v2 import (
+    GITHUB_PROJECTS_V2_PROVIDER_ID,
+    build_default_provider_config_payload,
+)
 from loops.providers.registry import get_provider_definition
 from loops.run_record import RunRecord, Task, write_run_record
 from loops.task_provider import TaskProvider
@@ -177,6 +181,7 @@ class OuterLoopRunner:
         self.inner_loop_launcher = inner_loop_launcher
         self.state_path = self.loops_root / "outer_state.json"
         self.log_path = self.loops_root / "oloops.log"
+        self.review_actor_usernames = _resolve_provider_review_actor_usernames(provider)
 
     def run_once(
         self,
@@ -293,6 +298,7 @@ class OuterLoopRunner:
                 build_inner_loop_approval_config(
                     approval_comment_usernames=self.config.approval_comment_usernames,
                     approval_comment_pattern=self.config.approval_comment_pattern,
+                    review_actor_usernames=self.review_actor_usernames,
                 ),
             )
             _touch(run_dir / "run.log")
@@ -436,6 +442,29 @@ def upgrade_config_payload(payload: Any) -> tuple[dict[str, Any], bool]:
     if existing_loop_payload != loop_payload:
         upgraded["loop_config"] = loop_payload
 
+    provider_id = upgraded.get("provider_id")
+    if provider_id == GITHUB_PROJECTS_V2_PROVIDER_ID:
+        existing_provider_payload = upgraded.get("provider_config")
+        if existing_provider_payload is None:
+            provider_payload: dict[str, Any] = {}
+        elif isinstance(existing_provider_payload, dict):
+            provider_payload = dict(existing_provider_payload)
+        else:
+            raise TypeError("provider_config must be an object")
+        project_url = provider_payload.get("url")
+        if not isinstance(project_url, str) or not project_url.strip():
+            provider_defaults = build_default_provider_config_payload()
+        else:
+            provider_defaults = build_default_provider_config_payload(
+                project_url=project_url,
+            )
+        for key, value in provider_defaults.items():
+            if key not in provider_payload:
+                provider_payload[key] = value
+                changed = True
+        if existing_provider_payload != provider_payload:
+            upgraded["provider_config"] = provider_payload
+
     return upgraded, changed
 
 
@@ -453,6 +482,21 @@ def build_provider(config: LoopsConfig) -> TaskProvider:
             f"provider_config is invalid for provider '{definition.metadata.id}': {exc}"
         ) from exc
     return definition.build(provider_config)
+
+
+def _resolve_provider_review_actor_usernames(provider: TaskProvider) -> tuple[str, ...]:
+    """Resolve an optional provider-defined review actor allowlist."""
+
+    raw_usernames = getattr(provider, "review_actor_allowlist", ())
+    if isinstance(raw_usernames, tuple):
+        usernames = raw_usernames
+    elif isinstance(raw_usernames, list):
+        usernames = tuple(raw_usernames)
+    else:
+        return ()
+    if not all(isinstance(item, str) for item in usernames):
+        return ()
+    return normalize_approval_usernames(usernames)
 
 
 def build_inner_loop_launcher(
