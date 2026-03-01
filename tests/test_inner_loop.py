@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 import os
-import pytest
 import re
 import shlex
 import subprocess
@@ -36,7 +35,6 @@ from loops.run_record import (
     read_run_record,
     write_run_record,
 )
-from loops.state_signal import enqueue_state_signal
 
 
 def _task() -> Task:
@@ -964,18 +962,18 @@ def test_inner_loop_sets_needs_user_input_on_nonzero_codex_exit(
     assert "[loops] codex exit code 17" in run_log
 
 
-def test_inner_loop_consumes_signal_and_uses_user_response_in_prompt(
+def test_inner_loop_uses_existing_needs_input_payload_and_user_response_in_prompt(
     tmp_path, monkeypatch
 ) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    _write_run_record(run_dir)
-
-    enqueue_state_signal(
+    _write_run_record(
         run_dir,
-        state="NEEDS_INPUT",
-        message="Need user decision",
-        context={"scope": "priority"},
+        needs_user_input=True,
+        needs_user_input_payload={
+            "message": "Need user decision",
+            "context": {"scope": "priority"},
+        },
     )
 
     stub = tmp_path / "codex_stub.py"
@@ -1087,13 +1085,11 @@ def test_inner_loop_uses_user_response_for_review_feedback_turn(
             merged_at=None,
             last_checked_at="2026-02-09T00:00:00Z",
         ),
-    )
-
-    enqueue_state_signal(
-        run_dir,
-        state="NEEDS_INPUT",
-        message="Need user decision",
-        context={"scope": "review"},
+        needs_user_input=True,
+        needs_user_input_payload={
+            "message": "Need user decision",
+            "context": {"scope": "review"},
+        },
     )
 
     stub = tmp_path / "codex_stub.py"
@@ -1563,49 +1559,6 @@ def test_inner_loop_backward_compat_no_review_timestamp(
 
     assert result.last_state == "DONE"
     assert counter_path.read_text() == "1"
-
-
-def test_apply_pending_signals_does_not_advance_offset_on_write_failure(
-    tmp_path, monkeypatch
-) -> None:
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    _write_run_record(run_dir)
-
-    enqueue_state_signal(
-        run_dir,
-        state="NEEDS_INPUT",
-        message="Need user decision",
-        context={"priority": "high"},
-    )
-
-    original_write_run_record = inner_loop_module.write_run_record
-    attempts = {"count": 0}
-
-    def flaky_write_run_record(path: Path, record: RunRecord) -> RunRecord:
-        attempts["count"] += 1
-        if attempts["count"] == 1:
-            raise RuntimeError("simulated write failure")
-        return original_write_run_record(path, record)
-
-    monkeypatch.setattr(inner_loop_module, "write_run_record", flaky_write_run_record)
-    with pytest.raises(RuntimeError, match="simulated write failure"):
-        inner_loop_module._apply_pending_signals(
-            run_dir,
-            read_run_record(run_dir / "run.json"),
-        )
-
-    offset_path = run_dir / inner_loop_module.SIGNAL_OFFSET_FILE
-    assert not offset_path.exists()
-
-    monkeypatch.setattr(inner_loop_module, "write_run_record", original_write_run_record)
-    updated = inner_loop_module._apply_pending_signals(
-        run_dir,
-        read_run_record(run_dir / "run.json"),
-    )
-    assert updated.needs_user_input is True
-    assert offset_path.exists()
-    assert int(offset_path.read_text().strip()) > 0
 
 
 def test_inner_loop_exits_promptly_when_needs_input_and_non_interactive(

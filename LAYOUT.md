@@ -12,7 +12,6 @@ Runtime flow:
 4. Per-task inner-loop orchestration is in `loops/inner_loop.py`.
 5. Shared run-state schema and persistence are in `loops/run_record.py`.
 6. Provider interface and GitHub provider implementation are in `loops/task_provider.py` and `loops/providers/github_projects_v2.py`.
-7. Signal queue producer/CLI is in `loops/state_signal.py`.
 
 ## Repository map
 
@@ -33,7 +32,6 @@ Runtime flow:
 │   ├── outer_loop.py
 │   ├── inner_loop.py
 │   ├── run_record.py
-│   ├── state_signal.py
 │   ├── task_provider.py
 │   └── providers/
 │       ├── __init__.py
@@ -43,7 +41,6 @@ Runtime flow:
     ├── test_outer_loop.py
     ├── test_inner_loop.py
     ├── test_run_record.py
-    ├── test_state_signal.py
     └── test_github_projects_v2_provider.py
 ```
 
@@ -76,7 +73,7 @@ Runtime flow:
   - Normalizes legacy argv into subcommand form.
 
 - `loops/cli.py`
-  - Click-based command surface (`init`, `run`, `inner-loop`, `signal`).
+  - Click-based command surface (`init`, `run`, `inner-loop`, `doctor`, `clean`).
   - Builds default config payload on init.
   - Wires CLI options to outer/inner loop functions.
 
@@ -89,18 +86,13 @@ Runtime flow:
 - `loops/inner_loop.py`
   - Inner-loop state machine and Codex turn orchestration.
   - Reads/writes `run.json` as authoritative state.
-  - Applies queued state signals, handles user handoff, polls PR status, runs cleanup, and exits on DONE.
+  - Handles user handoff, polls PR status, runs cleanup, and exits on DONE.
   - Writes orchestration logs to `run.log` and streams agent output to `agent.log`.
 
 - `loops/run_record.py`
   - Core dataclasses (`Task`, `RunPR`, `CodexSession`, `RunRecord`).
   - `derive_run_state` logic.
   - Validated persistence helpers (`read_run_record`, `write_run_record`).
-
-- `loops/state_signal.py`
-  - Signal producer for run-local queue (`state_signals.jsonl`).
-  - Validates and enqueues currently-supported signal `NEEDS_INPUT`.
-  - Also exposes `python -m loops.state_signal` CLI.
 
 - `loops/task_provider.py`
   - Provider protocol abstraction (`poll`).
@@ -118,13 +110,10 @@ Runtime flow:
   - Outer-loop scheduling, dedupe, config parsing, launcher behavior.
 
 - `tests/test_inner_loop.py`
-  - Inner-loop lifecycle/state transitions, signal handling, review feedback loops, logging behavior.
+  - Inner-loop lifecycle/state transitions, review feedback loops, logging behavior.
 
 - `tests/test_run_record.py`
   - Run record schema/state derivation and payload validation.
-
-- `tests/test_state_signal.py`
-  - Signal queue writing and CLI validation.
 
 - `tests/test_github_projects_v2_provider.py`
   - URL parsing, GraphQL mapping/pagination, provider behavior.
@@ -139,7 +128,6 @@ These are generated under `.loops/` at runtime:
 - `.loops/jobs/<run>/run.json` - per-run authoritative state.
 - `.loops/jobs/<run>/run.log` - inner-loop orchestration log.
 - `.loops/jobs/<run>/agent.log` - streamed Codex output.
-- `.loops/jobs/<run>/state_signals.jsonl` and `.loops/jobs/<run>/state_signals.offset` - signal queue and consumption offset.
 
 ## Where to change what
 
@@ -160,10 +148,6 @@ These are generated under `.loops/` at runtime:
   - Tests: `tests/test_run_record.py`
   - Update `DESIGN.md` if semantics changed.
 
-- Change signal protocol:
-  - `loops/state_signal.py`
-  - Tests: `tests/test_state_signal.py`
-
 - Add a new task provider:
   - New provider file under `loops/providers/`
   - Provider construction path in `loops/outer_loop.py` (`build_provider`)
@@ -179,5 +163,5 @@ These are generated under `.loops/` at runtime:
 2. `DESIGN.md` (architecture and invariants)
 3. `loops/cli.py` and `loops/__main__.py` (entrypoints)
 4. `loops/outer_loop.py` and `loops/inner_loop.py` (runtime logic)
-5. `loops/run_record.py` and `loops/state_signal.py` (state + signaling contract)
+5. `loops/run_record.py` (state contract)
 6. Relevant test file(s) for the area being edited

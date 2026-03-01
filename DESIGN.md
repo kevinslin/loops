@@ -35,7 +35,6 @@ Close the loop on building a coding agent harness that can pick up tasks, execut
 - `RunRecord`: Persisted lifecycle snapshot in `run.json`.
 - `RunState`: Derived lifecycle state: `RUNNING | WAITING_ON_REVIEW | NEEDS_INPUT | PR_APPROVED | DONE`.
 - `OuterState`: Outer-loop dedupe ledger persisted in `.loops/outer_state.json`.
-- `StateSignal`: Append-only state intent entry in `state_signals.jsonl`, consumed by the inner loop.
 - `Handoff`: `NEEDS_INPUT` user-input collection path (`stdin_handler` or `gh_comment_handler`).
 - `Trigger`: Named inner-loop transition action such as `trigger:fix-pr` and `trigger:merge-pr`.
 
@@ -45,7 +44,6 @@ Type/interface mapping (section 2 and runtime):
 - `RunRecord` concept -> `RunRecord` type and `run.json`.
 - `RunState` concept -> `RunState` type.
 - `OuterState` concept -> `.loops/outer_state.json` ledger (`OuterLoopState` runtime model).
-- `StateSignal` concept -> `.loops/jobs/.../state_signals.jsonl` queue (`loops.state_signal`).
 - `Handoff` concept -> `UserHandoffHandler`, `HandoffResult`, and `loop_config.handoff_handler`.
 
 ## 2. Constants and types
@@ -339,7 +337,6 @@ Task provider (GitHub Projects V2)
 - Runs a small state model derived from PR status plus a single flag (`needs_user_input`).
 - Uses `codex exec` for the first turn, then `codex exec resume <session_id>` for subsequent turns when `codex_session.id` is available.
 - Is the single writer for `[INNER_LOOP_ROOT]/run.json`.
-- Consumes model-authored signals from a run-local queue and applies validated state changes to `run.json`.
 - Writes inner-loop orchestration logs to `[INNER_LOOP_ROOT]/run.log` and appends Codex output there.
 - Streams Codex/agent output to `[INNER_LOOP_ROOT]/agent.log`.
 - In `sync_mode=true`, also mirrors inner-loop `run.log` lines to stdout.
@@ -349,12 +346,6 @@ Task provider (GitHub Projects V2)
 - Implements `TaskProvider.poll(limit)`.
 - MVP: GitHub Projects V2 via the GitHub API or `gh`.
 - Each provider declares `LoopsProviderConfig` metadata for identity, required env secrets, and typed `task_provider_config` validation via a provider-owned Pydantic model.
-
-#### Signal CLI (state requests)
-- Purpose: allow the model to request a state transition (MVP: `NEEDS_INPUT`) without writing `run.json` directly.
-- Interface: append-only queue write to `[INNER_LOOP_ROOT]/state_signals.jsonl`.
-- Ownership: this CLI writes only the signal queue; it does not mutate `run.json`.
-- Current status: not implemented in code yet (`loops/state_signal.py` is planned).
 
 #### Clean CLI (run artifact janitor)
 - Purpose: clean stale run artifacts under `LOOPS_ROOT`.
@@ -386,7 +377,6 @@ Task provider (GitHub Projects V2)
       run.json
       run.log
       agent.log
-      state_signals.jsonl
 ```
 
 `run.json` fields (minimal set):
@@ -402,12 +392,6 @@ Task provider (GitHub Projects V2)
 - `updated_at`: ISO timestamp.
 
 `last_state` is derived from PR review status plus the single `needs_user_input` flag. CI/auto-approve data affects review-to-approved progression inside `WAITING_ON_REVIEW`.
-
-`state_signals.jsonl`:
-- Append-only queue of state intents written by model tooling.
-- MVP signal type: `NEEDS_INPUT` only.
-- Each line is a JSON object with at least `state` and `args`.
-- The inner loop validates and applies each queued signal; malformed entries are rejected and logged.
 
 `outer_state.json` fields (minimal set):
 - `initialized`: boolean flag indicating whether the outer loop has completed at least one poll.
@@ -433,7 +417,6 @@ The outer loop uses `outer_state.json` as a dedupe ledger to avoid re-processing
 ### Inner loop state model
 
 #### Prerequisites
-- **Signals skill**: The LLM uses a skill (e.g. `$needs_input`) to send signals to the inner loop via the signal queue (`state_signals.jsonl`).
 - **State file (S)**: `run.json` is the persisted state file. `last_state` caches the derived state. The state file is the single source of truth.
 - **Retry**: When the inner loop starts and finds an existing state file, it is resuming after a crash. Each state defines its own retry behavior for idempotent recovery.
 
@@ -467,15 +450,15 @@ Precedence rule: `NEEDS_INPUT` has priority over `DONE`; if `needs_user_input=tr
 
 **Loop** (read `run.json`, derive state, dispatch):
 
-- **If `NEEDS_INPUT`**: send signal S:NEEDS_INPUT, payload: `{ questions }`. Block until user responds. Clear flag, persist answer, resume LLM. Retry: still wait for input.
-- **If PR submitted → `WAITING_ON_REVIEW`**: set S:WAITING_ON_REVIEW. Run review poll script. If changes requested AND `latest_review_submitted_at > review_addressed_at` (new review event), exec trigger:fix-pr and record `review_addressed_at`. Also, if status is open but a new feedback event is observed (`latest_review_submitted_at > review_addressed_at`) from the newest timestamp between `COMMENTED` PR review events and plain PR discussion comments, resume trigger:fix-pr and record `review_addressed_at` so the same feedback is not reprocessed.
+- **If `NEEDS_INPUT`**: block for user handoff using `needs_user_input_payload`, then clear `needs_user_input` and `needs_user_input_payload`, persist, and resume LLM. Retry: still wait for input.
+- **If PR submitted → `WAITING_ON_REVIEW`**: run review poll script. If changes requested AND `latest_review_submitted_at > review_addressed_at` (new review event), exec trigger:fix-pr and record `review_addressed_at`. Also, if status is open but a new feedback event is observed (`latest_review_submitted_at > review_addressed_at`) from the newest timestamp between `COMMENTED` PR review events and plain PR discussion comments, resume trigger:fix-pr and record `review_addressed_at` so the same feedback is not reprocessed.
   - Always poll CI and persist `pr.ci_status`.
   - If `review_status` is approved, derive `PR_APPROVED` via the manual path (unchanged).
   - If approval comes from an allowlisted plain PR comment, add a 👍 reaction to that comment in the polling path (idempotent best effort; failures are logged and do not block approval).
   - If `review_status` is not approved and `ci_status == success` and `auto_approve_enabled=true` and `run_record.auto_approve` is unset, run one direct auto-approve evaluation Codex turn (prompt instructs `$ag-judge`, judge book fixed to `references/jb.coding.md`) and persist `{ verdict, impact, risk, size, judged_at, summary }` on `RunRecord`.
   - In that additional path, `auto_approve.verdict == APPROVE` allows next-cycle transition to `PR_APPROVED`.
   - In that additional path, `auto_approve.verdict in {REJECT, ESCALATE}` remains blocked in `WAITING_ON_REVIEW` and does not re-run auto-approve.
-- **If manual approval is present or the additional auto-approve path passes → `PR_APPROVED`**: set S:PR_APPROVED. Run trigger:merge-pr. On success, derive DONE from `pr.merged_at`. Retry: re-run trigger (idempotent).
+- **If manual approval is present or the additional auto-approve path passes → `PR_APPROVED`**: run trigger:merge-pr. On success, derive DONE from `pr.merged_at`. Retry: re-run trigger (idempotent).
 - **Bounded wait guardrail (review + approved states)**: `WAITING_ON_REVIEW` and `PR_APPROVED` use idle-poll escalation. If status polling fails repeatedly or the state does not progress for `max_idle_polls` consecutive polls (default `49`, about 45 minutes with the default backoff), force `NEEDS_INPUT` with a manual-guidance payload. Poll backoff grows from `initial_poll_seconds` (default `5s`) up to `max_poll_seconds` (default `60s`).
 
 ### State transitions (ASCII)
@@ -529,17 +512,15 @@ schedules next poll timing. Handler boundaries in `loops/inner_loop.py` are:
 |-------|--------------------|--------|
 | `RUNNING` (no state file) | State file missing | Start fresh with prompt |
 | `RUNNING` (session recorded) | Resume existing session | Resume session ID and send the next state-tagged prompt |
-| `NEEDS_INPUT` | Still waiting | Re-enter wait; do not re-send signal |
+| `NEEDS_INPUT` | Still waiting | Re-enter wait |
 | `WAITING_ON_REVIEW` | Polling interrupted | Continue polling PR status, including CI status updates and a single auto-approve evaluation per conversation when eligible |
 | `PR_APPROVED` | Merge may be partial | Re-run trigger:merge-pr (idempotent); if merge remains stalled past idle threshold, escalate to `NEEDS_INPUT` |
 | `DONE` | Terminal | Exit immediately |
 
-### Signal handling
+### State handling
 
 - `run.json` is authoritative for lifecycle state.
 - Model output text is not authoritative for state transitions.
-- Model tools request state changes through the signals skill, which appends to `state_signals.jsonl`.
-- Inner loop consumes queued signals in-order and is the only process that persists resulting state to `run.json`.
 - For `NEEDS_INPUT`, the inner loop sets `needs_user_input=true`, persists `needs_user_input_payload`, and blocks on user handoff until a response is available.
 - After handoff completes, inner loop clears `needs_user_input` and `needs_user_input_payload`, writes `run.json`, and resumes the state machine.
 
@@ -563,7 +544,6 @@ The inner loop relies on a small explicit skill surface. These skills are part o
 | `trigger:fix-pr` | `WAITING_ON_REVIEW` when new review/comment feedback is detected | Re-enters Codex to apply concrete reviewer feedback and updates `review_addressed_at` to prevent duplicate processing. |
 | `$ag-judge` (direct, no trigger) | `WAITING_ON_REVIEW` when review is not approved, CI is green, and auto-approve is enabled | Produces one structured approval verdict (`APPROVE|REJECT|ESCALATE`) with impact/risk/size scores that Loops persists on `RunRecord.auto_approve` to decide whether `PR_APPROVED` is reachable without manual approval. |
 | `trigger:merge-pr` | `PR_APPROVED` path and cleanup prompt | Performs merge/cleanup in an idempotent way; Loops keeps polling until `pr.merged_at` confirms transition to `DONE`. |
-| Signals skill (`$needs_input` pattern via `NEEDS_INPUT`) | Signal queue (`state_signals.jsonl`) and trailing state markers (`<state>NEEDS_INPUT</>`) | Lets the model request human input without writing `run.json` directly; inner loop remains the single writer and orchestrates handoff/resume. |
 | `gen-notifier` (forbidden) | Base prompt hard guardrail | Prevents out-of-band desktop notification side effects from inside harness-managed runs; keeps Loops control flow deterministic and contained to run artifacts/logs. |
 
 Practical invariant: if this skill contract changes, update `loops/inner_loop.py` prompt builders, `tests/test_inner_loop.py` prompt assertions, and related flow docs in `docs/flows/`.
@@ -575,9 +555,8 @@ Practical invariant: if this skill contract changes, update `loops/inner_loop.py
 - `python -m loops doctor` upgrades config schema/default values in `config.json`.
 - `python -m loops run` starts the outer loop runner.
 - `python -m loops inner-loop` runs one inner-loop execution for a run directory.
-- `python -m loops signal` enqueues a run-local signal (MVP: `NEEDS_INPUT`).
 - `python -m loops clean` deletes empty runs and archives completed runs.
-- Direct module callers still work (`python -m loops.inner_loop`, `python -m loops.state_signal`).
+- Direct module callers still work (`python -m loops.inner_loop`).
 
 ### Prompt catalog
 
@@ -649,7 +628,6 @@ Prompt-related configuration and runtime inputs:
 - `loop_config.auto_approve_enabled`: enables one-time auto-approve evaluation when review is not already approved.
 - Auto-approve defaults are fixed in runtime design: require green CI and judge with `references/jb.coding.md`.
 - `loop_config.handoff_handler` (`stdin_handler` or `gh_comment_handler`): changes where NEEDS_INPUT prompt messages are delivered.
-- `loops signal --message/--context`: sets `needs_user_input_payload` used by NEEDS_INPUT handoff prompts.
 - `task.url` in `run.json`: inserted into `Task: [task_url]`.
 - Handoff response text: appended as `User input:` in the next Codex prompt.
 
