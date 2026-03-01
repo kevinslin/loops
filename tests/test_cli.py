@@ -429,7 +429,7 @@ def test_run_outer_loop_sync_mode_interrupt_prints_run_resume_command(
     assert f"loops inner-loop --run-dir {run_dir}" in output
 
 
-def test_run_outer_loop_sync_mode_interrupt_without_run_dir_prints_generic_resume_hint(
+def test_run_outer_loop_non_launcher_interrupt_does_not_print_resume_hint(
     tmp_path: Path,
     monkeypatch,
     capsys: pytest.CaptureFixture[str],
@@ -474,9 +474,7 @@ def test_run_outer_loop_sync_mode_interrupt_without_run_dir_prints_generic_resum
         )
 
     output = capsys.readouterr().out
-    assert "Sync mode interrupted." in output
-    assert "loops inner-loop --run-dir <RUN_DIR>" in output
-    assert f"{tmp_path / '.loops' / 'jobs'}" in output
+    assert output == ""
 
 
 def test_doctor_upgrades_legacy_config(tmp_path: Path) -> None:

@@ -289,31 +289,17 @@ def _run_outer_loop(
         else:
             runner.run_forever(limit=limit)
     except KeyboardInterrupt as exc:
-        if config.loop_config.sync_mode:
-            interrupted_run_dir: Path | None = None
-            if isinstance(exc, SyncModeInterruptedError):
-                interrupted_run_dir = exc.run_dir
-            _print_sync_resume_instructions(
-                loops_root=loops_root,
-                run_dir=interrupted_run_dir,
-            )
+        if isinstance(exc, SyncModeInterruptedError):
+            _print_sync_resume_instructions(run_dir=exc.run_dir)
         raise click.Abort() from exc
 
 
-def _print_sync_resume_instructions(*, loops_root: Path, run_dir: Path | None) -> None:
+def _print_sync_resume_instructions(*, run_dir: Path) -> None:
     """Print instructions for resuming an interrupted sync-mode inner loop."""
 
-    if run_dir is not None:
-        click.echo(
-            "Sync mode interrupted. Resume this run with:\n"
-            f"loops inner-loop --run-dir {shlex.quote(str(run_dir))}"
-        )
-        return
-    jobs_root = loops_root / INNER_LOOP_RUNS_DIR_NAME
     click.echo(
-        "Sync mode interrupted. Resume the latest run with:\n"
-        "loops inner-loop --run-dir <RUN_DIR>\n"
-        f"Run directories are under: {jobs_root}"
+        "Sync mode interrupted. Resume this run with:\n"
+        f"loops inner-loop --run-dir {shlex.quote(str(run_dir))}"
     )
 
 
