@@ -95,6 +95,7 @@ GITHUB_PR_PATTERN = re.compile(
 )
 DEVLOOP_PR_FILE_SUFFIX = "-devloop-pr"
 PR_ARTIFACT_FILE_ENV = "LOOPS_PR_ARTIFACT_FILE"
+RUN_DIR_ENV = "LOOPS_RUN_DIR"
 
 SESSION_ID_PATTERN = re.compile(r"session[_\s-]*id\s*[:=]\s*([\w-]+)", re.IGNORECASE)
 UUID_PATTERN = re.compile(
@@ -1580,18 +1581,48 @@ def _default_devloop_pr_artifact_path() -> Path:
 def _resolve_pr_artifact_path(*, environ: Mapping[str, str], run_log: Path) -> Path:
     override = environ.get(PR_ARTIFACT_FILE_ENV)
     if override is None:
+        run_dir_value = environ.get(RUN_DIR_ENV)
+        if run_dir_value is not None:
+            run_dir_candidate = run_dir_value.strip()
+            if run_dir_candidate:
+                run_dir_name = Path(run_dir_candidate).expanduser().name
+                if run_dir_name:
+                    return Path("/tmp") / f"{run_dir_name}{DEVLOOP_PR_FILE_SUFFIX}"
+            else:
+                append_log(
+                    run_log,
+                    (
+                        "[loops] ignoring empty run-dir env var while resolving PR "
+                        f"artifact path: {RUN_DIR_ENV}"
+                    ),
+                )
         return _default_devloop_pr_artifact_path()
     candidate = override.strip()
-    if not candidate:
-        append_log(
-            run_log,
-            (
-                "[loops] ignoring empty PR artifact override env var: "
-                f"{PR_ARTIFACT_FILE_ENV}"
-            ),
-        )
-        return _default_devloop_pr_artifact_path()
-    return Path(candidate).expanduser()
+    if candidate:
+        return Path(candidate).expanduser()
+    append_log(
+        run_log,
+        (
+            "[loops] ignoring empty PR artifact override env var: "
+            f"{PR_ARTIFACT_FILE_ENV}"
+        ),
+    )
+    run_dir_value = environ.get(RUN_DIR_ENV)
+    if run_dir_value is not None:
+        run_dir_candidate = run_dir_value.strip()
+        if run_dir_candidate:
+            run_dir_name = Path(run_dir_candidate).expanduser().name
+            if run_dir_name:
+                return Path("/tmp") / f"{run_dir_name}{DEVLOOP_PR_FILE_SUFFIX}"
+        else:
+            append_log(
+                run_log,
+                (
+                    "[loops] ignoring empty run-dir env var while resolving PR "
+                    f"artifact path: {RUN_DIR_ENV}"
+                ),
+            )
+    return _default_devloop_pr_artifact_path()
 
 
 def _clear_pr_artifact_file(*, path: Path, run_log: Path) -> None:

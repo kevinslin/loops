@@ -2171,6 +2171,16 @@ def test_resolve_pr_artifact_path_prefers_env_override(tmp_path: Path) -> None:
     assert path == override_path
 
 
+def test_resolve_pr_artifact_path_uses_run_dir_env_when_no_override(tmp_path: Path) -> None:
+    run_dir = tmp_path / "jobs" / "2026-03-01-task-1"
+    path = inner_loop_module._resolve_pr_artifact_path(
+        environ={inner_loop_module.RUN_DIR_ENV: str(run_dir)},
+        run_log=tmp_path / "run.log",
+    )
+
+    assert path == Path("/tmp") / f"{run_dir.name}-devloop-pr"
+
+
 def test_resolve_pr_artifact_path_empty_override_uses_default(tmp_path: Path) -> None:
     run_log = tmp_path / "run.log"
     path = inner_loop_module._resolve_pr_artifact_path(
@@ -2180,6 +2190,22 @@ def test_resolve_pr_artifact_path_empty_override_uses_default(tmp_path: Path) ->
 
     assert path == _pr_discovery_artifact_path()
     assert "ignoring empty PR artifact override env var" in run_log.read_text()
+
+
+def test_resolve_pr_artifact_path_empty_override_uses_run_dir_env(tmp_path: Path) -> None:
+    run_log = tmp_path / "run.log"
+    run_dir = tmp_path / "jobs" / "2026-03-01-task-2"
+    path = inner_loop_module._resolve_pr_artifact_path(
+        environ={
+            inner_loop_module.PR_ARTIFACT_FILE_ENV: "   ",
+            inner_loop_module.RUN_DIR_ENV: str(run_dir),
+        },
+        run_log=run_log,
+    )
+
+    assert path == Path("/tmp") / f"{run_dir.name}-devloop-pr"
+    log_output = run_log.read_text()
+    assert "ignoring empty PR artifact override env var" in log_output
 
 
 def test_run_codex_turn_sets_needs_input_from_trailing_state_marker(
