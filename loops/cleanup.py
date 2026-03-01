@@ -3,11 +3,11 @@ from __future__ import annotations
 """Helpers for cleaning Loops runtime run directories."""
 
 from dataclasses import dataclass
+import json
 import shutil
 from pathlib import Path
 
 from loops.outer_loop import INNER_LOOP_RUNS_DIR_NAME
-from loops.run_record import read_run_record
 
 RUN_LOG_FILE = "run.log"
 AGENT_LOG_FILE = "agent.log"
@@ -128,10 +128,18 @@ def _read_run_state(run_dir: Path) -> str | None:
     if not run_record_path.is_file():
         return None
     try:
-        run_record = read_run_record(run_record_path)
-    except (KeyError, OSError, TypeError, ValueError):
+        payload = json.loads(run_record_path.read_text())
+    except (OSError, json.JSONDecodeError):
         return "INVALID"
-    return run_record.last_state
+    if not isinstance(payload, dict):
+        return "INVALID"
+    raw_state = payload.get("last_state")
+    if not isinstance(raw_state, str):
+        return "INVALID"
+    normalized_state = raw_state.strip().upper()
+    if not normalized_state:
+        return "INVALID"
+    return normalized_state
 
 
 def _existing_archive_names(archive_root: Path) -> set[str]:

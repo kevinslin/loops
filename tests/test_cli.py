@@ -317,6 +317,34 @@ def test_clean_uses_suffix_when_archive_target_exists(tmp_path: Path) -> None:
     assert str(archived_done.resolve()) in result.output
 
 
+def test_clean_archives_done_runs_even_with_schema_drift(tmp_path: Path) -> None:
+    runner = CliRunner()
+    loops_root = tmp_path / ".loops"
+    jobs_root = loops_root / "jobs"
+    jobs_root.mkdir(parents=True)
+
+    done_drift_run = jobs_root / "done-drift-run"
+    done_drift_run.mkdir()
+    (done_drift_run / "run.log").write_text("has output")
+    (done_drift_run / "agent.log").write_text("has output")
+    (done_drift_run / "run.json").write_text(
+        json.dumps(
+            {
+                "last_state": "DONE",
+                "needs_user_input": "not-a-bool",
+            }
+        )
+    )
+
+    result = runner.invoke(main, ["clean", "--loops-root", str(loops_root)])
+
+    assert result.exit_code == 0, result.output
+    assert not done_drift_run.exists()
+    archived_done = loops_root / ".archive" / "done-drift-run"
+    assert archived_done.exists()
+    assert (archived_done / "run.json").exists()
+
+
 def test_normalize_argv_preserves_known_subcommands() -> None:
     argv = ["python", "doctor"]
     assert _normalize_argv(argv) == argv
