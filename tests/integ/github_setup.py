@@ -15,6 +15,7 @@ STATUS_FIELD_NAME = "Status"
 READY_STATUS_NAME = "Todo"
 NON_READY_STATUS_CANDIDATES = ("Backlog", "Todo", "To Do", "In Progress")
 LABEL_COLOR = "1d76db"
+DEFAULT_GH_TIMEOUT_SECONDS = 60.0
 
 OwnerType = Literal["user", "organization"]
 
@@ -191,64 +192,110 @@ def create_live_issue_bundle(
     locator = parse_project_url(project_url)
     project = fetch_project_metadata(locator, token=token)
     run_label = build_run_label()
+    created_issues: list[IssueHandle] = []
+    created_item_ids: list[str] = []
 
-    ensure_repo_label(repo=repo, label=run_label, token=token)
+    try:
+        ensure_repo_label(repo=repo, label=run_label, token=token)
 
-    task1 = create_issue(
-        repo=repo,
-        title=f"[loops integ] task1 hello ({run_label})",
-        body=(
-            "Live Loops integration test task 1. "
-            "Expected payload: add a test file 'hello'."
-        ),
-        label=run_label,
-        token=token,
-    )
-    # Ensure distinct timestamps for oldest-first ordering tie-breaks.
-    time.sleep(1.0)
-    task2 = create_issue(
-        repo=repo,
-        title=f"[loops integ] task2 bye ({run_label})",
-        body=(
-            "Live Loops integration test task 2. "
-            "Expected payload: add a test file 'bye'."
-        ),
-        label=run_label,
-        token=token,
-    )
+        task1 = create_issue(
+            repo=repo,
+            title=f"[loops integ] task1 hello ({run_label})",
+            body=(
+                "Live Loops integration test task 1. "
+                "Expected payload: add a test file 'hello'."
+            ),
+            label=run_label,
+            token=token,
+        )
+        created_issues.append(task1)
+        # Ensure distinct timestamps for oldest-first ordering tie-breaks.
+        time.sleep(1.0)
+        task2 = create_issue(
+            repo=repo,
+            title=f"[loops integ] task2 bye ({run_label})",
+            body=(
+                "Live Loops integration test task 2. "
+                "Expected payload: add a test file 'bye'."
+            ),
+            label=run_label,
+            token=token,
+        )
+        created_issues.append(task2)
 
-    task1_item_id = add_issue_to_project(
-        project_id=project.project_id,
-        issue_node_id=task1.node_id,
-        token=token,
-    )
-    task2_item_id = add_issue_to_project(
-        project_id=project.project_id,
-        issue_node_id=task2.node_id,
-        token=token,
-    )
+        task1_item_id = add_issue_to_project(
+            project_id=project.project_id,
+            issue_node_id=task1.node_id,
+            token=token,
+        )
+        created_item_ids.append(task1_item_id)
+        task2_item_id = add_issue_to_project(
+            project_id=project.project_id,
+            issue_node_id=task2.node_id,
+            token=token,
+        )
+        created_item_ids.append(task2_item_id)
 
-    set_project_item_status(
-        project_id=project.project_id,
-        item_id=task1_item_id,
-        status_field_id=project.status_field_id,
-        option_id=project.ready_option_id,
-        token=token,
-    )
-    set_project_item_status(
-        project_id=project.project_id,
-        item_id=task2_item_id,
-        status_field_id=project.status_field_id,
-        option_id=project.non_ready_option_id,
-        token=token,
-    )
+        set_project_item_status(
+            project_id=project.project_id,
+            item_id=task1_item_id,
+            status_field_id=project.status_field_id,
+            option_id=project.ready_option_id,
+            token=token,
+        )
+        set_project_item_status(
+            project_id=project.project_id,
+            item_id=task2_item_id,
+            status_field_id=project.status_field_id,
+            option_id=project.non_ready_option_id,
+            token=token,
+        )
 
-    return LiveIssueBundle(
-        run_label=run_label,
-        task1=replace(task1, item_id=task1_item_id),
-        task2=replace(task2, item_id=task2_item_id),
-        project=project,
-    )
+        return LiveIssueBundle(
+            run_label=run_label,
+            task1=replace(task1, item_id=task1_item_id),
+            task2=replace(task2, item_id=task2_item_id),
+            project=project,
+        )
+    except Exception as exc:
+        rollback_errors = _cleanup_partial_setup(
+            project_id=project.project_id,
+            repo=repo,
+            issues=created_issues,
+            item_ids=created_item_ids,
+            token=token,
+        )
+        if rollback_errors:
+            raise RuntimeError(
+                "failed creating live issue bundle and partial cleanup failed: "
+                f"setup_error={exc}; cleanup_errors={'; '.join(rollback_errors)}"
+            ) from exc
+        raise
+
+
+def _cleanup_partial_setup(
+    *,
+    project_id: str,
+    repo: str,
+    issues: list[IssueHandle],
+    item_ids: list[str],
+    token: str,
+) -> list[str]:
+    errors: list[str] = []
+
+    for item_id in item_ids:
+        try:
+            delete_project_item(project_id=project_id, item_id=item_id, token=token)
+        except Exception as exc:  # pragma: no cover - defensive cleanup logging
+            errors.append(f"failed deleting project item {item_id}: {exc}")
+
+    for issue in issues:
+        try:
+            close_issue(repo=repo, issue_number=issue.number, token=token)
+        except Exception as exc:  # pragma: no cover - defensive cleanup logging
+            errors.append(f"failed closing issue {issue.number}: {exc}")
+
+    return errors
 
 
 def cleanup_live_issue_bundle(
@@ -517,19 +564,39 @@ def run_gh(
     token: str,
     check: bool,
 ) -> subprocess.CompletedProcess[str]:
+    timeout_seconds = _resolve_gh_timeout_seconds()
     env = os.environ.copy()
     env["GITHUB_TOKEN"] = token
     env["GH_TOKEN"] = token
-    result = subprocess.run(
-        ["gh", *args],
-        check=False,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
+    command = ["gh", *args]
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            "gh command timed out "
+            f"(timeout_seconds={timeout_seconds}) args={command!r}"
+        ) from exc
     if check and result.returncode != 0:
         raise RuntimeError(format_gh_error(args=result.args, result=result))
     return result
+
+
+def _resolve_gh_timeout_seconds() -> float:
+    raw = os.environ.get("LOOPS_INTEG_GH_TIMEOUT_SECONDS", str(DEFAULT_GH_TIMEOUT_SECONDS))
+    try:
+        timeout_seconds = float(raw)
+    except ValueError as exc:
+        raise ValueError("LOOPS_INTEG_GH_TIMEOUT_SECONDS must be a number") from exc
+    if timeout_seconds <= 0:
+        raise ValueError("LOOPS_INTEG_GH_TIMEOUT_SECONDS must be > 0")
+    return timeout_seconds
 
 
 def format_gh_error(*, args: list[str], result: subprocess.CompletedProcess[str]) -> str:

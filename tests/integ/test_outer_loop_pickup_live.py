@@ -38,11 +38,11 @@ def test_outer_loop_pickup_live(tmp_path: Path) -> None:
     require_binary("gh")
     require_binary("codex")
     token = require_github_token()
-
-    bundle = create_live_issue_bundle(token=token)
+    bundle = None
     cleanup_error: Exception | None = None
 
     try:
+        bundle = create_live_issue_bundle(token=token)
         loops_root = tmp_path / ".loops"
         config_path = loops_root / "config.json"
         write_live_config(config_path=config_path, run_label=bundle.run_label)
@@ -73,15 +73,22 @@ def test_outer_loop_pickup_live(tmp_path: Path) -> None:
         )
         run_record = json.loads((run_dir / "run.json").read_text())
         assert run_record["task"]["title"] == bundle.task1.title
+        assert run_record["needs_user_input"] is True
+        payload = run_record.get("needs_user_input_payload") or {}
+        message = payload.get("message")
+        assert isinstance(message, str)
+        assert "without opening a PR" in message
 
         run_log = (run_dir / "run.log").read_text()
         assert "[loops] codex turn: starting new codex session" in run_log
         assert "[loops] codex invocation failed" not in run_log
+        assert "[loops] codex exit code " not in run_log
     finally:
-        try:
-            cleanup_live_issue_bundle(bundle, token=token)
-        except Exception as exc:  # pragma: no cover - defensive cleanup
-            cleanup_error = exc
+        if bundle is not None:
+            try:
+                cleanup_live_issue_bundle(bundle, token=token)
+            except Exception as exc:  # pragma: no cover - defensive cleanup
+                cleanup_error = exc
 
     if cleanup_error is not None:
         raise cleanup_error
