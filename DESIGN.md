@@ -24,6 +24,30 @@ Close the loop on building a coding agent harness that can pick up tasks, execut
 - Automated merge/deploy; loops stops after cleanup.
 - Complex scheduling, task dependencies, or cross-repo orchestration.
 
+## 1.5 Core concepts
+
+- `Task`: Normalized provider work item that Loops can process.
+- `TaskProvider`: Provider adapter that returns normalized tasks via `poll(limit?)`.
+- `OuterLoop`: Poll-and-dispatch runtime that discovers ready tasks and schedules runs.
+- `Run`: One lifecycle execution context for one task, materialized as one run directory.
+- `InnerLoop`: State machine for a single run from first Codex turn to terminal completion.
+- `Turn`: One Codex subprocess invocation/return cycle inside the inner loop.
+- `RunRecord`: Persisted lifecycle snapshot in `run.json`.
+- `RunState`: Derived lifecycle state: `RUNNING | WAITING_ON_REVIEW | NEEDS_INPUT | PR_APPROVED | DONE`.
+- `OuterState`: Outer-loop dedupe ledger persisted in `.loops/outer_state.json`.
+- `StateSignal`: Append-only state intent entry in `state_signals.jsonl`, consumed by the inner loop.
+- `Handoff`: `NEEDS_INPUT` user-input collection path (`stdin_handler` or `gh_comment_handler`).
+- `Trigger`: Named inner-loop transition action such as `trigger:fix-pr`, `trigger:merge-pr`, and `trigger:auto-approve-eval`.
+
+Type/interface mapping (section 2 and runtime):
+- `Task` concept -> `Task` type.
+- `TaskProvider` concept -> `TaskProvider` interface (`poll(limit?) -> Promise<Task[]>`).
+- `RunRecord` concept -> `RunRecord` type and `run.json`.
+- `RunState` concept -> `RunState` type.
+- `OuterState` concept -> `.loops/outer_state.json` ledger (`OuterLoopState` runtime model).
+- `StateSignal` concept -> `.loops/jobs/.../state_signals.jsonl` queue (`loops.state_signal`).
+- `Handoff` concept -> `UserHandoffHandler`, `HandoffResult`, and `loop_config.handoff_handler`.
+
 ## 2. Constants and types
 
 ### Constants
@@ -192,7 +216,7 @@ Key types:
 - `OuterLoopConfig`: poll interval, parallelism, task status filter, force mode, and merge-gate controls (CI + auto-approve evaluation).
 - `InnerLoopConfig`: single prompt, required skills, user handoff handler.
 - `Task`: provider metadata (id, title, status, url, timestamps, optional repo).
-- `TaskProvider`: provider interface with `poll()`.
+- `TaskProvider`: provider interface with `poll(limit?)`.
 - `RunState`: `RUNNING | WAITING_ON_REVIEW | NEEDS_INPUT | PR_APPROVED | DONE`.
 - `RunRecord`: persisted run metadata for `run.json`.
 
