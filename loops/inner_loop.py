@@ -115,6 +115,10 @@ class CommentApprovalSettings:
     def enabled(self) -> bool:
         return bool(self.allowed_usernames)
 
+    @property
+    def review_actor_filter_enabled(self) -> bool:
+        return True
+
 
 @dataclass(frozen=True)
 class InnerLoopRuntimeContext:
@@ -1521,8 +1525,20 @@ def _filter_events_by_review_actor_allowlist(
     if not isinstance(events, list):
         return [], 0
     if not review_actor_usernames:
-        passthrough = [event for event in events if isinstance(event, dict)]
-        return passthrough, len(events) - len(passthrough)
+        return [], len(events)
+    if len(review_actor_usernames) == 1 and review_actor_usernames[0] == "*":
+        filtered: list[dict[str, Any]] = []
+        dropped = 0
+        for event in events:
+            if not isinstance(event, dict):
+                dropped += 1
+                continue
+            author_login = _extract_author_login(event)
+            if author_login is None:
+                dropped += 1
+                continue
+            filtered.append(event)
+        return filtered, dropped
     filtered: list[dict[str, Any]] = []
     dropped = 0
     for event in events:
@@ -1982,18 +1998,30 @@ def _fetch_pr_status_with_gh_with_context(
             f"dropped_latest_reviews={dropped_latest_reviews}"
         )
     )
+    wildcard_review_actor_allowlist = (
+        len(comment_approval.review_actor_usernames) == 1
+        and comment_approval.review_actor_usernames[0] == "*"
+    )
     review_events = _review_events_for_status(effective_payload)
-    if not comment_approval.review_actor_usernames:
-        review_status = _review_status_from_decision(review_decision_raw)
-        latest_review_submitted_at = _extract_latest_review_submitted_at(
-            payload, str(review_decision_raw or "")
-        )
+    review_status = _derive_review_status_from_reviews(effective_payload)
+    latest_changes_requested_at = _extract_latest_review_submitted_at_from_reviews(
+        review_events,
+        "CHANGES_REQUESTED",
+    )
+    if latest_changes_requested_at is None and wildcard_review_actor_allowlist:
         latest_changes_requested_at = _extract_latest_review_submitted_at(
             payload,
             "CHANGES_REQUESTED",
         )
+    if review_status == "open" and not review_events:
+        if wildcard_review_actor_allowlist:
+            review_status = _review_status_from_decision(review_decision_raw)
+            latest_review_submitted_at = _extract_latest_review_submitted_at(
+                payload, str(review_decision_raw or "")
+            )
+        else:
+            latest_review_submitted_at = None
     else:
-        review_status = _derive_review_status_from_reviews(effective_payload)
         review_state = (
             "APPROVED"
             if review_status == "approved"
@@ -2006,13 +2034,8 @@ def _fetch_pr_status_with_gh_with_context(
                 review_events,
                 review_state,
             )
-            latest_changes_requested_at = _extract_latest_review_submitted_at_from_reviews(
-                review_events,
-                "CHANGES_REQUESTED",
-            )
         else:
             latest_review_submitted_at = None
-            latest_changes_requested_at = None
     approved_by_comment = False
     approved_by = ""
     if review_status != "approved":
