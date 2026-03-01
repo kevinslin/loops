@@ -101,7 +101,7 @@ Top-level config file: `.loops/config.json`
 - `inner_loop` (object, optional when using outer CLI):
 - `inner_loop.command` (string or string[], required when `inner_loop` is provided)
 - `inner_loop.working_dir` (string, optional): relative paths are resolved from config directory.
-- `inner_loop.env` (object string->string, optional): extra environment variables.
+- `inner_loop.env` (object string->string, optional): run-scoped inner-loop runtime env map (for example `CODEX_CMD`, prompt-file envs, or subprocess tokens) persisted to each run's `inner_loop_runtime_config.json`.
 - `inner_loop.append_task_url` (boolean, default `true`)
 
 If `inner_loop` is omitted and you run via `python -m loops`, the CLI injects:
@@ -175,7 +175,7 @@ Notes:
 - URL matching for `--task-url` compares normalized URLs (scheme/host case-insensitive, query/fragment removed, trailing slash ignored).
 - `--task-url` bypasses ready-status filtering for the selected task and raises an error when the URL is missing or ambiguous in poll results.
 - Provider filters (`task_provider_config.filters`) are applied during provider polling before outer-loop status filtering.
-- `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`, `LOOPS_HANDOFF_HANDLER`, and `LOOPS_RUN_DIR` are injected into each launched inner-loop process.
+- Outer loop injects only `LOOPS_RUN_DIR` into each launched inner-loop process; run-scoped config values are written to `inner_loop_runtime_config.json`.
 - PR approval is detected from GitHub review decision or from allowlisted approval comments configured in `loop_config`, after optional review-actor filtering from `task_provider_config.allowlist`.
 
 ### `loops doctor`
@@ -202,7 +202,7 @@ Runs the inner loop for a single run directory.
 Options:
 
 - `--run-dir PATH`: Run directory path. If omitted, uses `LOOPS_RUN_DIR`.
-- `--prompt-file PATH`: Optional base prompt file. If omitted, inner loop checks `LOOPS_PROMPT_FILE`, then `CODEX_PROMPT_FILE`.
+- `--prompt-file PATH`: Optional base prompt file. If omitted, inner loop first checks run-scoped runtime config (`inner_loop_runtime_config.json`) and falls back to `LOOPS_PROMPT_FILE`, then `CODEX_PROMPT_FILE` for direct/manual runs.
 - `--reset`: Reset `run.json` orchestration/session/input state and exit.
 - `-h, --help`: Show help.
 
@@ -220,13 +220,13 @@ Behavior summary:
 - Reads and writes `run.json` as the authoritative state file.
 - Writes inner-loop orchestration logs to `run.log` and appends Codex output there.
 - Streams Codex/agent output to `agent.log`.
-- If `LOOPS_STREAM_LOGS_STDOUT=1` (set automatically by outer loop in `sync_mode=true`), also mirrors `run.log` lines to stdout.
-- Uses `CODEX_CMD` if set; default command is `codex exec --yolo`.
+- If run-scoped runtime config has `stream_logs_stdout=true` (written by outer loop in `sync_mode=true`), also mirrors `run.log` lines to stdout.
+- Uses `CODEX_CMD` from run-scoped runtime config when present; for direct/manual runs it falls back to process `CODEX_CMD`. Default command is `codex exec --yolo`.
 - Polls PR state with `gh pr view` when a PR is present.
 - In review polling, Loops treats a PR as approved if `reviewDecision=APPROVED` or if a matching approval comment from `loop_config.approval_comment_usernames` is newer than the latest `CHANGES_REQUESTED` review.
 - If `task_provider_config.allowlist` is configured, review polling filters PR comments/reviews to those actors before deriving feedback and review-status signals.
 - Applies pending signals from `state_signals.jsonl`.
-- Selects handoff behavior from `LOOPS_HANDOFF_HANDLER`:
+- Selects handoff behavior from run-scoped runtime config (or `LOOPS_HANDOFF_HANDLER` for direct/manual runs):
   - `stdin_handler`: prompt directly in terminal.
   - `gh_comment_handler`: comment on task issue and wait for `/loops-reply ...`.
 - `--reset` keeps task metadata and preserves an existing PR link (`pr.url`/`number`/`repo`) when present; non-link PR status fields are cleared.
@@ -269,11 +269,11 @@ Output on success:
 ## Environment variables
 
 - `GITHUB_TOKEN` or `GH_TOKEN`: required for GitHub Projects provider startup checks (`GH_TOKEN` is accepted as alias fallback).
-- `CODEX_CMD`: command used for Codex execution in inner loop. Default: `codex exec --yolo`.
+- `CODEX_CMD`: command used for Codex execution in direct/manual inner-loop runs. Default: `codex exec --yolo`.
 - `LOOPS_RUN_DIR`: run directory for `loops.inner_loop` and `loops.state_signal` when `--run-dir` is not passed.
-- `LOOPS_PROMPT_FILE` / `CODEX_PROMPT_FILE`: optional base prompt file for inner loop.
-- `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`: set by outer loop when launching inner loops.
-- `LOOPS_HANDOFF_HANDLER`: handoff strategy for inner loop (`stdin_handler` or `gh_comment_handler`). Outer loop sets this from `loop_config.handoff_handler`.
+- `LOOPS_PROMPT_FILE` / `CODEX_PROMPT_FILE`: optional base prompt file fallback for direct/manual inner-loop runs.
+- `LOOPS_HANDOFF_HANDLER`: handoff strategy fallback for direct/manual inner-loop runs (`stdin_handler` or `gh_comment_handler`).
+- `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`: legacy fallback metadata used only when `run.json` is missing during `loops inner-loop --reset`.
 
 ## Development
 

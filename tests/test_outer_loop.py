@@ -12,6 +12,10 @@ from loops.approval_config import (
     INNER_LOOP_APPROVAL_CONFIG_FILE,
 )
 from loops.handoff_handlers import HANDOFF_HANDLER_GH_COMMENT
+from loops.inner_loop_runtime_config import (
+    INNER_LOOP_RUNTIME_CONFIG_FILE,
+    read_inner_loop_runtime_config,
+)
 from loops.outer_loop import (
     InnerLoopCommandConfig,
     LATEST_LOOPS_CONFIG_VERSION,
@@ -605,8 +609,13 @@ def test_build_inner_loop_launcher_sync_mode_uses_subprocess_run(
 
     monkeypatch.setattr("loops.outer_loop.subprocess.run", fake_run)
     monkeypatch.setattr("loops.outer_loop.subprocess.Popen", fail_popen)
-    monkeypatch.delenv("LOOPS_APPROVAL_COMMENT_USERNAMES", raising=False)
-    monkeypatch.delenv("LOOPS_APPROVAL_COMMENT_PATTERN", raising=False)
+    monkeypatch.delenv("LOOPS_TASK_ID", raising=False)
+    monkeypatch.delenv("LOOPS_TASK_TITLE", raising=False)
+    monkeypatch.delenv("LOOPS_TASK_URL", raising=False)
+    monkeypatch.delenv("LOOPS_TASK_PROVIDER", raising=False)
+    monkeypatch.delenv("LOOPS_HANDOFF_HANDLER", raising=False)
+    monkeypatch.delenv("LOOPS_AUTO_APPROVE_ENABLED", raising=False)
+    monkeypatch.delenv("LOOPS_STREAM_LOGS_STDOUT", raising=False)
 
     launcher(run_dir, task)
 
@@ -615,12 +624,17 @@ def test_build_inner_loop_launcher_sync_mode_uses_subprocess_run(
     env = captured["env"]
     assert isinstance(env, dict)
     assert env["LOOPS_RUN_DIR"] == str(run_dir)
-    assert env["LOOPS_TASK_ID"] == task.id
-    assert env["LOOPS_HANDOFF_HANDLER"] == "stdin_handler"
-    assert env["LOOPS_AUTO_APPROVE_ENABLED"] == "0"
-    assert env["LOOPS_STREAM_LOGS_STDOUT"] == "1"
-    assert "LOOPS_APPROVAL_COMMENT_USERNAMES" not in env
-    assert "LOOPS_APPROVAL_COMMENT_PATTERN" not in env
+    assert "LOOPS_TASK_ID" not in env
+    assert "LOOPS_HANDOFF_HANDLER" not in env
+    assert "LOOPS_AUTO_APPROVE_ENABLED" not in env
+    assert "LOOPS_STREAM_LOGS_STDOUT" not in env
+    runtime_config = read_inner_loop_runtime_config(run_dir)
+    assert runtime_config is not None
+    assert runtime_config.handoff_handler == "stdin_handler"
+    assert runtime_config.auto_approve_enabled is False
+    assert runtime_config.stream_logs_stdout is True
+    assert runtime_config.env is None
+    assert (run_dir / INNER_LOOP_RUNTIME_CONFIG_FILE).exists()
 
 
 def test_build_inner_loop_launcher_sync_mode_interrupt_raises_typed_error(
@@ -651,6 +665,53 @@ def test_build_inner_loop_launcher_sync_mode_interrupt_raises_typed_error(
         launcher(run_dir, task)
 
     assert exc_info.value.run_dir == run_dir
+
+
+def test_build_inner_loop_launcher_writes_runtime_env_to_run_config(
+    tmp_path: Path, monkeypatch
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    task = make_task("1", "Ship it")
+    config = LoopsConfig(
+        version=LATEST_LOOPS_CONFIG_VERSION,
+        task_provider_id="github_projects_v2",
+        task_provider_config={"url": "https://github.com/orgs/acme/projects/1"},
+        loop_config=OuterLoopConfig(sync_mode=False),
+        inner_loop=InnerLoopCommandConfig(
+            command=["echo", "hello"],
+            env={"CODEX_CMD": "codex exec --json", "CUSTOM_VAR": "present"},
+            append_task_url=False,
+        ),
+    )
+    launcher = build_inner_loop_launcher(config)
+    captured: dict[str, object] = {}
+
+    def fake_popen(command, *, cwd, stdout, stderr, env):
+        captured["command"] = command
+        captured["cwd"] = cwd
+        captured["stdout"] = stdout
+        captured["stderr"] = stderr
+        captured["env"] = env
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("loops.outer_loop.subprocess.Popen", fake_popen)
+    monkeypatch.delenv("CODEX_CMD", raising=False)
+    monkeypatch.delenv("CUSTOM_VAR", raising=False)
+
+    launcher(run_dir, task)
+
+    runtime_config = read_inner_loop_runtime_config(run_dir)
+    assert runtime_config is not None
+    assert runtime_config.env == {
+        "CODEX_CMD": "codex exec --json",
+        "CUSTOM_VAR": "present",
+    }
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["LOOPS_RUN_DIR"] == str(run_dir)
+    assert "CODEX_CMD" not in env
+    assert "CUSTOM_VAR" not in env
 
 
 def test_run_once_sync_mode_streams_outer_logs_to_stdout(

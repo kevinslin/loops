@@ -28,7 +28,11 @@ from loops.handoff_handlers import (
     validate_handoff_handler_name,
     validate_handoff_handler_provider_compatibility,
 )
-from loops.logging_utils import STREAM_LOGS_STDOUT_ENV, format_log_timestamp
+from loops.inner_loop_runtime_config import (
+    InnerLoopRuntimeConfig,
+    write_inner_loop_runtime_config,
+)
+from loops.logging_utils import format_log_timestamp
 from loops.provider_types import LoopsProviderConfig, SecretRequirement
 from loops.providers.github_projects_v2 import (
     GITHUB_PROJECTS_V2_PROVIDER_ID,
@@ -316,6 +320,13 @@ class OuterLoopRunner:
         launch_error: str | None = None
         try:
             if to_launch:
+                _log(
+                    self.log_path,
+                    "run_once.launching "
+                    f"count={len(to_launch)} "
+                    f"tasks={_task_keys_preview([task for _, task in to_launch])}",
+                    stream_to_stdout=self.config.sync_mode,
+                )
                 self._launch_tasks(to_launch)
         except Exception as exc:
             launch_error = type(exc).__name__
@@ -529,20 +540,17 @@ def build_inner_loop_launcher(
 
         run_dir.mkdir(parents=True, exist_ok=True)
         run_log = run_dir / "run.log"
+        write_inner_loop_runtime_config(
+            run_dir,
+            InnerLoopRuntimeConfig(
+                handoff_handler=config.loop_config.handoff_handler,
+                auto_approve_enabled=config.loop_config.auto_approve_enabled,
+                stream_logs_stdout=sync_mode,
+                env=dict(inner_loop.env) if inner_loop.env else None,
+            ),
+        )
         env = os.environ.copy()
         env["LOOPS_RUN_DIR"] = str(run_dir)
-        env["LOOPS_TASK_ID"] = task.id
-        env["LOOPS_TASK_TITLE"] = task.title
-        env["LOOPS_TASK_URL"] = task.url
-        env["LOOPS_TASK_PROVIDER"] = task.provider_id
-        env["LOOPS_HANDOFF_HANDLER"] = config.loop_config.handoff_handler
-        env["LOOPS_AUTO_APPROVE_ENABLED"] = (
-            "1" if config.loop_config.auto_approve_enabled else "0"
-        )
-        if sync_mode:
-            env[STREAM_LOGS_STDOUT_ENV] = "1"
-        if inner_loop.env:
-            env.update(inner_loop.env)
         command = list(inner_loop.command)
         if inner_loop.append_task_url:
             command.append(task.url)

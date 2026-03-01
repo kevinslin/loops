@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, Optional, cast
+from typing import Any, Callable, Mapping, Optional, cast
 
 from loops.approval_config import (
     DEFAULT_APPROVAL_COMMENT_PATTERN,
@@ -26,7 +26,11 @@ from loops.handoff_handlers import (
     resolve_builtin_handoff_handler,
     validate_handoff_handler_name,
 )
-from loops.logging_utils import append_log
+from loops.inner_loop_runtime_config import (
+    InnerLoopRuntimeConfig,
+    read_inner_loop_runtime_config,
+)
+from loops.logging_utils import STREAM_LOGS_STDOUT_ENV, append_log
 from loops.run_record import (
     CodexSession,
     RunAutoApprove,
@@ -175,6 +179,7 @@ def reset_run_record(run_dir: Path) -> RunRecord:
     if task is None:
         task = _build_reset_task_from_env(resolved_run_dir)
 
+    runtime_config = _load_runtime_config(run_dir=resolved_run_dir, run_log=run_log)
     reset_record = RunRecord(
         task=task,
         pr=_build_reset_pr(existing_record.pr if existing_record is not None else None),
@@ -187,7 +192,12 @@ def reset_run_record(run_dir: Path) -> RunRecord:
     written = write_run_record(
         run_json_path,
         reset_record,
-        auto_approve_enabled=_load_auto_approve_enabled(),
+        auto_approve_enabled=_load_auto_approve_enabled(
+            runtime_auto_approve_enabled=(
+                runtime_config.auto_approve_enabled if runtime_config is not None else None
+            ),
+            allow_env_fallback=runtime_config is None,
+        ),
     )
     append_log(
         run_log,
@@ -221,8 +231,20 @@ def run_inner_loop(
     run_json_path = run_dir / "run.json"
     run_log = run_dir / "run.log"
     agent_log = run_dir / "agent.log"
-    base_prompt = _load_prompt_file(prompt_file)
-    command = _resolve_codex_command()
+    runtime_config = _load_runtime_config(run_dir=run_dir, run_log=run_log)
+    runtime_env = runtime_config.env if runtime_config is not None else None
+    _apply_runtime_env_overrides(runtime_env)
+    _configure_log_streaming(runtime_config)
+
+    base_prompt = _load_prompt_file(
+        prompt_file,
+        runtime_env=runtime_env,
+        allow_env_fallback=runtime_config is None,
+    )
+    command = _resolve_codex_command(
+        runtime_env=runtime_env,
+        allow_env_fallback=runtime_config is None,
+    )
     comment_approval = _load_comment_approval_settings(run_dir)
     if comment_approval.config_load_error is not None:
         append_log(
@@ -258,7 +280,12 @@ def run_inner_loop(
             return updated_pr
 
         pr_status_fetcher = _default_pr_status_fetcher
-    configured_handoff_handler = _resolve_configured_handoff_handler_name()
+    configured_handoff_handler = _resolve_configured_handoff_handler_name(
+        runtime_handoff_handler=(
+            runtime_config.handoff_handler if runtime_config is not None else None
+        ),
+        allow_env_fallback=runtime_config is None,
+    )
     initial_run_record = read_run_record(run_json_path)
     if user_handoff_handler is None:
         user_handoff_handler = resolve_builtin_handoff_handler(
@@ -278,7 +305,12 @@ def run_inner_loop(
     non_interactive_default_handoff = (
         using_default_handoff_handler and not _has_interactive_stdin()
     )
-    auto_approve_enabled = _load_auto_approve_enabled()
+    auto_approve_enabled = _load_auto_approve_enabled(
+        runtime_auto_approve_enabled=(
+            runtime_config.auto_approve_enabled if runtime_config is not None else None
+        ),
+        allow_env_fallback=runtime_config is None,
+    )
     runtime = InnerLoopRuntimeContext(
         run_dir=run_dir,
         run_json_path=run_json_path,
@@ -796,6 +828,39 @@ def _build_reset_pr(existing_pr: Optional[RunPR]) -> Optional[RunPR]:
     )
 
 
+def _load_runtime_config(
+    *,
+    run_dir: Path,
+    run_log: Path,
+) -> Optional[InnerLoopRuntimeConfig]:
+    try:
+        return read_inner_loop_runtime_config(run_dir)
+    except Exception as exc:
+        append_log(
+            run_log,
+            (
+                "[loops] failed to load run runtime config; "
+                f"falling back to environment defaults: {exc}"
+            ),
+        )
+        return None
+
+
+def _apply_runtime_env_overrides(runtime_env: Mapping[str, str] | None) -> None:
+    if not runtime_env:
+        return
+    os.environ.update(runtime_env)
+
+
+def _configure_log_streaming(runtime_config: Optional[InnerLoopRuntimeConfig]) -> None:
+    if runtime_config is None:
+        return
+    if runtime_config.stream_logs_stdout:
+        os.environ[STREAM_LOGS_STDOUT_ENV] = "1"
+        return
+    os.environ.pop(STREAM_LOGS_STDOUT_ENV, None)
+
+
 def _derive_state(
     run_record: RunRecord,
     *,
@@ -809,7 +874,15 @@ def _derive_state(
     )
 
 
-def _load_auto_approve_enabled() -> bool:
+def _load_auto_approve_enabled(
+    *,
+    runtime_auto_approve_enabled: bool | None = None,
+    allow_env_fallback: bool = True,
+) -> bool:
+    if runtime_auto_approve_enabled is not None:
+        return runtime_auto_approve_enabled
+    if not allow_env_fallback:
+        return False
     raw = os.environ.get("LOOPS_AUTO_APPROVE_ENABLED")
     if raw is None:
         return False
@@ -877,8 +950,18 @@ def _format_run_record_log_details(run_record: RunRecord) -> str:
     )
 
 
-def _resolve_codex_command() -> list[str]:
-    raw_command = os.environ.get("CODEX_CMD", "codex exec --yolo")
+def _resolve_codex_command(
+    *,
+    runtime_env: Mapping[str, str] | None = None,
+    allow_env_fallback: bool = True,
+) -> list[str]:
+    raw_command = None
+    if runtime_env is not None:
+        raw_command = runtime_env.get("CODEX_CMD")
+    elif allow_env_fallback:
+        raw_command = os.environ.get("CODEX_CMD")
+    if raw_command is None:
+        raw_command = "codex exec --yolo"
     command = shlex.split(raw_command)
     if not command:
         raise ValueError("CODEX_CMD cannot be empty")
@@ -932,11 +1015,22 @@ def _find_codex_token_index(command: list[str]) -> Optional[int]:
     return None
 
 
-def _load_prompt_file(prompt_file: Optional[Path]) -> Optional[str]:
+def _load_prompt_file(
+    prompt_file: Optional[Path],
+    *,
+    runtime_env: Mapping[str, str] | None = None,
+    allow_env_fallback: bool = True,
+) -> Optional[str]:
     if prompt_file is None:
-        prompt_path = os.environ.get("LOOPS_PROMPT_FILE") or os.environ.get(
-            "CODEX_PROMPT_FILE"
-        )
+        prompt_path = None
+        if runtime_env is not None:
+            prompt_path = runtime_env.get("LOOPS_PROMPT_FILE") or runtime_env.get(
+                "CODEX_PROMPT_FILE"
+            )
+        elif allow_env_fallback:
+            prompt_path = os.environ.get("LOOPS_PROMPT_FILE") or os.environ.get(
+                "CODEX_PROMPT_FILE"
+            )
         if prompt_path:
             prompt_file = Path(prompt_path)
     if prompt_file is None:
@@ -2343,8 +2437,17 @@ def _apply_pending_signals(run_dir: Path, run_record: RunRecord) -> RunRecord:
     return written
 
 
-def _resolve_configured_handoff_handler_name() -> str:
-    raw_handler = os.environ.get("LOOPS_HANDOFF_HANDLER", DEFAULT_HANDOFF_HANDLER)
+def _resolve_configured_handoff_handler_name(
+    runtime_handoff_handler: str | None = None,
+    *,
+    allow_env_fallback: bool = True,
+) -> str:
+    if runtime_handoff_handler is not None:
+        raw_handler = runtime_handoff_handler
+    elif allow_env_fallback:
+        raw_handler = os.environ.get("LOOPS_HANDOFF_HANDLER", DEFAULT_HANDOFF_HANDLER)
+    else:
+        raw_handler = DEFAULT_HANDOFF_HANDLER
     if not isinstance(raw_handler, str):
         raw_handler = DEFAULT_HANDOFF_HANDLER
     return validate_handoff_handler_name(raw_handler)
