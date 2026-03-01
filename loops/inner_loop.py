@@ -541,45 +541,41 @@ def _handle_waiting_on_review_state(
             action="review_feedback_codex_turn",
         )
 
-    if run_record.pr is not None and run_record.pr.review_status == "approved":
-        if run_record.pr.ci_status != "success":
-            append_log(
-                runtime.run_log,
-                (
-                    "[loops] review approved; waiting for green CI "
-                    f"(ci_status={run_record.pr.ci_status or 'unknown'})"
-                ),
-            )
-        elif runtime.auto_approve_enabled:
-            verdict = (
-                run_record.auto_approve.verdict
-                if run_record.auto_approve is not None
-                else "none"
-            )
-            if verdict == "none":
-                if control.auto_approve_attempted:
-                    append_log(
-                        runtime.run_log,
-                        (
-                            "[loops] auto-approve evaluation already attempted in this "
-                            "conversation; waiting for manual guidance"
-                        ),
-                    )
+    if runtime.auto_approve_enabled and run_record.pr is not None:
+        if run_record.pr.ci_status == "success":
+            review_status = run_record.pr.review_status or "open"
+            # Keep the old manual-approval behavior: if already approved, derive PR_APPROVED
+            # directly. Auto-approve evaluation is only for still-waiting review states.
+            if review_status not in {"approved", "changes_requested"}:
+                verdict = (
+                    run_record.auto_approve.verdict
+                    if run_record.auto_approve is not None
+                    else "none"
+                )
+                if verdict == "none":
+                    if control.auto_approve_attempted:
+                        append_log(
+                            runtime.run_log,
+                            (
+                                "[loops] auto-approve evaluation already attempted in this "
+                                "conversation; waiting for manual guidance"
+                            ),
+                        )
+                    else:
+                        run_record = _run_auto_approve_eval(
+                            run_record=run_record,
+                            runtime=runtime,
+                            control=control,
+                        )
+                        control.auto_approve_attempted = True
+                        control.backoff_seconds = runtime.initial_poll_seconds
+                        control.idle_polls = 0
+                        return StateHandlerResult(
+                            run_record=run_record,
+                            action="auto_approve_eval",
+                        )
                 else:
-                    run_record = _run_auto_approve_eval(
-                        run_record=run_record,
-                        runtime=runtime,
-                        control=control,
-                    )
                     control.auto_approve_attempted = True
-                    control.backoff_seconds = runtime.initial_poll_seconds
-                    control.idle_polls = 0
-                    return StateHandlerResult(
-                        run_record=run_record,
-                        action="auto_approve_eval",
-                    )
-            else:
-                control.auto_approve_attempted = True
 
     if (
         _derive_state(

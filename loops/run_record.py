@@ -236,11 +236,17 @@ def derive_run_state(
         return "DONE"
     if pr is None:
         return "RUNNING"
-    if pr.review_status == "approved" and pr.ci_status == "success":
-        if not auto_approve_enabled:
-            return "PR_APPROVED"
-        if auto_approve is not None and auto_approve.verdict == "APPROVE":
-            return "PR_APPROVED"
+    # Preserve the original manual approval path.
+    if pr.review_status == "approved":
+        return "PR_APPROVED"
+    # Additional auto-approve path.
+    if (
+        auto_approve_enabled
+        and pr.ci_status == "success"
+        and auto_approve is not None
+        and auto_approve.verdict == "APPROVE"
+    ):
+        return "PR_APPROVED"
     return "WAITING_ON_REVIEW"
 
 

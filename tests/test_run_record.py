@@ -49,7 +49,7 @@ def test_derive_run_state_pr_approved() -> None:
 
 
 def test_derive_run_state_waiting_on_review() -> None:
-    for status in ["open", "changes_requested", "approved"]:
+    for status in ["open", "changes_requested"]:
         pr = RunPR(url="https://example.com/pr/1", review_status=status)
         assert derive_run_state(pr, False) == "WAITING_ON_REVIEW"
 
@@ -161,20 +161,25 @@ def test_run_record_round_trips_auto_approve_payload(tmp_path) -> None:
     assert restored.last_state == "PR_APPROVED"
 
 
-def test_derive_run_state_requires_approve_verdict_when_auto_approve_enabled() -> None:
+def test_derive_run_state_keeps_manual_approval_path_when_auto_approve_enabled() -> None:
     pr = RunPR(
         url="https://example.com/pr/1",
         review_status="approved",
         ci_status="success",
     )
-    assert (
-        derive_run_state(
-            pr,
-            False,
-            auto_approve_enabled=True,
-            auto_approve=RunAutoApprove(verdict="none"),
-        )
-        == "WAITING_ON_REVIEW"
+    assert derive_run_state(
+        pr,
+        False,
+        auto_approve_enabled=True,
+        auto_approve=RunAutoApprove(verdict="none"),
+    ) == "PR_APPROVED"
+
+
+def test_derive_run_state_allows_auto_approve_path_when_ci_green() -> None:
+    pr = RunPR(
+        url="https://example.com/pr/1",
+        review_status="open",
+        ci_status="success",
     )
     assert (
         derive_run_state(
