@@ -342,6 +342,77 @@ def test_handle_waiting_on_review_state_runs_auto_approve_once(
     assert evaluations["count"] == 1
 
 
+def test_handle_waiting_on_review_state_runs_auto_approve_for_changes_requested_without_new_feedback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    reviewed_at = "2026-02-09T00:00:01Z"
+    _write_run_record(
+        run_dir,
+        pr=RunPR(
+            url="https://github.com/acme/api/pull/42",
+            number=42,
+            repo="acme/api",
+            review_status="changes_requested",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:00Z",
+            latest_review_submitted_at=reviewed_at,
+            review_addressed_at=reviewed_at,
+        ),
+    )
+    run_record = read_run_record(run_dir / "run.json")
+    runtime = _runtime_context(
+        run_dir,
+        auto_approve_enabled=True,
+        pr_status_fetcher=lambda pr: RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="changes_requested",
+            ci_status="success",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:02Z",
+            latest_review_submitted_at=reviewed_at,
+            review_addressed_at=reviewed_at,
+        ),
+    )
+    control = inner_loop_module.LoopControlState(backoff_seconds=5.0)
+    evaluations = {"count": 0}
+
+    def fake_run_auto_approve_eval(*, run_record, runtime, control):
+        evaluations["count"] += 1
+        return write_run_record(
+            runtime.run_json_path,
+            replace(
+                run_record,
+                auto_approve=RunAutoApprove(
+                    verdict="REJECT",
+                    impact=2,
+                    risk=4,
+                    size=2,
+                    judged_at="2026-02-09T00:00:03Z",
+                    summary="Too risky to auto-merge.",
+                ),
+            ),
+            auto_approve_enabled=runtime.auto_approve_enabled,
+        )
+
+    monkeypatch.setattr(inner_loop_module, "_run_auto_approve_eval", fake_run_auto_approve_eval)
+
+    result = inner_loop_module._handle_waiting_on_review_state(
+        run_record=run_record,
+        runtime=runtime,
+        control=control,
+    )
+
+    assert result.action == "auto_approve_eval"
+    assert evaluations["count"] == 1
+    assert result.run_record.auto_approve is not None
+    assert result.run_record.auto_approve.verdict == "REJECT"
+
+
 def test_handle_waiting_on_review_state_skips_auto_approve_until_ci_green(
     tmp_path: Path,
     monkeypatch,
@@ -1668,6 +1739,78 @@ def test_invoke_codex_retries_without_resume_on_resume_failure(
         ["codex", "exec"],
     ]
     assert inner_loop_module._extract_session_id(output) == "session-fresh"
+
+
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        ("work complete\n<state>NEEDS_INPUT</state>\n", "NEEDS_INPUT"),
+        ("work complete\n<state>needs_input</>\n", "NEEDS_INPUT"),
+        ("work complete\n   <state>WAITING_ON_REVIEW</state>   \n", "WAITING_ON_REVIEW"),
+        ("work complete\n<state>NEEDS_INPUT</state>\nfollow up\n", None),
+        ("work complete\nstatus: <state>WAITING_ON_REVIEW</state>\n", None),
+        ("work complete\n<state>RUNNING</state> <state>NEEDS_INPUT</state>\n", None),
+        ("work complete\n<state>UNKNOWN</state>\n", None),
+    ],
+)
+def test_extract_trailing_state_marker(output: str, expected: str | None) -> None:
+    assert inner_loop_module._extract_trailing_state_marker(output) == expected
+
+
+def test_run_codex_turn_sets_needs_input_from_trailing_state_marker(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        pr=RunPR(
+            url="https://github.com/acme/api/pull/42",
+            number=42,
+            repo="acme/api",
+            review_status="open",
+        ),
+    )
+
+    def fake_invoke_codex(
+        *,
+        base_command: list[str],
+        prompt: str,
+        agent_log: Path,
+        run_log: Path,
+        codex_session: inner_loop_module.CodexSession | None,
+        turn_label: str,
+    ) -> tuple[str, int, bool]:
+        del base_command, prompt, agent_log, run_log, codex_session, turn_label
+        return (
+            json.dumps({"session_id": "session-2"})
+            + "\nOpened PR https://github.com/acme/api/pull/42\n<state>NEEDS_INPUT</state>\n",
+            0,
+            False,
+        )
+
+    monkeypatch.setattr(inner_loop_module, "_invoke_codex", fake_invoke_codex)
+    run_json_path = run_dir / "run.json"
+    updated = inner_loop_module._run_codex_turn(
+        run_json_path=run_json_path,
+        run_log=run_dir / "run.log",
+        agent_log=run_dir / "agent.log",
+        run_record=read_run_record(run_json_path),
+        command=["codex", "exec"],
+        base_prompt=None,
+        review_feedback=False,
+    )
+
+    assert updated.needs_user_input is True
+    assert updated.needs_user_input_payload == {
+        "message": "Codex requested user input via trailing state marker. Provide guidance."
+    }
+    assert updated.pr is not None
+    assert updated.pr.url == "https://github.com/acme/api/pull/42"
+    assert updated.codex_session is not None
+    assert updated.codex_session.id == "session-2"
+    assert "codex requested state via marker: NEEDS_INPUT" in (run_dir / "run.log").read_text()
 
 
 def test_run_codex_turn_clears_stale_session_after_failed_resume_fallback(
