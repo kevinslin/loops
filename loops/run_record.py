@@ -8,6 +8,8 @@ from typing import Any, Dict, Literal, Mapping, Optional
 
 RunState = Literal["RUNNING", "WAITING_ON_REVIEW", "NEEDS_INPUT", "PR_APPROVED", "DONE"]
 ReviewStatus = Literal["open", "changes_requested", "approved"]
+CIStatus = Literal["pending", "success", "failure"]
+AutoApproveVerdict = Literal["none", "APPROVE", "REJECT", "ESCALATE"]
 MAX_NEEDS_USER_INPUT_PAYLOAD_BYTES = 16 * 1024
 
 
@@ -56,6 +58,8 @@ class RunPR:
     number: Optional[int] = None
     repo: Optional[str] = None
     review_status: Optional[ReviewStatus] = None
+    ci_status: Optional[CIStatus] = None
+    ci_last_checked_at: Optional[str] = None
     merged_at: Optional[str] = None
     last_checked_at: Optional[str] = None
     latest_review_submitted_at: Optional[str] = None
@@ -68,6 +72,8 @@ class RunPR:
             number=data.get("number"),
             repo=data.get("repo"),
             review_status=data.get("review_status"),
+            ci_status=data.get("ci_status"),
+            ci_last_checked_at=data.get("ci_last_checked_at"),
             merged_at=data.get("merged_at"),
             last_checked_at=data.get("last_checked_at"),
             latest_review_submitted_at=data.get("latest_review_submitted_at"),
@@ -82,6 +88,10 @@ class RunPR:
             payload["repo"] = self.repo
         if self.review_status is not None:
             payload["review_status"] = self.review_status
+        if self.ci_status is not None:
+            payload["ci_status"] = self.ci_status
+        if self.ci_last_checked_at is not None:
+            payload["ci_last_checked_at"] = self.ci_last_checked_at
         if self.merged_at is not None:
             payload["merged_at"] = self.merged_at
         if self.last_checked_at is not None:
@@ -90,6 +100,79 @@ class RunPR:
             payload["latest_review_submitted_at"] = self.latest_review_submitted_at
         if self.review_addressed_at is not None:
             payload["review_addressed_at"] = self.review_addressed_at
+        return payload
+
+
+@dataclass(frozen=True)
+class RunAutoApprove:
+    verdict: AutoApproveVerdict = "none"
+    impact: Optional[int] = None
+    risk: Optional[int] = None
+    size: Optional[int] = None
+    judged_at: Optional[str] = None
+    summary: Optional[str] = None
+
+    @staticmethod
+    def _parse_score(raw: Any, *, key: str) -> Optional[int]:
+        if raw is None:
+            return None
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            raise TypeError(f'payload["auto_approve"]["{key}"] must be an integer')
+        if raw < 1 or raw > 5:
+            raise ValueError(f'payload["auto_approve"]["{key}"] must be between 1 and 5')
+        return raw
+
+    @staticmethod
+    def from_dict(data: Mapping[str, Any]) -> "RunAutoApprove":
+        verdict_raw = data.get("verdict", "none")
+        if verdict_raw is None:
+            verdict: AutoApproveVerdict = "none"
+        elif isinstance(verdict_raw, str):
+            stripped = verdict_raw.strip()
+            if not stripped:
+                verdict = "none"
+            elif stripped.lower() == "none":
+                verdict = "none"
+            else:
+                normalized = stripped.upper()
+                if normalized not in {"APPROVE", "REJECT", "ESCALATE"}:
+                    raise ValueError(
+                        'payload["auto_approve"]["verdict"] must be one of '
+                        '"none", "APPROVE", "REJECT", or "ESCALATE"'
+                    )
+                verdict = normalized
+        else:
+            raise TypeError('payload["auto_approve"]["verdict"] must be a string')
+
+        judged_at = data.get("judged_at")
+        if judged_at is not None and not isinstance(judged_at, str):
+            raise TypeError('payload["auto_approve"]["judged_at"] must be a string')
+
+        summary = data.get("summary")
+        if summary is not None and not isinstance(summary, str):
+            raise TypeError('payload["auto_approve"]["summary"] must be a string')
+
+        return RunAutoApprove(
+            verdict=verdict,
+            impact=RunAutoApprove._parse_score(data.get("impact"), key="impact"),
+            risk=RunAutoApprove._parse_score(data.get("risk"), key="risk"),
+            size=RunAutoApprove._parse_score(data.get("size"), key="size"),
+            judged_at=judged_at,
+            summary=summary,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"verdict": self.verdict}
+        if self.impact is not None:
+            payload["impact"] = self.impact
+        if self.risk is not None:
+            payload["risk"] = self.risk
+        if self.size is not None:
+            payload["size"] = self.size
+        if self.judged_at is not None:
+            payload["judged_at"] = self.judged_at
+        if self.summary is not None:
+            payload["summary"] = self.summary
         return payload
 
 
@@ -120,6 +203,7 @@ class RunRecord:
     needs_user_input: bool
     last_state: RunState
     updated_at: str
+    auto_approve: Optional[RunAutoApprove] = None
     needs_user_input_payload: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -129,6 +213,9 @@ class RunRecord:
             "codex_session": (
                 self.codex_session.to_dict() if self.codex_session is not None else None
             ),
+            "auto_approve": (
+                self.auto_approve.to_dict() if self.auto_approve is not None else None
+            ),
             "needs_user_input": self.needs_user_input,
             "needs_user_input_payload": self.needs_user_input_payload,
             "last_state": self.last_state,
@@ -136,16 +223,31 @@ class RunRecord:
         }
 
 
-def derive_run_state(pr: Optional[RunPR], needs_user_input: bool) -> RunState:
+def derive_run_state(
+    pr: Optional[RunPR],
+    needs_user_input: bool,
+    *,
+    auto_approve_enabled: bool = False,
+    auto_approve: Optional[RunAutoApprove] = None,
+) -> RunState:
     if needs_user_input:
         return "NEEDS_INPUT"
     if pr is not None and pr.merged_at is not None:
         return "DONE"
-    if pr is not None and pr.review_status == "approved":
+    if pr is None:
+        return "RUNNING"
+    # Preserve the original manual approval path.
+    if pr.review_status == "approved":
         return "PR_APPROVED"
-    if pr is not None:
-        return "WAITING_ON_REVIEW"
-    return "RUNNING"
+    # Additional auto-approve path.
+    if (
+        auto_approve_enabled
+        and pr.ci_status == "success"
+        and auto_approve is not None
+        and auto_approve.verdict == "APPROVE"
+    ):
+        return "PR_APPROVED"
+    return "WAITING_ON_REVIEW"
 
 
 def _now_iso() -> str:
@@ -196,6 +298,11 @@ def read_run_record(path: str | Path) -> RunRecord:
             if payload.get("codex_session")
             else None
         ),
+        auto_approve=(
+            RunAutoApprove.from_dict(payload["auto_approve"])
+            if payload.get("auto_approve")
+            else None
+        ),
         needs_user_input=needs_user_input,
         needs_user_input_payload=needs_user_input_payload,
         last_state=payload["last_state"],
@@ -203,7 +310,12 @@ def read_run_record(path: str | Path) -> RunRecord:
     )
 
 
-def write_run_record(path: str | Path, record: RunRecord) -> RunRecord:
+def write_run_record(
+    path: str | Path,
+    record: RunRecord,
+    *,
+    auto_approve_enabled: bool = False,
+) -> RunRecord:
     needs_user_input_payload = _validate_needs_user_input_payload(
         record.needs_user_input_payload
     )
@@ -211,9 +323,15 @@ def write_run_record(path: str | Path, record: RunRecord) -> RunRecord:
         task=record.task,
         pr=record.pr,
         codex_session=record.codex_session,
+        auto_approve=record.auto_approve,
         needs_user_input=record.needs_user_input,
         needs_user_input_payload=needs_user_input_payload,
-        last_state=derive_run_state(record.pr, record.needs_user_input),
+        last_state=derive_run_state(
+            record.pr,
+            record.needs_user_input,
+            auto_approve_enabled=auto_approve_enabled,
+            auto_approve=record.auto_approve,
+        ),
         updated_at=_now_iso(),
     )
     target = Path(path)

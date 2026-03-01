@@ -55,6 +55,8 @@ type OuterLoopConfig = {
     approval_comment_usernames: string[]
     // regex pattern for approval text in comments/reviews from allowlisted usernames
     approval_comment_pattern: string
+    // run ag-judge before merge when review and CI gates are satisfied
+    auto_approve_enabled: boolean
     // NEEDS_INPUT handoff strategy
     // stdin_handler | gh_comment_handler
     handoff_handler: string
@@ -96,7 +98,15 @@ type Task = {
 
 }
 
-type RunState = "RUNNING" | "WAITING_ON_REVIEW" | "NEEDS_INPUT" | "PR_APPROVED" | "DONE"
+type RunState =
+    | "RUNNING"
+    | "WAITING_ON_REVIEW"
+    | "NEEDS_INPUT"
+    | "PR_APPROVED"
+    | "DONE"
+
+type CIStatus = "pending" | "success" | "failure" | "unknown"
+type AutoApproveVerdict = "none" | "APPROVE" | "REJECT" | "ESCALATE"
 
 type RunPR = {
     url: string
@@ -104,12 +114,24 @@ type RunPR = {
     repo?: string
     // open | changes_requested | approved
     review_status?: "open" | "changes_requested" | "approved"
+    // pending | success | failure | unknown
+    ci_status?: CIStatus
+    ci_last_checked_at?: string
     merged_at?: string
     last_checked_at?: string
     // timestamp of latest GitHub review event matching the current reviewDecision
     latest_review_submitted_at?: string
     // timestamp of the review event last addressed by trigger:fix-pr
     review_addressed_at?: string
+}
+
+type RunAutoApprove = {
+    verdict?: AutoApproveVerdict
+    impact?: 1 | 2 | 3 | 4 | 5
+    risk?: 1 | 2 | 3 | 4 | 5
+    size?: 1 | 2 | 3 | 4 | 5
+    judged_at?: string
+    summary?: string
 }
 
 type CodexSession = {
@@ -120,6 +142,7 @@ type CodexSession = {
 type RunRecord = {
     task: Task
     pr?: RunPR
+    auto_approve?: RunAutoApprove
     codex_session?: CodexSession
     needs_user_input: boolean
     last_state: RunState
@@ -166,7 +189,7 @@ type LoopsProviderConfig = {
 
 
 Key types:
-- `OuterLoopConfig`: poll interval, parallelism, task status filter, force mode.
+- `OuterLoopConfig`: poll interval, parallelism, task status filter, force mode, and merge-gate controls (CI + auto-approve evaluation).
 - `InnerLoopConfig`: single prompt, required skills, user handoff handler.
 - `Task`: provider metadata (id, title, status, url, timestamps, optional repo).
 - `TaskProvider`: provider interface with `poll()`.
@@ -200,6 +223,7 @@ type OuterLoopConfig = {
     task_ready_status?: string
     approval_comment_usernames?: string[]
     approval_comment_pattern?: string
+    auto_approve_enabled?: boolean
     handoff_handler?: string
 }
 
@@ -234,6 +258,8 @@ Notes:
 - `loop_config` defaults are sourced from one canonical implementation in `loops.outer_loop` and reused by `loops init`, `loops doctor`, and runtime config loading.
 - `loop_config.approval_comment_usernames` allows comment-based PR approval overrides from specific usernames.
 - `loop_config.approval_comment_pattern` controls which comment bodies count as approval signals.
+- `loop_config.auto_approve_enabled` enables the auto-approve gate after review approval.
+- Auto-approve defaults are fixed when enabled: CI green is required and `ag-judge` uses `references/jb.coding.md`.
 - `loop_config.handoff_handler` selects built-in NEEDS_INPUT handoff behavior (`stdin_handler` default, `gh_comment_handler` for issue-comment handoff).
 - `inner_loop` is optional when running via the CLI; if omitted, the CLI uses
   a canonical default builder for `python -m loops.inner_loop` with `append_task_url=false`.
@@ -319,7 +345,8 @@ Task provider (GitHub Projects V2)
 
 `run.json` fields (minimal set):
 - `task`: serialized `Task` from the provider.
-- `pr`: `{ url, number, repo, review_status, merged_at, last_checked_at }`.
+- `pr`: `{ url, number, repo, review_status, ci_status, ci_last_checked_at, merged_at, last_checked_at }`.
+- `auto_approve`: `{ verdict, impact, risk, size, judged_at, summary }`.
 - `pr.merged_at`: optional ISO timestamp when the PR was merged.
 - `codex_session`: `{ id, last_prompt }`.
 - `needs_user_input`: boolean flag (readers must validate this is a boolean and reject malformed values).
@@ -327,7 +354,7 @@ Task provider (GitHub Projects V2)
 - `last_state`: cached derived state.
 - `updated_at`: ISO timestamp.
 
-`last_state` is derived from `pr.review_status` and `needs_user_input` and is stored as a cache for easy inspection.
+`last_state` is derived from PR review status plus the single `needs_user_input` flag. CI/auto-approve data affects review-to-approved progression inside `WAITING_ON_REVIEW`.
 
 `state_signals.jsonl`:
 - Append-only queue of state intents written by model tooling.
@@ -370,17 +397,17 @@ The outer loop uses `outer_state.json` as a dedupe ledger to avoid re-processing
 | `RUNNING` | LLM executing the task with the current prompt context. |
 | `NEEDS_INPUT` | LLM needs human input before continuing. |
 | `WAITING_ON_REVIEW` | PR submitted. Polling for reviewer feedback. |
-| `PR_APPROVED` | PR approved. Running merge and post-merge cleanup. |
+| `PR_APPROVED` | Review + CI + auto-approve gates satisfied. Running merge and post-merge cleanup. |
 | `DONE` | PR merged. Terminal state. |
 
 #### State derivation
 - `NEEDS_INPUT` if `needs_user_input == true`.
 - `DONE` if a PR exists and `merged_at` is set (merged).
-- `PR_APPROVED` if a PR exists, `review_status` is approved, and `needs_user_input == false`.
-- `WAITING_ON_REVIEW` if a PR exists and `review_status` is not approved.
-- `RUNNING` otherwise.
+- `RUNNING` if no PR exists.
+- `PR_APPROVED` if a PR exists, `review_status` is approved, `ci_status` is success, and either `auto_approve_enabled=false` or `auto_approve.verdict=="APPROVE"`.
+- `WAITING_ON_REVIEW` if a PR exists and the `PR_APPROVED` predicate above is not met.
 
-State derivation uses only PR status plus the single `needs_user_input` flag; `last_state` is cached in `run.json`.
+State derivation uses PR status plus the single `needs_user_input` flag; CI/auto-approve checks gate promotion from `WAITING_ON_REVIEW` to `PR_APPROVED`.
 
 Precedence rule: `NEEDS_INPUT` has priority over `DONE`; if `needs_user_input=true`, state is `NEEDS_INPUT` even when `pr.merged_at` is set.
 
@@ -393,9 +420,14 @@ Precedence rule: `NEEDS_INPUT` has priority over `DONE`; if `needs_user_input=tr
 **Loop** (read `run.json`, derive state, dispatch):
 
 - **If `NEEDS_INPUT`**: send signal S:NEEDS_INPUT, payload: `{ questions }`. Block until user responds. Clear flag, persist answer, resume LLM. Retry: still wait for input.
-- **If PR submitted → `WAITING_ON_REVIEW`**: set S:WAITING_ON_REVIEW. Run poll script. If changes requested AND `latest_review_submitted_at > review_addressed_at` (new review event), exec trigger:fix-pr and record `review_addressed_at`. Also, if status is open but a new feedback event is observed (`latest_review_submitted_at > review_addressed_at`) from the newest timestamp between `COMMENTED` PR review events and plain PR discussion comments, resume trigger:fix-pr and record `review_addressed_at` so the same feedback is not reprocessed. If approved, transition to PR_APPROVED. Retry: continue polling.
-- **If PR approved → `PR_APPROVED`**: set S:PR_APPROVED. Run trigger:merge-pr. On success, derive DONE from `pr.merged_at`. Retry: re-run trigger (idempotent).
-- **Bounded wait guardrail (review + approved states)**: both `WAITING_ON_REVIEW` and `PR_APPROVED` use idle-poll escalation. If status polling fails repeatedly or the state does not progress for `max_idle_polls` consecutive polls (default `20`), force `NEEDS_INPUT` with a manual-guidance payload. Poll backoff grows from `initial_poll_seconds` (default `5s`) up to `max_poll_seconds` (default `60s`).
+- **If PR submitted → `WAITING_ON_REVIEW`**: set S:WAITING_ON_REVIEW. Run review poll script. If changes requested AND `latest_review_submitted_at > review_addressed_at` (new review event), exec trigger:fix-pr and record `review_addressed_at`. Also, if status is open but a new feedback event is observed (`latest_review_submitted_at > review_addressed_at`) from the newest timestamp between `COMMENTED` PR review events and plain PR discussion comments, resume trigger:fix-pr and record `review_addressed_at` so the same feedback is not reprocessed.
+  - When review is approved, poll CI and persist `pr.ci_status`.
+  - CI gate is always required (`ci_status == success`) before progression.
+  - If CI is green and `auto_approve_enabled=true` and `run_record.auto_approve` is unset, run trigger:auto-approve-eval once (judge book fixed to `references/jb.coding.md`) and persist `{ verdict, impact, risk, size, judged_at, summary }` on `RunRecord`.
+  - `auto_approve.verdict == APPROVE` allows next-cycle transition to `PR_APPROVED`.
+  - `auto_approve.verdict in {REJECT, ESCALATE}` remains blocked in `WAITING_ON_REVIEW` and does not re-run auto-approve.
+- **If all gates pass → `PR_APPROVED`**: set S:PR_APPROVED. Run trigger:merge-pr. On success, derive DONE from `pr.merged_at`. Retry: re-run trigger (idempotent).
+- **Bounded wait guardrail (review + approved states)**: `WAITING_ON_REVIEW` and `PR_APPROVED` use idle-poll escalation. If status polling fails repeatedly or the state does not progress for `max_idle_polls` consecutive polls (default `20`), force `NEEDS_INPUT` with a manual-guidance payload. Poll backoff grows from `initial_poll_seconds` (default `5s`) up to `max_poll_seconds` (default `60s`).
 
 ### State transitions (ASCII)
 
@@ -427,6 +459,11 @@ Precedence rule: `NEEDS_INPUT` has priority over `DONE`; if `needs_user_input=tr
                     +---->|    DONE     |
                           +-------------+
 
+Inline gate while in WAITING_ON_REVIEW when review is approved:
+  - CI must be green (`pr.ci_status == success`)
+  - if `auto_approve_enabled=true` and `auto_approve` is unset, run trigger:auto-approve-eval once
+  - `auto_approve.verdict == APPROVE` required before transitioning to PR_APPROVED
+
 From any non-DONE state:
   needs_user_input = true  ->  NEEDS_INPUT
 ```
@@ -444,7 +481,7 @@ schedules next poll timing. Handler boundaries in `loops/inner_loop.py` are:
 | `RUNNING` (no state file) | State file missing | Start fresh with prompt |
 | `RUNNING` (session recorded) | Resume existing session | Resume session ID and send the next state-tagged prompt |
 | `NEEDS_INPUT` | Still waiting | Re-enter wait; do not re-send signal |
-| `WAITING_ON_REVIEW` | Polling interrupted | Continue polling PR status |
+| `WAITING_ON_REVIEW` | Polling interrupted | Continue polling PR status, including CI status updates and a single auto-approve evaluation per conversation when eligible |
 | `PR_APPROVED` | Merge may be partial | Re-run trigger:merge-pr (idempotent); if merge remains stalled past idle threshold, escalate to `NEEDS_INPUT` |
 | `DONE` | Terminal | Exit immediately |
 
@@ -462,6 +499,7 @@ schedules next poll timing. Handler boundaries in `loops/inner_loop.py` are:
 | Trigger | Invoked from | Description |
 |---------|-------------|-------------|
 | `trigger:fix-pr` | `WAITING_ON_REVIEW` | Resume Codex to address review feedback and update the PR. |
+| `trigger:auto-approve-eval` | `WAITING_ON_REVIEW` | Run `$ag-judge` once after review approval + green CI and persist verdict/scores on `RunRecord.auto_approve`. |
 | `trigger:merge-pr` | `PR_APPROVED` | Merge the PR and run post-merge cleanup. Idempotent. |
 
 ### CLI callers
@@ -485,6 +523,7 @@ Use dev.do to implement the task, open a PR, wait only for review from the a-rev
 You are running inside the loops test harness. NEVER wait for human PR review/comments inside the agent; the harness monitors review activity and will re-invoke you when feedback arrives.
 The current inner-loop state is passed via a trailing <state>...</state> tag; initial state is <state>RUNNING</state>.
 If you need input from user, print what you need help with and end current conversation with <state>NEEDS_INPUT</>
+When review is approved and CI is green, if auto-approve is enabled and no verdict exists yet, run $ag-judge once (judge book: references/jb.coding.md) and return one verdict: APPROVE, REJECT, or ESCALATE.
 Do not merge until the state is exactly <state>PR_APPROVED</state>.
 Task: [task_url]
 ```
@@ -512,6 +551,13 @@ PR [pr_url] has new discussion comments. Review the feedback, address requested 
 <state>WAITING_ON_REVIEW</state>
 ```
 
+3. Auto-approval evaluation prompt (inline within `WAITING_ON_REVIEW`):
+
+```text
+PR [pr_url] has review approval and green CI. Run $ag-judge (judge book: references/jb.coding.md) against current diff, review threads, and CI evidence, then return one verdict plus impact/risk/size scores.
+<state>WAITING_ON_REVIEW</state>
+```
+
 State-to-prompt mapping:
 
 | Derived state | Prompt text added after base template | Final state tag |
@@ -520,6 +566,7 @@ State-to-prompt mapping:
 | `WAITING_ON_REVIEW` (no new feedback event) | No Codex prompt is built; inner loop only polls PR state. | N/A |
 | `WAITING_ON_REVIEW` (changes requested review) | `PR [pr_url] has changes requested. Address review feedback, update the PR, and summarize what changed.` | `<state>WAITING_ON_REVIEW</state>` |
 | `WAITING_ON_REVIEW` (new discussion comments) | `PR [pr_url] has new discussion comments. Review the feedback, address requested changes, update the PR, and summarize what changed. If there are no changes requested, summarize that and end the current turn.` | `<state>WAITING_ON_REVIEW</state>` |
+| `WAITING_ON_REVIEW` (auto-approve evaluation) | `PR [pr_url] has review approval and green CI. Run $ag-judge (judge book: references/jb.coding.md) against current diff, review threads, and CI evidence, then return one verdict plus impact/risk/size scores.` | `<state>WAITING_ON_REVIEW</state>` |
 | `PR_APPROVED` | `PR is approved. Run cleanup now and report completion.` | `<state>PR_APPROVED</state>` |
 | `NEEDS_INPUT` | No Codex prompt is built while waiting. The handoff handler shows `needs_user_input_payload.message` to the user instead. | N/A |
 | `DONE` | No prompt; loop exits. | N/A |
@@ -529,19 +576,23 @@ Prompt-related configuration and runtime inputs:
 - `loops inner-loop --prompt-file PATH`: prepend file contents to every Codex prompt for the run.
 - `LOOPS_PROMPT_FILE`: env fallback prompt file when `--prompt-file` is unset.
 - `CODEX_PROMPT_FILE`: second env fallback when `LOOPS_PROMPT_FILE` is unset.
+- `loop_config.auto_approve_enabled`: enables one-time auto-approve evaluation after review approval.
+- Auto-approve defaults are fixed in runtime design: require green CI and judge with `references/jb.coding.md`.
 - `loop_config.handoff_handler` (`stdin_handler` or `gh_comment_handler`): changes where NEEDS_INPUT prompt messages are delivered.
 - `loops signal --message/--context`: sets `needs_user_input_payload` used by NEEDS_INPUT handoff prompts.
 - `task.url` in `run.json`: inserted into `Task: [task_url]`.
 - Handoff response text: appended as `User input:` in the next Codex prompt.
 
-## 7. PR review handling
+## 7. PR review and merge gate handling
 
 - When a PR is opened, the inner loop records it in `run.json`.
 - The inner loop polls PR status and updates `pr.review_status`.
 - When a review requests changes, the inner loop records `latest_review_submitted_at` (the review's `submittedAt` timestamp from GitHub) and invokes Codex to address the feedback. After Codex runs, `review_addressed_at` is set to `latest_review_submitted_at`. On subsequent polls, the loop only re-invokes Codex if `latest_review_submitted_at > review_addressed_at`, indicating a genuinely new review event. This prevents duplicate fix attempts when the reviewer has not yet re-reviewed.
 - When status is still open (no formal review decision), the inner loop uses the newest timestamp between `COMMENTED` PR review and plain PR discussion comment events as its feedback signal. It uses the same `latest_review_submitted_at > review_addressed_at` guard to decide whether to resume Codex.
 - Codex prompts must not ask the agent to wait for human review/comments inside a turn; the harness handles review polling/comment monitoring and re-invokes Codex when new feedback appears. The only in-turn waiting allowed is for the critical `a-review` subagent.
-- When approval is detected (GitHub review decision or an allowlisted approval signal newer than latest `CHANGES_REQUESTED` review), the inner loop runs cleanup immediately and appends `<state>PR_APPROVED</state>` to that cleanup prompt; if cleanup fails it sets `needs_user_input=true`. Allowlisted approval signals are matched against both plain PR comments and `COMMENTED`/`APPROVED` review bodies.
+- When approval is detected (GitHub review decision or an allowlisted approval signal newer than latest `CHANGES_REQUESTED` review), the loop remains in `WAITING_ON_REVIEW` until CI is green (`pr.ci_status == success`).
+- If `auto_approve_enabled=true` and no stored judgement exists on `RunRecord.auto_approve`, the loop runs `trigger:auto-approve-eval` once (`$ag-judge`, judge book fixed to `references/jb.coding.md`) and stores verdict/scores on `RunRecord`.
+- `auto_approve.verdict == APPROVE` allows transition to `PR_APPROVED`; `REJECT`/`ESCALATE` keep the run blocked in `WAITING_ON_REVIEW` with no auto re-run (single evaluation per conversation).
 
 ## 8. Error handling and recovery
 

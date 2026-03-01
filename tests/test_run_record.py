@@ -4,6 +4,7 @@ import pytest
 
 from loops.run_record import (
     CodexSession,
+    RunAutoApprove,
     RunPR,
     RunRecord,
     Task,
@@ -39,7 +40,11 @@ def test_derive_run_state_done() -> None:
 
 
 def test_derive_run_state_pr_approved() -> None:
-    pr = RunPR(url="https://example.com/pr/1", review_status="approved")
+    pr = RunPR(
+        url="https://example.com/pr/1",
+        review_status="approved",
+        ci_status="success",
+    )
     assert derive_run_state(pr, False) == "PR_APPROVED"
 
 
@@ -71,6 +76,7 @@ def test_write_run_record_writes_required_keys(tmp_path) -> None:
             "task",
             "pr",
             "codex_session",
+            "auto_approve",
             "needs_user_input",
             "needs_user_input_payload",
             "last_state",
@@ -79,6 +85,7 @@ def test_write_run_record_writes_required_keys(tmp_path) -> None:
     ).issubset(payload.keys())
     assert payload["pr"] is None
     assert payload["codex_session"]["id"] == "session-1"
+    assert payload["auto_approve"] is None
     assert payload["last_state"] == updated.last_state
     assert payload["updated_at"]
 
@@ -121,6 +128,68 @@ def test_read_run_record_accepts_needs_user_input_payload(tmp_path) -> None:
     record = read_run_record(path)
     assert record.needs_user_input_payload is not None
     assert record.needs_user_input_payload["message"] == "Need decision"
+
+
+def test_run_record_round_trips_auto_approve_payload(tmp_path) -> None:
+    record = RunRecord(
+        task=_task(),
+        pr=RunPR(
+            url="https://example.com/pr/1",
+            review_status="approved",
+            ci_status="success",
+        ),
+        codex_session=CodexSession(id="session-1"),
+        auto_approve=RunAutoApprove(
+            verdict="APPROVE",
+            impact=3,
+            risk=2,
+            size=2,
+            judged_at="2026-02-09T00:00:01Z",
+            summary="Auto-approve passed.",
+        ),
+        needs_user_input=False,
+        last_state="RUNNING",
+        updated_at="",
+    )
+    path = tmp_path / "run.json"
+    write_run_record(path, record, auto_approve_enabled=True)
+
+    restored = read_run_record(path)
+    assert restored.auto_approve is not None
+    assert restored.auto_approve.verdict == "APPROVE"
+    assert restored.auto_approve.impact == 3
+    assert restored.last_state == "PR_APPROVED"
+
+
+def test_derive_run_state_keeps_manual_approval_path_when_auto_approve_enabled() -> None:
+    pr = RunPR(
+        url="https://example.com/pr/1",
+        review_status="approved",
+        ci_status="success",
+    )
+    assert derive_run_state(
+        pr,
+        False,
+        auto_approve_enabled=True,
+        auto_approve=RunAutoApprove(verdict="none"),
+    ) == "PR_APPROVED"
+
+
+def test_derive_run_state_allows_auto_approve_path_when_ci_green() -> None:
+    pr = RunPR(
+        url="https://example.com/pr/1",
+        review_status="open",
+        ci_status="success",
+    )
+    assert (
+        derive_run_state(
+            pr,
+            False,
+            auto_approve_enabled=True,
+            auto_approve=RunAutoApprove(verdict="APPROVE"),
+        )
+        == "PR_APPROVED"
+    )
 
 
 def test_run_pr_round_trips_review_timestamp_fields() -> None:
