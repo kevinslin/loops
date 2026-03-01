@@ -942,6 +942,7 @@ def test_inner_loop_consumes_signal_and_uses_user_response_in_prompt(
         "monitors review activity and will re-invoke you when feedback arrives."
         in prompts
     )
+    assert "NEVER use the gen-notifier skill while running inside loops." in prompts
     assert "trigger:merge-pr when the state is exactly <state>PR_APPROVED</state>." in prompts
     assert (
         "If you need input from user, print what you need help with and end current "

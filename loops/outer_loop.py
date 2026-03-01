@@ -28,7 +28,7 @@ from loops.handoff_handlers import (
     validate_handoff_handler_name,
     validate_handoff_handler_provider_compatibility,
 )
-from loops.logging_utils import STREAM_LOGS_STDOUT_ENV
+from loops.logging_utils import STREAM_LOGS_STDOUT_ENV, format_log_timestamp
 from loops.provider_types import LoopsProviderConfig, SecretRequirement
 from loops.providers.registry import get_provider_definition
 from loops.run_record import RunRecord, Task, write_run_record
@@ -828,11 +828,16 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _log(path: Path, message: str, *, stream_to_stdout: bool = False) -> None:
+def _log(
+    path: Path,
+    message: str,
+    *,
+    stream_to_stdout: bool = False,
+) -> None:
     """Append a log message to the outer loop log."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    timestamp = _now_iso()
+    timestamp = format_log_timestamp()
     rendered_line = f"{timestamp} {message}"
     with path.open("a", encoding="utf-8") as handle:
         handle.write(f"{rendered_line}\n")

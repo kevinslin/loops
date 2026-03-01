@@ -57,8 +57,6 @@ type OuterLoopConfig = {
     approval_comment_pattern: string
     // run ag-judge before merge when review and CI gates are satisfied
     auto_approve_enabled: boolean
-    // fractional second digits for log timestamps (0-6), default 2
-    log_timestamp_precision: number
     // NEEDS_INPUT handoff strategy
     // stdin_handler | gh_comment_handler
     handoff_handler: string
@@ -226,7 +224,6 @@ type OuterLoopConfig = {
     approval_comment_usernames?: string[]
     approval_comment_pattern?: string
     auto_approve_enabled?: boolean
-    log_timestamp_precision?: number
     handoff_handler?: string
 }
 
@@ -263,7 +260,6 @@ Notes:
 - `loop_config.approval_comment_pattern` controls which comment bodies count as approval signals.
 - `loop_config.auto_approve_enabled` enables the additional auto-approve path while the PR is still not approved.
 - Auto-approve defaults are fixed when enabled: CI green is required and `ag-judge` uses `references/jb.coding.md`.
-- `loop_config.log_timestamp_precision` controls log timestamp fractional precision (0-6, default `2`) for outer-loop and inner-loop log files.
 - `loop_config.handoff_handler` selects built-in NEEDS_INPUT handoff behavior (`stdin_handler` default, `gh_comment_handler` for issue-comment handoff).
 - `inner_loop` is optional when running via the CLI; if omitted, the CLI uses
   a canonical default builder for `python -m loops.inner_loop` with `append_task_url=false`.
@@ -614,7 +610,7 @@ Prompt-related configuration and runtime inputs:
 - Outer loop per-task scheduling entries include the created inner-loop run directory path.
 - Inner loop orchestration logs + Codex output mirror: `[INNER_LOOP_ROOT]/run.log`.
 - Agent/Codex logs: `[INNER_LOOP_ROOT]/agent.log`.
-- Log timestamps are local-time ISO-like strings without timezone suffix, with fractional precision from `loop_config.log_timestamp_precision` (default `2`).
+- Log timestamps are local-time ISO-like strings without timezone suffix and fixed fractional precision.
 - In `sync_mode=true`, outer-loop and inner-loop log lines are mirrored to stdout while still being persisted to files.
 
 ### Metrics (optional)

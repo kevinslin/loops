@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,12 @@ def test_append_log_writes_timestamped_lines(tmp_path: Path) -> None:
 
     lines = log_path.read_text().splitlines()
     assert len(lines) == 2
+    assert re.match(
+        r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{2} ",
+        lines[0],
+    )
+    assert "+" not in lines[0]
+    assert "Z" not in lines[0]
     assert "line one" in lines[0]
     assert "line two" in lines[1]
 
