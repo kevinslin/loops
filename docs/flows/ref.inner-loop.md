@@ -205,6 +205,7 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
 - Codex turn behavior (`loops/inner_loop.py:601`):
   - Builds prompt (standard vs review-feedback path).
   - Base prompt contract says Codex may wait for the `a-review` subagent but must not wait for human PR comments/reviews because the outer harness performs comment monitoring and re-invokes Codex when needed.
+  - Base prompt contract requires posting `a-review` output to PR comments whenever `a-review` runs, including explicit no-findings comments.
   - Base prompt contract explicitly forbids using the `gen-notifier` skill while running inside loops.
   - Selects invocation strategy (new session vs `resume <session_id>`) from `run_record.codex_session`.
   - Streams stdout/stderr into `agent.log` and appends the same output to `run.log`.
@@ -219,6 +220,7 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
   - When review status remains open, chooses the newest timestamp between the latest `COMMENTED` PR review and plain PR discussion comment and uses that as the feedback signal.
   - When review is approved, the loop derives `PR_APPROVED` via the existing manual path.
   - If review is not already approved, CI is green, and `auto_approve_enabled` is true with no stored verdict, it runs one-time `trigger:auto-approve-eval` (`$ag-judge`, fixed judge book `references/jb.coding.md`) and persists verdict/scores on `RunRecord.auto_approve`.
+  - Auto-approve prompt contract requires posting `ag-judge` verdict plus impact/risk/size scores to PR comments, alongside the machine-parseable JSON response.
   - Only `auto_approve.verdict == APPROVE` allows promotion to `PR_APPROVED`; `REJECT`/`ESCALATE` remain blocked in `WAITING_ON_REVIEW` with no automatic re-run.
 
 - Approved-state merge polling behavior (`loops/inner_loop.py`):
@@ -334,6 +336,7 @@ A: Inner loop only. Signal producers append to queue; they do not mutate `run.js
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+- 2026-03-01: Updated prompt contract notes to require posting `a-review` output and `ag-judge` verdict/scores to PR comments. (019caaa4-f4d8-7822-a0d0-03315986d5ef)
 - 2026-03-01: Updated review-allowlist config references to `task_provider_config.allowlist` for config schema v2 alignment. (019caa8b-0807-7603-a519-4a6be2b8e53c)
 - 2026-03-01: Added provider-driven review-actor filtering (`task_provider_config.allowlist`) to inner-loop review polling semantics. (019caa52-baf6-7913-b365-3c89049a5716)
 - 2026-02-28: Removed configurable log timestamp precision; inner-loop log timestamps are local no-timezone format with fixed fractional precision. (019ca742-f800-78a3-a5f3-11d807a04164)
