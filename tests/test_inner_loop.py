@@ -639,7 +639,20 @@ def test_inner_loop_consumes_signal_and_uses_user_response_in_prompt(
 
     prompts = prompt_log_path.read_text()
     assert (
-        'If needing input from user, use "$needs_input" skill to request user input.'
+        "Use dev.do to implement the task, open a PR, wait only for review from the "
+        "a-review subagent, address feedback, and trigger:merge-pr when the state "
+        "is exactly <state>PR_APPROVED</state>."
+        in prompts
+    )
+    assert (
+        "You are running inside the loops test harness. NEVER wait for human PR "
+        "review/comments inside the agent; the harness monitors review activity and "
+        "will re-invoke you when feedback arrives."
+        in prompts
+    )
+    assert (
+        "If you need input from user, print what you need help with and end current "
+        "conversation with <state>NEEDS_INPUT</>"
         in prompts
     )
     assert "Do not merge until the state is exactly <state>PR_APPROVED</state>." in prompts
@@ -925,6 +938,11 @@ def test_inner_loop_resumes_codex_when_new_plain_pr_comment_feedback(
     assert counter_path.read_text() == "1"
     prompts = prompt_log_path.read_text()
     assert "has new discussion comments. Review the feedback" in prompts
+    assert (
+        "If there are no changes requested, summarize that and end the current turn."
+        in prompts
+    )
+    assert "wait for comments" not in prompts
     run_log = (run_dir / "run.log").read_text()
     assert "new PR comment feedback detected; resuming codex" in run_log
 

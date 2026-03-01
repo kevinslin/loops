@@ -39,11 +39,16 @@ from loops.run_record import (
 from loops.state_signal import SIGNAL_QUEUE_FILE
 
 PROMPT_TEMPLATE = (
-    "Use dev.do to implement the task, open a PR, wait for review, address feedback, "
-    "and trigger:merge-pr when the state is exactly <state>PR_APPROVED</state>.\n"
-    'If needing input from user, use "$needs_input" skill to request user input.\n'
+    "Use dev.do to implement the task and open a PR.\n" 
+    "You are running inside the loops test harness. Wait only for review from the "
+    "a-review subagent. NEVER wait for human PR "
+    "review/comments inside the agent; the harness monitors review activity and "
+    "will re-invoke you when feedback arrives.\n"
     "The current inner-loop state is passed via a trailing <state>...</state> tag; "
     "initial state is <state>RUNNING</state>.\n"
+    "If you need input from user, print what you need help with and end current conversation "
+    "with <state>NEEDS_INPUT</>\n"
+    "trigger:merge-pr when the state is exactly <state>PR_APPROVED</state>.\n"
     "Do not merge until the state is exactly <state>PR_APPROVED</state>.\n"
     "Task: {task}\n"
 )
@@ -874,7 +879,8 @@ def _build_comment_feedback_prompt(
     )
     prompt += (
         f"\nPR {pr_url} has new discussion comments. Review the feedback, address "
-        "requested changes, update the PR, and summarize what changed.\n"
+        "requested changes, update the PR, and summarize what changed. If there "
+        "are no changes requested, summarize that and end the current turn.\n"
     )
     return _append_state_tag(prompt, PROMPT_STATE_WAITING_ON_REVIEW)
 

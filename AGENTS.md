@@ -16,6 +16,19 @@ Document expectations and configuration for coding agents working in this repo.
 - `LOOPS_PROMPT_FILE` / `CODEX_PROMPT_FILE`: optional base prompt file path.
 - `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`: task metadata injected by the outer loop launcher.
 
+## Shortcuts
+
+### add-test-task
+In loops-integ github repo, creat a new issue.
+Come up with a random animal and replace [animal] with it.
+
+Title: Create [animal].md file 
+Body: Contents of file is ascii art of [animal] saying a bad pun.
+
+### add-test-task-with-bug
+
+run trigger:add-test-task but change the body. have the [animal] say TODO and wait for pr comment to supply contents.
+
 ## Additional Notes
 - this project does not use statsig. ignore all statsig related directives
 - when making changes, use $dev.research to understand flow docs and search over all related flow docs. if the current change has changed the design of a flow doc - trigger:update-flow-doc to update it

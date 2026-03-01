@@ -481,9 +481,10 @@ The inner loop builds prompts in `loops/inner_loop.py` from a shared base templa
 Base template (always present in Codex turns):
 
 ```text
-Use dev.do to implement the task, open a PR, wait for review, address feedback, and trigger:merge-pr when the state is exactly <state>PR_APPROVED</state>.
-If needing input from user, use "$needs_input" skill to request user input.
+Use dev.do to implement the task, open a PR, wait only for review from the a-review subagent, address feedback, and trigger:merge-pr when the state is exactly <state>PR_APPROVED</state>.
+You are running inside the loops test harness. NEVER wait for human PR review/comments inside the agent; the harness monitors review activity and will re-invoke you when feedback arrives.
 The current inner-loop state is passed via a trailing <state>...</state> tag; initial state is <state>RUNNING</state>.
+If you need input from user, print what you need help with and end current conversation with <state>NEEDS_INPUT</>
 Do not merge until the state is exactly <state>PR_APPROVED</state>.
 Task: [task_url]
 ```
@@ -495,13 +496,30 @@ User input:
 [user_response]
 ```
 
+Review prompts (used only when derived state is `WAITING_ON_REVIEW` and a new feedback event is detected):
+
+1. Changes-requested review prompt:
+
+```text
+PR [pr_url] has changes requested. Address review feedback, update the PR, and summarize what changed.
+<state>WAITING_ON_REVIEW</state>
+```
+
+2. Discussion-feedback prompt (plain PR comment or `COMMENTED` review):
+
+```text
+PR [pr_url] has new discussion comments. Review the feedback, address requested changes, update the PR, and summarize what changed. If there are no changes requested, summarize that and end the current turn.
+<state>WAITING_ON_REVIEW</state>
+```
+
 State-to-prompt mapping:
 
 | Derived state | Prompt text added after base template | Final state tag |
 |---|---|---|
 | `RUNNING` | No additional suffix. | `<state>RUNNING</state>` |
+| `WAITING_ON_REVIEW` (no new feedback event) | No Codex prompt is built; inner loop only polls PR state. | N/A |
 | `WAITING_ON_REVIEW` (changes requested review) | `PR [pr_url] has changes requested. Address review feedback, update the PR, and summarize what changed.` | `<state>WAITING_ON_REVIEW</state>` |
-| `WAITING_ON_REVIEW` (new discussion comments) | `PR [pr_url] has new discussion comments. Review the feedback, address requested changes, update the PR, and summarize what changed.` | `<state>WAITING_ON_REVIEW</state>` |
+| `WAITING_ON_REVIEW` (new discussion comments) | `PR [pr_url] has new discussion comments. Review the feedback, address requested changes, update the PR, and summarize what changed. If there are no changes requested, summarize that and end the current turn.` | `<state>WAITING_ON_REVIEW</state>` |
 | `PR_APPROVED` | `PR is approved. Run cleanup now and report completion.` | `<state>PR_APPROVED</state>` |
 | `NEEDS_INPUT` | No Codex prompt is built while waiting. The handoff handler shows `needs_user_input_payload.message` to the user instead. | N/A |
 | `DONE` | No prompt; loop exits. | N/A |
@@ -522,6 +540,7 @@ Prompt-related configuration and runtime inputs:
 - The inner loop polls PR status and updates `pr.review_status`.
 - When a review requests changes, the inner loop records `latest_review_submitted_at` (the review's `submittedAt` timestamp from GitHub) and invokes Codex to address the feedback. After Codex runs, `review_addressed_at` is set to `latest_review_submitted_at`. On subsequent polls, the loop only re-invokes Codex if `latest_review_submitted_at > review_addressed_at`, indicating a genuinely new review event. This prevents duplicate fix attempts when the reviewer has not yet re-reviewed.
 - When status is still open (no formal review decision), the inner loop uses the newest timestamp between `COMMENTED` PR review and plain PR discussion comment events as its feedback signal. It uses the same `latest_review_submitted_at > review_addressed_at` guard to decide whether to resume Codex.
+- Codex prompts must not ask the agent to wait for human review/comments inside a turn; the harness handles review polling/comment monitoring and re-invokes Codex when new feedback appears. The only in-turn waiting allowed is for the critical `a-review` subagent.
 - When approval is detected (GitHub review decision or an allowlisted approval signal newer than latest `CHANGES_REQUESTED` review), the inner loop runs cleanup immediately and appends `<state>PR_APPROVED</state>` to that cleanup prompt; if cleanup fails it sets `needs_user_input=true`. Allowlisted approval signals are matched against both plain PR comments and `COMMENTED`/`APPROVED` review bodies.
 
 ## 8. Error handling and recovery

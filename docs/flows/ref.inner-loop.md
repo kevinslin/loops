@@ -201,6 +201,7 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
 
 - Codex turn behavior (`loops/inner_loop.py:601`):
   - Builds prompt (standard vs review-feedback path).
+  - Base prompt contract says Codex may wait for the `a-review` subagent but must not wait for human PR comments/reviews because the outer harness performs comment monitoring and re-invokes Codex when needed.
   - Selects invocation strategy (new session vs `resume <session_id>`) from `run_record.codex_session`.
   - Streams stdout/stderr into `agent.log` and appends the same output to `run.log`.
   - Extracts session id and PR URL from output.
@@ -302,6 +303,9 @@ A: If exit code is zero but no PR is detected in output, the loop requests manua
 Q: Why does review feedback not always re-trigger Codex?
 A: The loop resumes Codex only for new feedback events (`latest_review_submitted_at > review_addressed_at`): new `changes_requested` reviews, or new open-state feedback where the newest timestamp between `COMMENTED` PR review events and plain PR discussion comments has advanced. Duplicate events with unchanged timestamps are skipped.
 
+Q: Should Codex ever wait for human PR comments/reviews inside a turn?
+A: No. Prompt contract tells Codex to end the turn after handling current feedback; the harness performs polling/comment monitoring and re-invokes Codex when new feedback appears. The only allowed wait inside a turn is for the critical `a-review` subagent.
+
 Q: When does inner loop reuse the same Codex session?
 A: After the first successful turn stores `codex_session.id`, follow-up turns (review-feedback turns and PR-approved cleanup turns) attempt `codex exec resume <session_id>`; if `CODEX_CMD` is not codex-shaped, the loop logs fallback and runs the base command.
 
@@ -319,6 +323,7 @@ A: Inner loop only. Signal producers append to queue; they do not mutate `run.js
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+- 2026-02-28: Documented prompt contract forbidding in-turn human-review waiting and limiting in-turn waiting to `a-review` subagent completion. (019ca6dd-2edd-75c0-91e9-96d280d202ac)
 - 2026-02-28: Refactored flow sudocode to match kernel+dispatch runtime structure (`run_inner_loop` dispatching to per-state handlers). (019ca688-39ba-7f12-9fba-23a0aeac144c)
 - 2026-02-28: Documented bounded idle escalation in `PR_APPROVED` merge polling and aligned pseudocode with the runtime guardrail. (019ca583-faf1-7f72-95c8-b8e9cdd16046)
 - 2026-02-16: Created inner-loop flow doc for runtime state-machine behavior and integration points. (019c6863-d581-7f83-9809-fabbefa042e8)
