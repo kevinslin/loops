@@ -29,6 +29,7 @@ from loops.handoff_handlers import (
 from loops.logging_utils import append_log
 from loops.run_record import (
     CodexSession,
+    RunAutoApprove,
     RunPR,
     RunRecord,
     Task,
@@ -77,11 +78,21 @@ UserHandoffHandler = Callable[[dict[str, Any]], HandoffResult | str | None]
 PRStatusFetcher = Callable[[RunPR], RunPR]
 SleepFn = Callable[[float], None]
 GH_PR_VIEW_JSON_FIELDS = (
-    "reviewDecision,mergedAt,url,number,latestReviews,reviews,comments"
+    "reviewDecision,mergedAt,url,number,latestReviews,reviews,comments,statusCheckRollup"
 )
 CODEX_EXEC_SUBCOMMANDS = {"exec", "e"}
 CODEX_LAUNCHER_SUBCOMMANDS = {"uv", "uvx"}
 APPROVAL_REVIEW_STATES = {"COMMENTED", "APPROVED"}
+CI_SUCCESS_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
+CI_FAILURE_CONCLUSIONS = {
+    "FAILURE",
+    "CANCELLED",
+    "TIMED_OUT",
+    "ACTION_REQUIRED",
+    "STARTUP_FAILURE",
+    "STALE",
+}
+CI_PENDING_STATUSES = {"EXPECTED", "PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED"}
 
 
 @dataclass(frozen=True)
@@ -112,6 +123,7 @@ class InnerLoopRuntimeContext:
     max_poll_seconds: float
     max_idle_polls: int
     non_interactive_default_handoff: bool
+    auto_approve_enabled: bool = False
 
 
 @dataclass
@@ -120,6 +132,7 @@ class LoopControlState:
     idle_polls: int = 0
     next_user_response: Optional[str] = None
     cleanup_executed_for_pr: Optional[str] = None
+    auto_approve_attempted: bool = False
 
 
 @dataclass(frozen=True)
@@ -160,7 +173,11 @@ def reset_run_record(run_dir: Path) -> RunRecord:
         last_state="RUNNING",
         updated_at="",
     )
-    written = write_run_record(run_json_path, reset_record)
+    written = write_run_record(
+        run_json_path,
+        reset_record,
+        auto_approve_enabled=_load_auto_approve_enabled(),
+    )
     append_log(
         run_log,
         (
@@ -250,6 +267,7 @@ def run_inner_loop(
     non_interactive_default_handoff = (
         using_default_handoff_handler and not _has_interactive_stdin()
     )
+    auto_approve_enabled = _load_auto_approve_enabled()
     runtime = InnerLoopRuntimeContext(
         run_dir=run_dir,
         run_json_path=run_json_path,
@@ -264,13 +282,17 @@ def run_inner_loop(
         max_poll_seconds=max_poll_seconds,
         max_idle_polls=max_idle_polls,
         non_interactive_default_handoff=non_interactive_default_handoff,
+        auto_approve_enabled=auto_approve_enabled,
     )
     control = LoopControlState(backoff_seconds=initial_poll_seconds)
 
     for iteration in range(1, max_iterations + 1):
         run_record = read_run_record(run_json_path)
         run_record = _apply_pending_signals(run_dir, run_record)
-        state = derive_run_state(run_record.pr, run_record.needs_user_input)
+        state = _derive_state(
+            run_record,
+            auto_approve_enabled=runtime.auto_approve_enabled,
+        )
         _log_iteration_enter(
             run_log,
             iteration=iteration,
@@ -299,9 +321,9 @@ def run_inner_loop(
             runtime=runtime,
             control=control,
         )
-        next_state = derive_run_state(
-            transition.run_record.pr,
-            transition.run_record.needs_user_input,
+        next_state = _derive_state(
+            transition.run_record,
+            auto_approve_enabled=runtime.auto_approve_enabled,
         )
         _log_iteration_exit(
             run_log,
@@ -323,6 +345,7 @@ def run_inner_loop(
             "Inner loop reached max iterations without DONE. "
             "Please provide guidance."
         ),
+        auto_approve_enabled=runtime.auto_approve_enabled,
     )
     append_log(
         run_log,
@@ -405,6 +428,7 @@ def _handle_needs_input_state(
             needs_user_input=False,
             needs_user_input_payload=None,
         ),
+        auto_approve_enabled=runtime.auto_approve_enabled,
     )
     control.backoff_seconds = runtime.initial_poll_seconds
     control.idle_polls = 0
@@ -429,6 +453,7 @@ def _handle_running_state(
         base_prompt=runtime.base_prompt,
         user_response=control.next_user_response,
         review_feedback=False,
+        auto_approve_enabled=runtime.auto_approve_enabled,
     )
     control.next_user_response = None
     control.cleanup_executed_for_pr = None
@@ -448,6 +473,7 @@ def _handle_waiting_on_review_state(
             runtime.run_json_path,
             run_record,
             message="Run is waiting on review but no PR metadata exists.",
+            auto_approve_enabled=runtime.auto_approve_enabled,
         )
         return StateHandlerResult(
             run_record=missing_pr_record,
@@ -457,9 +483,9 @@ def _handle_waiting_on_review_state(
         updated_pr = runtime.pr_status_fetcher(run_record.pr)
     except Exception as exc:
         append_log(runtime.run_log, f"[loops] failed to poll PR status: {exc}")
-        previous_state = derive_run_state(
-            run_record.pr,
-            run_record.needs_user_input,
+        previous_state = _derive_state(
+            run_record,
+            auto_approve_enabled=runtime.auto_approve_enabled,
         )
         run_record, control.idle_polls = _increment_idle_polls(
             run_json_path=runtime.run_json_path,
@@ -470,10 +496,11 @@ def _handle_waiting_on_review_state(
                 "PR polling has been idle for too long. "
                 "Please check review status manually."
             ),
+            auto_approve_enabled=runtime.auto_approve_enabled,
         )
-        next_state = derive_run_state(
-            run_record.pr,
-            run_record.needs_user_input,
+        next_state = _derive_state(
+            run_record,
+            auto_approve_enabled=runtime.auto_approve_enabled,
         )
         if next_state not in WAITING_STATES:
             return StateHandlerResult(run_record=run_record, action="review_poll_error")
@@ -487,6 +514,7 @@ def _handle_waiting_on_review_state(
     run_record = write_run_record(
         runtime.run_json_path,
         replace(run_record, pr=updated_pr),
+        auto_approve_enabled=runtime.auto_approve_enabled,
     )
     if run_record.pr is not None and _should_resume_review_feedback(run_record.pr):
         if run_record.pr.review_status == "changes_requested":
@@ -502,6 +530,7 @@ def _handle_waiting_on_review_state(
             base_prompt=runtime.base_prompt,
             user_response=control.next_user_response,
             review_feedback=True,
+            auto_approve_enabled=runtime.auto_approve_enabled,
         )
         control.next_user_response = None
         control.cleanup_executed_for_pr = None
@@ -511,7 +540,54 @@ def _handle_waiting_on_review_state(
             run_record=run_record,
             action="review_feedback_codex_turn",
         )
-    if derive_run_state(run_record.pr, run_record.needs_user_input) == "WAITING_ON_REVIEW":
+
+    if run_record.pr is not None and run_record.pr.review_status == "approved":
+        if run_record.pr.ci_status != "success":
+            append_log(
+                runtime.run_log,
+                (
+                    "[loops] review approved; waiting for green CI "
+                    f"(ci_status={run_record.pr.ci_status or 'unknown'})"
+                ),
+            )
+        elif runtime.auto_approve_enabled:
+            verdict = (
+                run_record.auto_approve.verdict
+                if run_record.auto_approve is not None
+                else "none"
+            )
+            if verdict == "none":
+                if control.auto_approve_attempted:
+                    append_log(
+                        runtime.run_log,
+                        (
+                            "[loops] auto-approve evaluation already attempted in this "
+                            "conversation; waiting for manual guidance"
+                        ),
+                    )
+                else:
+                    run_record = _run_auto_approve_eval(
+                        run_record=run_record,
+                        runtime=runtime,
+                        control=control,
+                    )
+                    control.auto_approve_attempted = True
+                    control.backoff_seconds = runtime.initial_poll_seconds
+                    control.idle_polls = 0
+                    return StateHandlerResult(
+                        run_record=run_record,
+                        action="auto_approve_eval",
+                    )
+            else:
+                control.auto_approve_attempted = True
+
+    if (
+        _derive_state(
+            run_record,
+            auto_approve_enabled=runtime.auto_approve_enabled,
+        )
+        == "WAITING_ON_REVIEW"
+    ):
         run_record, control.idle_polls = _increment_idle_polls(
             run_json_path=runtime.run_json_path,
             run_record=run_record,
@@ -521,10 +597,11 @@ def _handle_waiting_on_review_state(
                 "PR has not changed after repeated polls. "
                 "Please provide manual guidance."
             ),
+            auto_approve_enabled=runtime.auto_approve_enabled,
         )
-        next_state = derive_run_state(
-            run_record.pr,
-            run_record.needs_user_input,
+        next_state = _derive_state(
+            run_record,
+            auto_approve_enabled=runtime.auto_approve_enabled,
         )
         if next_state not in WAITING_STATES:
             return StateHandlerResult(run_record=run_record, action="review_poll")
@@ -551,6 +628,7 @@ def _handle_pr_approved_state(
             runtime.run_json_path,
             run_record,
             message="Run is PR_APPROVED but no PR metadata exists.",
+            auto_approve_enabled=runtime.auto_approve_enabled,
         )
         return StateHandlerResult(
             run_record=missing_pr_record,
@@ -574,6 +652,7 @@ def _handle_pr_approved_state(
                 run_record,
                 message="Cleanup failed after PR approval. Please advise.",
                 context={"exit_code": exit_code},
+                auto_approve_enabled=runtime.auto_approve_enabled,
             )
             return StateHandlerResult(
                 run_record=failed_cleanup_record,
@@ -585,9 +664,9 @@ def _handle_pr_approved_state(
         updated_pr = runtime.pr_status_fetcher(run_record.pr)
     except Exception as exc:
         append_log(runtime.run_log, f"[loops] failed to poll merge status: {exc}")
-        previous_state = derive_run_state(
-            run_record.pr,
-            run_record.needs_user_input,
+        previous_state = _derive_state(
+            run_record,
+            auto_approve_enabled=runtime.auto_approve_enabled,
         )
         run_record, control.idle_polls = _increment_idle_polls(
             run_json_path=runtime.run_json_path,
@@ -598,10 +677,11 @@ def _handle_pr_approved_state(
                 "Merge polling has been idle for too long. "
                 "Please check merge status manually."
             ),
+            auto_approve_enabled=runtime.auto_approve_enabled,
         )
-        next_state = derive_run_state(
-            run_record.pr,
-            run_record.needs_user_input,
+        next_state = _derive_state(
+            run_record,
+            auto_approve_enabled=runtime.auto_approve_enabled,
         )
         if next_state not in WAITING_STATES:
             return StateHandlerResult(run_record=run_record, action="merge_poll_error")
@@ -615,12 +695,19 @@ def _handle_pr_approved_state(
     run_record = write_run_record(
         runtime.run_json_path,
         replace(run_record, pr=updated_pr),
+        auto_approve_enabled=runtime.auto_approve_enabled,
     )
-    previous_state = derive_run_state(
-        run_record.pr,
-        run_record.needs_user_input,
+    previous_state = _derive_state(
+        run_record,
+        auto_approve_enabled=runtime.auto_approve_enabled,
     )
-    if derive_run_state(run_record.pr, run_record.needs_user_input) == "PR_APPROVED":
+    if (
+        _derive_state(
+            run_record,
+            auto_approve_enabled=runtime.auto_approve_enabled,
+        )
+        == "PR_APPROVED"
+    ):
         run_record, control.idle_polls = _increment_idle_polls(
             run_json_path=runtime.run_json_path,
             run_record=run_record,
@@ -630,15 +717,19 @@ def _handle_pr_approved_state(
                 "PR is still approved but not merged after repeated polls. "
                 "Please provide manual guidance."
             ),
+            auto_approve_enabled=runtime.auto_approve_enabled,
         )
-        next_state = derive_run_state(
-            run_record.pr,
-            run_record.needs_user_input,
+        next_state = _derive_state(
+            run_record,
+            auto_approve_enabled=runtime.auto_approve_enabled,
         )
         if next_state not in WAITING_STATES:
             return StateHandlerResult(run_record=run_record, action="approved_poll")
 
-    next_state = derive_run_state(run_record.pr, run_record.needs_user_input)
+    next_state = _derive_state(
+        run_record,
+        auto_approve_enabled=runtime.auto_approve_enabled,
+    )
     if (
         previous_state == "PR_APPROVED"
         and next_state in WAITING_STATES
@@ -689,11 +780,33 @@ def _build_reset_pr(existing_pr: Optional[RunPR]) -> Optional[RunPR]:
         number=existing_pr.number,
         repo=existing_pr.repo,
         review_status="open",
+        ci_status=None,
+        ci_last_checked_at=None,
         merged_at=None,
         last_checked_at=None,
         latest_review_submitted_at=None,
         review_addressed_at=None,
     )
+
+
+def _derive_state(
+    run_record: RunRecord,
+    *,
+    auto_approve_enabled: bool,
+) -> str:
+    return derive_run_state(
+        run_record.pr,
+        run_record.needs_user_input,
+        auto_approve_enabled=auto_approve_enabled,
+        auto_approve=run_record.auto_approve,
+    )
+
+
+def _load_auto_approve_enabled() -> bool:
+    raw = os.environ.get("LOOPS_AUTO_APPROVE_ENABLED")
+    if raw is None:
+        return False
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _log_iteration_enter(
@@ -738,15 +851,23 @@ def _log_iteration_exit(
 def _format_run_record_log_details(run_record: RunRecord) -> str:
     pr = run_record.pr
     if pr is None:
-        pr_summary = "pr_status=none pr_number=- pr_merged=no"
+        pr_summary = "pr_status=none ci_status=none pr_number=- pr_merged=no"
     else:
         review_status = pr.review_status or "unknown"
+        ci_status = pr.ci_status or "unknown"
         pr_number = pr.number if pr.number is not None else "-"
         pr_merged = "yes" if pr.merged_at else "no"
         pr_summary = (
-            f"pr_status={review_status} pr_number={pr_number} pr_merged={pr_merged}"
+            f"pr_status={review_status} ci_status={ci_status} "
+            f"pr_number={pr_number} pr_merged={pr_merged}"
         )
-    return f"needs_user_input={run_record.needs_user_input} {pr_summary}"
+    auto_approve_verdict = (
+        run_record.auto_approve.verdict if run_record.auto_approve is not None else "none"
+    )
+    return (
+        f"needs_user_input={run_record.needs_user_input} "
+        f"auto_approve={auto_approve_verdict} {pr_summary}"
+    )
 
 
 def _resolve_codex_command() -> list[str]:
@@ -888,6 +1009,26 @@ def _build_comment_feedback_prompt(
     return _append_state_tag(prompt, PROMPT_STATE_WAITING_ON_REVIEW)
 
 
+def _build_auto_approve_eval_prompt(
+    task_url: str,
+    base_prompt: Optional[str],
+    pr_url: str,
+) -> str:
+    prompt = _build_prompt(
+        task_url,
+        base_prompt,
+        state=None,
+    )
+    prompt += (
+        f"\nPR {pr_url} has review approval and green CI. "
+        "Run $ag-judge (judge book: references/jb.coding.md) against current diff, "
+        "review threads, and CI evidence. Return exactly one JSON object on one line "
+        'with keys: {"verdict":"APPROVE|REJECT|ESCALATE","impact":1-5,'
+        '"risk":1-5,"size":1-5,"summary":"..."}.\n'
+    )
+    return _append_state_tag(prompt, PROMPT_STATE_WAITING_ON_REVIEW)
+
+
 def _run_codex(command: list[str], prompt: str, agent_log: Path) -> tuple[str, int]:
     agent_log.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -1013,6 +1154,7 @@ def _run_codex_turn(
     base_prompt: Optional[str],
     user_response: Optional[str] = None,
     review_feedback: bool,
+    auto_approve_enabled: bool = False,
 ) -> RunRecord:
     if user_response is not None:
         normalized_response = user_response.strip()
@@ -1100,6 +1242,136 @@ def _run_codex_turn(
             needs_user_input=needs_user_input,
             needs_user_input_payload=needs_user_input_payload,
         ),
+        auto_approve_enabled=auto_approve_enabled,
+    )
+
+
+def _parse_auto_approve_score(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    parsed: Optional[int]
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        parsed = int(value.strip())
+    else:
+        return None
+    if parsed < 1 or parsed > 5:
+        return None
+    return parsed
+
+
+def _extract_auto_approve_from_output(
+    output: str,
+    *,
+    judged_at: str,
+) -> RunAutoApprove:
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        verdict_raw = payload.get("verdict")
+        if not isinstance(verdict_raw, str):
+            continue
+        verdict = verdict_raw.strip().upper()
+        if verdict not in {"APPROVE", "REJECT", "ESCALATE"}:
+            continue
+        summary = payload.get("summary")
+        return RunAutoApprove(
+            verdict=verdict,
+            impact=_parse_auto_approve_score(payload.get("impact")),
+            risk=_parse_auto_approve_score(payload.get("risk")),
+            size=_parse_auto_approve_score(payload.get("size")),
+            judged_at=judged_at,
+            summary=summary if isinstance(summary, str) else None,
+        )
+
+    verdict_match = re.search(r"\b(APPROVE|REJECT|ESCALATE)\b", output, re.IGNORECASE)
+    if verdict_match is not None:
+        verdict = verdict_match.group(1).upper()
+        summary = output.strip().splitlines()[-1] if output.strip() else None
+        return RunAutoApprove(
+            verdict=verdict, judged_at=judged_at, summary=summary
+        )
+
+    return RunAutoApprove(
+        verdict="ESCALATE",
+        judged_at=judged_at,
+        summary="Failed to parse auto-approve verdict from ag-judge output.",
+    )
+
+
+def _run_auto_approve_eval(
+    *,
+    run_record: RunRecord,
+    runtime: InnerLoopRuntimeContext,
+    control: LoopControlState,
+) -> RunRecord:
+    del control  # Reserved for future policy hooks.
+    if run_record.pr is None:
+        return run_record
+    prompt = _build_auto_approve_eval_prompt(
+        run_record.task.url,
+        runtime.base_prompt,
+        run_record.pr.url,
+    )
+    output, exit_code, resume_fallback_used = _invoke_codex(
+        base_command=runtime.command,
+        prompt=prompt,
+        agent_log=runtime.agent_log,
+        run_log=runtime.run_log,
+        codex_session=run_record.codex_session,
+        turn_label="auto-approve evaluation turn",
+    )
+    append_log(runtime.run_log, output)
+
+    session_id = _extract_session_id(output)
+    codex_session = run_record.codex_session
+    if session_id is not None:
+        codex_session = CodexSession(id=session_id, last_prompt=prompt)
+    elif resume_fallback_used:
+        codex_session = None
+
+    judged_at = datetime.now(timezone.utc).isoformat()
+    if exit_code != 0:
+        append_log(
+            runtime.run_log,
+            f"[loops] auto-approve evaluation failed with exit code {exit_code}",
+        )
+        auto_approve = RunAutoApprove(
+            verdict="ESCALATE",
+            judged_at=judged_at,
+            summary=f"ag-judge execution failed (exit_code={exit_code}).",
+        )
+    else:
+        auto_approve = _extract_auto_approve_from_output(output, judged_at=judged_at)
+
+    append_log(
+        runtime.run_log,
+        (
+            "[loops] auto-approve verdict persisted: "
+            f"verdict={auto_approve.verdict} "
+            f"impact={auto_approve.impact or '-'} "
+            f"risk={auto_approve.risk or '-'} "
+            f"size={auto_approve.size or '-'}"
+        ),
+    )
+    return write_run_record(
+        runtime.run_json_path,
+        replace(
+            run_record,
+            codex_session=codex_session,
+            auto_approve=auto_approve,
+        ),
+        auto_approve_enabled=runtime.auto_approve_enabled,
     )
 
 
@@ -1149,6 +1421,8 @@ def _merge_pr_records(existing: Optional[RunPR], discovered: Optional[RunPR]) ->
         number=existing.number or discovered.number,
         repo=existing.repo or discovered.repo,
         review_status=existing.review_status or discovered.review_status,
+        ci_status=existing.ci_status or discovered.ci_status,
+        ci_last_checked_at=existing.ci_last_checked_at or discovered.ci_last_checked_at,
         latest_review_submitted_at=existing.latest_review_submitted_at,
         review_addressed_at=existing.review_addressed_at,
     )
@@ -1192,6 +1466,38 @@ def _review_status_from_decision(decision: Any) -> str:
     if normalized == "CHANGES_REQUESTED":
         return "changes_requested"
     return "open"
+
+
+def _ci_status_from_rollup(payload: dict[str, Any]) -> str:
+    rollup = payload.get("statusCheckRollup")
+    if not isinstance(rollup, list) or not rollup:
+        return "pending"
+
+    has_pending = False
+    for item in rollup:
+        if not isinstance(item, dict):
+            has_pending = True
+            continue
+        status = str(item.get("status") or "").upper()
+        conclusion_raw = item.get("conclusion")
+        conclusion = (
+            str(conclusion_raw).upper() if conclusion_raw is not None else ""
+        )
+
+        if status in CI_PENDING_STATUSES:
+            has_pending = True
+            continue
+        if not conclusion and status != "COMPLETED":
+            has_pending = True
+            continue
+        if conclusion and conclusion not in CI_SUCCESS_CONCLUSIONS:
+            if conclusion in CI_FAILURE_CONCLUSIONS:
+                return "failure"
+            return "failure"
+
+    if has_pending:
+        return "pending"
+    return "success"
 
 
 def _load_comment_approval_settings(run_dir: Path) -> CommentApprovalSettings:
@@ -1482,6 +1788,8 @@ def _fetch_pr_status_with_gh_with_context(
         parsed_number = None
     merged_at = payload.get("mergedAt")
     merged_at_str = str(merged_at) if merged_at is not None else None
+    ci_status = _ci_status_from_rollup(payload)
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     review_decision_raw = payload.get("reviewDecision")
     review_status = _review_status_from_decision(review_decision_raw)
     latest_review_submitted_at = _extract_latest_review_submitted_at(
@@ -1563,8 +1871,10 @@ def _fetch_pr_status_with_gh_with_context(
         number=parsed_number,
         repo=repo,
         review_status=review_status,
+        ci_status=ci_status,
+        ci_last_checked_at=now_iso,
         merged_at=merged_at_str,
-        last_checked_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        last_checked_at=now_iso,
         latest_review_submitted_at=latest_review_submitted_at,
         review_addressed_at=pr.review_addressed_at,
     )
@@ -1574,6 +1884,7 @@ def _fetch_pr_status_with_gh_with_context(
             f"pr_url={updated_pr.url} "
             f"review_decision={str(review_decision_raw or '').lower() or 'none'} "
             f"review_status={updated_pr.review_status or 'unknown'} "
+            f"ci_status={updated_pr.ci_status or 'unknown'} "
             f"merged={'yes' if updated_pr.merged_at else 'no'} "
             f"approved_by_comment={'yes' if approved_by_comment else 'no'} "
             f"approved_by={approved_by or '-'} "
@@ -1657,6 +1968,7 @@ def _increment_idle_polls(
     max_idle_polls: int,
     message: str,
     context: Optional[dict[str, Any]] = None,
+    auto_approve_enabled: bool = False,
 ) -> tuple[RunRecord, int]:
     next_idle_polls = idle_polls + 1
     if next_idle_polls < max_idle_polls:
@@ -1667,6 +1979,7 @@ def _increment_idle_polls(
             run_record,
             message=message,
             context=context,
+            auto_approve_enabled=auto_approve_enabled,
         ),
         0,
     )
@@ -1678,6 +1991,7 @@ def _force_needs_input(
     *,
     message: str,
     context: Optional[dict[str, Any]] = None,
+    auto_approve_enabled: bool = False,
 ) -> RunRecord:
     payload: dict[str, Any] = {"message": message}
     if context:
@@ -1689,6 +2003,7 @@ def _force_needs_input(
             needs_user_input=True,
             needs_user_input_payload=payload,
         ),
+        auto_approve_enabled=auto_approve_enabled,
     )
 
 

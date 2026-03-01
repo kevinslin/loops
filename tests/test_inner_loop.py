@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import os
 import pytest
@@ -21,7 +22,14 @@ from loops.handoff_handlers import HandoffResult
 from loops import inner_loop as inner_loop_module
 from loops.inner_loop import run_inner_loop
 from loops import cli as cli_module
-from loops.run_record import RunPR, RunRecord, Task, read_run_record, write_run_record
+from loops.run_record import (
+    RunAutoApprove,
+    RunPR,
+    RunRecord,
+    Task,
+    read_run_record,
+    write_run_record,
+)
 from loops.state_signal import enqueue_state_signal
 
 
@@ -143,6 +151,7 @@ def _runtime_context(
     initial_poll_seconds: float = 5.0,
     max_poll_seconds: float = 60.0,
     max_idle_polls: int = 20,
+    auto_approve_enabled: bool = False,
 ) -> inner_loop_module.InnerLoopRuntimeContext:
     if user_handoff_handler is None:
         user_handoff_handler = lambda _payload: HandoffResult.waiting()
@@ -164,6 +173,7 @@ def _runtime_context(
         max_poll_seconds=max_poll_seconds,
         max_idle_polls=max_idle_polls,
         non_interactive_default_handoff=False,
+        auto_approve_enabled=auto_approve_enabled,
     )
 
 
@@ -260,6 +270,129 @@ def test_handle_waiting_on_review_state_missing_pr_forces_needs_input(
     }
 
 
+def test_handle_waiting_on_review_state_runs_auto_approve_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        pr=RunPR(
+            url="https://github.com/acme/api/pull/42",
+            number=42,
+            repo="acme/api",
+            review_status="open",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:00Z",
+        ),
+    )
+    run_record = read_run_record(run_dir / "run.json")
+    runtime = _runtime_context(
+        run_dir,
+        auto_approve_enabled=True,
+        pr_status_fetcher=lambda pr: RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="approved",
+            ci_status="success",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:01Z",
+        ),
+    )
+    control = inner_loop_module.LoopControlState(backoff_seconds=5.0)
+    evaluations = {"count": 0}
+
+    def fake_run_auto_approve_eval(*, run_record, runtime, control):
+        evaluations["count"] += 1
+        return write_run_record(
+            runtime.run_json_path,
+            replace(
+                run_record,
+                auto_approve=RunAutoApprove(
+                    verdict="REJECT",
+                    impact=2,
+                    risk=4,
+                    size=2,
+                    judged_at="2026-02-09T00:00:02Z",
+                    summary="Too risky to auto-merge.",
+                ),
+            ),
+            auto_approve_enabled=runtime.auto_approve_enabled,
+        )
+
+    monkeypatch.setattr(inner_loop_module, "_run_auto_approve_eval", fake_run_auto_approve_eval)
+
+    first = inner_loop_module._handle_waiting_on_review_state(
+        run_record=run_record,
+        runtime=runtime,
+        control=control,
+    )
+    second = inner_loop_module._handle_waiting_on_review_state(
+        run_record=first.run_record,
+        runtime=runtime,
+        control=control,
+    )
+
+    assert first.action == "auto_approve_eval"
+    assert first.run_record.auto_approve is not None
+    assert first.run_record.auto_approve.verdict == "REJECT"
+    assert second.action == "review_poll"
+    assert evaluations["count"] == 1
+
+
+def test_handle_waiting_on_review_state_skips_auto_approve_until_ci_green(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        pr=RunPR(
+            url="https://github.com/acme/api/pull/42",
+            number=42,
+            repo="acme/api",
+            review_status="open",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:00Z",
+        ),
+    )
+    run_record = read_run_record(run_dir / "run.json")
+    runtime = _runtime_context(
+        run_dir,
+        auto_approve_enabled=True,
+        pr_status_fetcher=lambda pr: RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="approved",
+            ci_status="pending",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:01Z",
+        ),
+    )
+    control = inner_loop_module.LoopControlState(backoff_seconds=5.0)
+
+    monkeypatch.setattr(
+        inner_loop_module,
+        "_run_auto_approve_eval",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("auto-approve should not run before CI is green")
+        ),
+    )
+
+    result = inner_loop_module._handle_waiting_on_review_state(
+        run_record=run_record,
+        runtime=runtime,
+        control=control,
+    )
+
+    assert result.action == "review_poll"
+    assert result.run_record.auto_approve is None
+
+
 def test_handle_pr_approved_state_runs_cleanup_once_per_pr_url(
     tmp_path: Path,
     monkeypatch,
@@ -273,6 +406,7 @@ def test_handle_pr_approved_state_runs_cleanup_once_per_pr_url(
             number=42,
             repo="acme/api",
             review_status="approved",
+            ci_status="success",
             merged_at=None,
             last_checked_at="2026-02-09T00:00:00Z",
         ),
@@ -292,6 +426,7 @@ def test_handle_pr_approved_state_runs_cleanup_once_per_pr_url(
             number=pr.number,
             repo=pr.repo,
             review_status="approved",
+            ci_status="success",
             merged_at=None,
             last_checked_at="2026-02-09T00:00:05Z",
         )
@@ -346,6 +481,7 @@ def test_handle_pr_approved_state_sets_needs_input_when_cleanup_fails(
             number=42,
             repo="acme/api",
             review_status="approved",
+            ci_status="success",
             merged_at=None,
             last_checked_at="2026-02-09T00:00:00Z",
         ),
@@ -401,6 +537,7 @@ def test_inner_loop_reaches_done_lifecycle(tmp_path, monkeypatch) -> None:
                 number=pr.number,
                 repo=pr.repo,
                 review_status="approved",
+                ci_status="success",
                 merged_at=None,
                 last_checked_at="2026-02-09T00:00:01Z",
             )
@@ -409,6 +546,7 @@ def test_inner_loop_reaches_done_lifecycle(tmp_path, monkeypatch) -> None:
             number=pr.number,
             repo=pr.repo,
             review_status="approved",
+            ci_status="success",
             merged_at="2026-02-09T00:00:02Z",
             last_checked_at="2026-02-09T00:00:02Z",
         )
@@ -443,6 +581,162 @@ def test_inner_loop_reaches_done_lifecycle(tmp_path, monkeypatch) -> None:
     assert args == ["exec", "exec resume session-1"]
 
 
+def test_inner_loop_auto_approve_approve_verdict_allows_merge(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        pr=RunPR(
+            url="https://github.com/acme/api/pull/42",
+            number=42,
+            repo="acme/api",
+            review_status="open",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:00Z",
+        ),
+    )
+    cleanup_stub = tmp_path / "cleanup_stub.py"
+    _write_cleanup_stub(cleanup_stub)
+    counter_path = tmp_path / "counter.txt"
+    monkeypatch.setenv("STUB_COUNTER_PATH", str(counter_path))
+    monkeypatch.setenv(
+        "CODEX_CMD",
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(cleanup_stub))}",
+    )
+    monkeypatch.setenv("LOOPS_AUTO_APPROVE_ENABLED", "1")
+
+    poll_calls = {"count": 0}
+
+    def pr_status_fetcher(pr: RunPR) -> RunPR:
+        poll_calls["count"] += 1
+        if poll_calls["count"] == 1:
+            return RunPR(
+                url=pr.url,
+                number=pr.number,
+                repo=pr.repo,
+                review_status="approved",
+                ci_status="success",
+                merged_at=None,
+                last_checked_at="2026-02-09T00:00:01Z",
+            )
+        return RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="approved",
+            ci_status="success",
+            merged_at="2026-02-09T00:00:02Z",
+            last_checked_at="2026-02-09T00:00:02Z",
+        )
+
+    eval_calls = {"count": 0}
+
+    def fake_run_auto_approve_eval(*, run_record, runtime, control):
+        eval_calls["count"] += 1
+        del control
+        return write_run_record(
+            runtime.run_json_path,
+            replace(
+                run_record,
+                auto_approve=RunAutoApprove(
+                    verdict="APPROVE",
+                    impact=3,
+                    risk=2,
+                    size=2,
+                    judged_at="2026-02-09T00:00:01Z",
+                    summary="Auto-approve conditions satisfied.",
+                ),
+            ),
+            auto_approve_enabled=runtime.auto_approve_enabled,
+        )
+
+    monkeypatch.setattr(inner_loop_module, "_run_auto_approve_eval", fake_run_auto_approve_eval)
+
+    result = run_inner_loop(
+        run_dir,
+        pr_status_fetcher=pr_status_fetcher,
+        sleep_fn=lambda _seconds: None,
+        max_iterations=20,
+    )
+
+    assert result.last_state == "DONE"
+    assert result.auto_approve is not None
+    assert result.auto_approve.verdict == "APPROVE"
+    assert eval_calls["count"] == 1
+    assert counter_path.read_text() == "1"
+
+
+def test_inner_loop_auto_approve_reject_blocks_without_rerun(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        pr=RunPR(
+            url="https://github.com/acme/api/pull/42",
+            number=42,
+            repo="acme/api",
+            review_status="open",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:00Z",
+        ),
+    )
+    monkeypatch.setenv("LOOPS_AUTO_APPROVE_ENABLED", "1")
+
+    def pr_status_fetcher(pr: RunPR) -> RunPR:
+        return RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="approved",
+            ci_status="success",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:01Z",
+        )
+
+    eval_calls = {"count": 0}
+
+    def fake_run_auto_approve_eval(*, run_record, runtime, control):
+        eval_calls["count"] += 1
+        del control
+        return write_run_record(
+            runtime.run_json_path,
+            replace(
+                run_record,
+                auto_approve=RunAutoApprove(
+                    verdict="REJECT",
+                    impact=2,
+                    risk=4,
+                    size=2,
+                    judged_at="2026-02-09T00:00:01Z",
+                    summary="Risk remains too high for auto-merge.",
+                ),
+            ),
+            auto_approve_enabled=runtime.auto_approve_enabled,
+        )
+
+    monkeypatch.setattr(inner_loop_module, "_run_auto_approve_eval", fake_run_auto_approve_eval)
+
+    result = run_inner_loop(
+        run_dir,
+        pr_status_fetcher=pr_status_fetcher,
+        user_handoff_handler=lambda _payload: HandoffResult.waiting(),
+        sleep_fn=lambda _seconds: None,
+        max_iterations=8,
+        max_idle_polls=2,
+    )
+
+    assert result.last_state == "NEEDS_INPUT"
+    assert result.auto_approve is not None
+    assert result.auto_approve.verdict == "REJECT"
+    assert eval_calls["count"] == 1
+
+
 def test_inner_loop_escalates_when_approved_pr_never_merges(tmp_path, monkeypatch) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -453,6 +747,7 @@ def test_inner_loop_escalates_when_approved_pr_never_merges(tmp_path, monkeypatc
             number=42,
             repo="acme/api",
             review_status="approved",
+            ci_status="success",
             merged_at=None,
             last_checked_at="2026-02-09T00:00:00Z",
         ),
@@ -473,6 +768,7 @@ def test_inner_loop_escalates_when_approved_pr_never_merges(tmp_path, monkeypatc
             number=pr.number,
             repo=pr.repo,
             review_status="approved",
+            ci_status="success",
             merged_at=None,
             last_checked_at="2026-02-09T00:00:01Z",
         )
@@ -506,6 +802,7 @@ def test_inner_loop_escalates_when_approved_merge_poll_errors(tmp_path, monkeypa
             number=42,
             repo="acme/api",
             review_status="approved",
+            ci_status="success",
             merged_at=None,
             last_checked_at="2026-02-09T00:00:00Z",
         ),
@@ -1855,6 +2152,50 @@ def test_fetch_pr_status_logs_context_and_result(monkeypatch) -> None:
 
     assert any("polling PR status via gh" in message for message in messages)
     assert any("PR status poll result" in message for message in messages)
+
+
+def test_fetch_pr_status_sets_ci_status_from_rollup(monkeypatch) -> None:
+    payload = {
+        "url": "https://github.com/acme/api/pull/42",
+        "number": 42,
+        "reviewDecision": "APPROVED",
+        "mergedAt": None,
+        "latestReviews": [],
+        "comments": [],
+        "statusCheckRollup": [
+            {
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+            }
+        ],
+    }
+
+    def fake_subprocess_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess(
+            args=["gh", "pr", "view"],
+            returncode=0,
+            stdout=json.dumps(payload),
+            stderr="",
+        )
+
+    monkeypatch.setattr(inner_loop_module.subprocess, "run", fake_subprocess_run)
+    settings = inner_loop_module.CommentApprovalSettings(
+        allowed_usernames=(),
+        pattern_text=r"^\s*/approve\b",
+        approval_regex=re.compile(r"^\s*/approve\b", re.IGNORECASE),
+    )
+    updated, approved_by_comment, approved_by = (
+        inner_loop_module._fetch_pr_status_with_gh_with_context(
+            RunPR(url="https://github.com/acme/api/pull/42"),
+            comment_approval=settings,
+        )
+    )
+
+    assert updated.review_status == "approved"
+    assert updated.ci_status == "success"
+    assert updated.ci_last_checked_at is not None
+    assert approved_by_comment is False
+    assert approved_by == ""
 
 
 def test_fetch_pr_status_uses_supported_gh_json_fields(monkeypatch) -> None:

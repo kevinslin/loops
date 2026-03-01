@@ -51,6 +51,7 @@ class OuterLoopConfig:
     task_ready_status: str = "Ready"
     approval_comment_usernames: tuple[str, ...] = ()
     approval_comment_pattern: str = DEFAULT_APPROVAL_COMMENT_PATTERN
+    auto_approve_enabled: bool = False
     handoff_handler: str = DEFAULT_HANDOFF_HANDLER
 
 
@@ -468,6 +469,9 @@ def build_inner_loop_launcher(
         env["LOOPS_TASK_URL"] = task.url
         env["LOOPS_TASK_PROVIDER"] = task.provider_id
         env["LOOPS_HANDOFF_HANDLER"] = config.loop_config.handoff_handler
+        env["LOOPS_AUTO_APPROVE_ENABLED"] = (
+            "1" if config.loop_config.auto_approve_enabled else "0"
+        )
         if sync_mode:
             env[STREAM_LOGS_STDOUT_ENV] = "1"
         if inner_loop.env:
@@ -617,6 +621,11 @@ def _load_outer_loop_config(payload: Any) -> OuterLoopConfig:
             "approval_comment_pattern",
             defaults["approval_comment_pattern"],
         ),
+        auto_approve_enabled=_load_bool(
+            merged_payload,
+            "auto_approve_enabled",
+            defaults["auto_approve_enabled"],
+        ),
         handoff_handler=validate_handoff_handler_name(
             _load_str(
                 merged_payload,
@@ -641,6 +650,7 @@ def build_default_loop_config_payload() -> dict[str, Any]:
         "task_ready_status": defaults.task_ready_status,
         "approval_comment_usernames": list(defaults.approval_comment_usernames),
         "approval_comment_pattern": defaults.approval_comment_pattern,
+        "auto_approve_enabled": defaults.auto_approve_enabled,
         "handoff_handler": defaults.handoff_handler,
     }
 

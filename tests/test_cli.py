@@ -42,6 +42,7 @@ def test_init_creates_default_loops_structure(tmp_path: Path) -> None:
     assert config_payload["loop_config"]["sync_mode"] is False
     assert config_payload["loop_config"]["approval_comment_usernames"] == []
     assert config_payload["loop_config"]["approval_comment_pattern"] == r"^\s*/approve\b"
+    assert config_payload["loop_config"]["auto_approve_enabled"] is False
     assert config_payload["loop_config"]["handoff_handler"] == "stdin_handler"
     assert config_payload["inner_loop"]["append_task_url"] is False
     assert config_payload["inner_loop"]["command"] == [
@@ -398,6 +399,7 @@ def test_doctor_upgrades_legacy_config(tmp_path: Path) -> None:
     assert payload["loop_config"]["task_ready_status"] == "Todo"
     assert payload["loop_config"]["parallel_tasks"] is False
     assert payload["loop_config"]["approval_comment_usernames"] == []
+    assert payload["loop_config"]["auto_approve_enabled"] is False
     assert payload["loop_config"]["handoff_handler"] == "stdin_handler"
 
 

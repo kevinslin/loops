@@ -315,6 +315,24 @@ def test_load_config_reads_sync_mode(tmp_path: Path) -> None:
     assert config.version == LATEST_LOOPS_CONFIG_VERSION
 
 
+def test_load_config_reads_auto_approve_enabled(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    payload = {
+        "provider_id": "github_projects_v2",
+        "provider_config": {},
+        "loop_config": {"auto_approve_enabled": True},
+        "inner_loop": {
+            "command": ["echo", "hello"],
+            "append_task_url": False,
+        },
+    }
+    config_path.write_text(json.dumps(payload))
+
+    config = load_config(config_path)
+    assert config.loop_config.auto_approve_enabled is True
+    assert config.version == LATEST_LOOPS_CONFIG_VERSION
+
+
 def test_load_config_reads_handoff_handler(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     payload = {
@@ -519,6 +537,7 @@ def test_build_inner_loop_launcher_sync_mode_uses_subprocess_run(
     assert env["LOOPS_RUN_DIR"] == str(run_dir)
     assert env["LOOPS_TASK_ID"] == task.id
     assert env["LOOPS_HANDOFF_HANDLER"] == "stdin_handler"
+    assert env["LOOPS_AUTO_APPROVE_ENABLED"] == "0"
     assert env["LOOPS_STREAM_LOGS_STDOUT"] == "1"
     assert "LOOPS_APPROVAL_COMMENT_USERNAMES" not in env
     assert "LOOPS_APPROVAL_COMMENT_PATTERN" not in env
