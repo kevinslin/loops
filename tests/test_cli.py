@@ -87,9 +87,321 @@ def test_init_force_overwrites_existing_config(tmp_path: Path) -> None:
     assert overwritten["task_provider_id"] == "github_projects_v2"
 
 
+def test_clean_dry_run_reports_actions_without_modifying_runs(tmp_path: Path) -> None:
+    runner = CliRunner()
+    loops_root = tmp_path / ".loops"
+    jobs_root = loops_root / "jobs"
+    jobs_root.mkdir(parents=True)
+
+    empty_run = jobs_root / "empty-run"
+    empty_run.mkdir()
+    (empty_run / "run.log").write_text("")
+    (empty_run / "agent.log").write_text("")
+
+    done_run = jobs_root / "done-run"
+    done_run.mkdir()
+    (done_run / "run.log").write_text("has output")
+    (done_run / "agent.log").write_text("has output")
+    write_run_record(
+        done_run / "run.json",
+        RunRecord(
+            task=Task(
+                provider_id="github_projects_v2",
+                id="done",
+                title="Done task",
+                status="Done",
+                url="https://github.com/acme/api/issues/1",
+                created_at="2026-03-01T00:00:00Z",
+                updated_at="2026-03-01T00:00:00Z",
+            ),
+            pr=RunPR(
+                url="https://github.com/acme/api/pull/1",
+                merged_at="2026-03-01T00:00:01Z",
+            ),
+            codex_session=None,
+            needs_user_input=False,
+            last_state="RUNNING",
+            updated_at="",
+        ),
+    )
+
+    active_run = jobs_root / "active-run"
+    active_run.mkdir()
+    (active_run / "run.log").write_text("has output")
+    (active_run / "agent.log").write_text("has output")
+    write_run_record(
+        active_run / "run.json",
+        RunRecord(
+            task=Task(
+                provider_id="github_projects_v2",
+                id="active",
+                title="Active task",
+                status="In progress",
+                url="https://github.com/acme/api/issues/2",
+                created_at="2026-03-01T00:00:00Z",
+                updated_at="2026-03-01T00:00:00Z",
+            ),
+            pr=None,
+            codex_session=None,
+            needs_user_input=False,
+            last_state="RUNNING",
+            updated_at="",
+        ),
+    )
+
+    result = runner.invoke(
+        main,
+        ["clean", "--loops-root", str(loops_root), "--dry-run"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Would delete 1 empty run dir(s)." in result.output
+    assert "Would archive 1 completed run dir(s)." in result.output
+    assert str(empty_run.resolve()) in result.output
+    assert str(done_run.resolve()) in result.output
+    assert empty_run.exists()
+    assert done_run.exists()
+    assert active_run.exists()
+    assert not (loops_root / ".archive").exists()
+
+
+def test_clean_applies_deletes_and_archives_runs(tmp_path: Path) -> None:
+    runner = CliRunner()
+    loops_root = tmp_path / ".loops"
+    jobs_root = loops_root / "jobs"
+    jobs_root.mkdir(parents=True)
+
+    empty_run = jobs_root / "empty-run"
+    empty_run.mkdir()
+    (empty_run / "run.log").write_text("")
+    (empty_run / "agent.log").write_text("")
+
+    done_run = jobs_root / "done-run"
+    done_run.mkdir()
+    (done_run / "run.log").write_text("has output")
+    (done_run / "agent.log").write_text("has output")
+    write_run_record(
+        done_run / "run.json",
+        RunRecord(
+            task=Task(
+                provider_id="github_projects_v2",
+                id="done",
+                title="Done task",
+                status="Done",
+                url="https://github.com/acme/api/issues/1",
+                created_at="2026-03-01T00:00:00Z",
+                updated_at="2026-03-01T00:00:00Z",
+            ),
+            pr=RunPR(
+                url="https://github.com/acme/api/pull/1",
+                merged_at="2026-03-01T00:00:01Z",
+            ),
+            codex_session=None,
+            needs_user_input=False,
+            last_state="RUNNING",
+            updated_at="",
+        ),
+    )
+
+    active_run = jobs_root / "active-run"
+    active_run.mkdir()
+    (active_run / "run.log").write_text("has output")
+    (active_run / "agent.log").write_text("has output")
+    write_run_record(
+        active_run / "run.json",
+        RunRecord(
+            task=Task(
+                provider_id="github_projects_v2",
+                id="active",
+                title="Active task",
+                status="In progress",
+                url="https://github.com/acme/api/issues/2",
+                created_at="2026-03-01T00:00:00Z",
+                updated_at="2026-03-01T00:00:00Z",
+            ),
+            pr=None,
+            codex_session=None,
+            needs_user_input=False,
+            last_state="RUNNING",
+            updated_at="",
+        ),
+    )
+
+    result = runner.invoke(main, ["clean", "--loops-root", str(loops_root)])
+
+    assert result.exit_code == 0, result.output
+    assert "Deleted 1 empty run dir(s)." in result.output
+    assert "Archived 1 completed run dir(s)." in result.output
+    assert not empty_run.exists()
+    assert not done_run.exists()
+    assert active_run.exists()
+    archived_done = loops_root / ".archive" / "done-run"
+    assert archived_done.exists()
+    assert (archived_done / "run.json").exists()
+
+
+def test_clean_does_not_delete_active_runs_with_empty_logs(tmp_path: Path) -> None:
+    runner = CliRunner()
+    loops_root = tmp_path / ".loops"
+    jobs_root = loops_root / "jobs"
+    jobs_root.mkdir(parents=True)
+
+    active_empty_run = jobs_root / "active-empty-run"
+    active_empty_run.mkdir()
+    (active_empty_run / "run.log").write_text("")
+    (active_empty_run / "agent.log").write_text("")
+    write_run_record(
+        active_empty_run / "run.json",
+        RunRecord(
+            task=Task(
+                provider_id="github_projects_v2",
+                id="active-empty",
+                title="Active empty run",
+                status="In progress",
+                url="https://github.com/acme/api/issues/3",
+                created_at="2026-03-01T00:00:00Z",
+                updated_at="2026-03-01T00:00:00Z",
+            ),
+            pr=None,
+            codex_session=None,
+            needs_user_input=False,
+            last_state="RUNNING",
+            updated_at="",
+        ),
+    )
+
+    result = runner.invoke(main, ["clean", "--loops-root", str(loops_root)])
+
+    assert result.exit_code == 0, result.output
+    assert "Deleted 0 empty run dir(s)." in result.output
+    assert active_empty_run.exists()
+
+
+def test_clean_uses_suffix_when_archive_target_exists(tmp_path: Path) -> None:
+    runner = CliRunner()
+    loops_root = tmp_path / ".loops"
+    jobs_root = loops_root / "jobs"
+    jobs_root.mkdir(parents=True)
+    archive_root = loops_root / ".archive"
+    (archive_root / "done-run").mkdir(parents=True)
+
+    done_run = jobs_root / "done-run"
+    done_run.mkdir()
+    (done_run / "run.log").write_text("has output")
+    (done_run / "agent.log").write_text("has output")
+    write_run_record(
+        done_run / "run.json",
+        RunRecord(
+            task=Task(
+                provider_id="github_projects_v2",
+                id="done",
+                title="Done task",
+                status="Done",
+                url="https://github.com/acme/api/issues/1",
+                created_at="2026-03-01T00:00:00Z",
+                updated_at="2026-03-01T00:00:00Z",
+            ),
+            pr=RunPR(
+                url="https://github.com/acme/api/pull/1",
+                merged_at="2026-03-01T00:00:01Z",
+            ),
+            codex_session=None,
+            needs_user_input=False,
+            last_state="RUNNING",
+            updated_at="",
+        ),
+    )
+
+    result = runner.invoke(main, ["clean", "--loops-root", str(loops_root)])
+
+    assert result.exit_code == 0, result.output
+    assert not done_run.exists()
+    archived_done = archive_root / "done-run-1"
+    assert archived_done.exists()
+    assert str(archived_done.resolve()) in result.output
+
+
+def test_clean_archives_done_runs_even_with_schema_drift(tmp_path: Path) -> None:
+    runner = CliRunner()
+    loops_root = tmp_path / ".loops"
+    jobs_root = loops_root / "jobs"
+    jobs_root.mkdir(parents=True)
+
+    done_drift_run = jobs_root / "done-drift-run"
+    done_drift_run.mkdir()
+    (done_drift_run / "run.log").write_text("has output")
+    (done_drift_run / "agent.log").write_text("has output")
+    (done_drift_run / "run.json").write_text(
+        json.dumps(
+            {
+                "last_state": "DONE",
+                "needs_user_input": "not-a-bool",
+            }
+        )
+    )
+
+    result = runner.invoke(main, ["clean", "--loops-root", str(loops_root)])
+
+    assert result.exit_code == 0, result.output
+    assert not done_drift_run.exists()
+    archived_done = loops_root / ".archive" / "done-drift-run"
+    assert archived_done.exists()
+    assert (archived_done / "run.json").exists()
+
+
+def test_clean_skips_non_utf8_run_record_and_continues(tmp_path: Path) -> None:
+    runner = CliRunner()
+    loops_root = tmp_path / ".loops"
+    jobs_root = loops_root / "jobs"
+    jobs_root.mkdir(parents=True)
+
+    broken_run = jobs_root / "broken-run"
+    broken_run.mkdir()
+    (broken_run / "run.log").write_text("has output")
+    (broken_run / "agent.log").write_text("has output")
+    (broken_run / "run.json").write_bytes(b"\xff\xfe\x00\x01")
+
+    done_run = jobs_root / "done-run"
+    done_run.mkdir()
+    (done_run / "run.log").write_text("has output")
+    (done_run / "agent.log").write_text("has output")
+    write_run_record(
+        done_run / "run.json",
+        RunRecord(
+            task=Task(
+                provider_id="github_projects_v2",
+                id="done",
+                title="Done task",
+                status="Done",
+                url="https://github.com/acme/api/issues/4",
+                created_at="2026-03-01T00:00:00Z",
+                updated_at="2026-03-01T00:00:00Z",
+            ),
+            pr=RunPR(
+                url="https://github.com/acme/api/pull/4",
+                merged_at="2026-03-01T00:00:01Z",
+            ),
+            codex_session=None,
+            needs_user_input=False,
+            last_state="RUNNING",
+            updated_at="",
+        ),
+    )
+
+    result = runner.invoke(main, ["clean", "--loops-root", str(loops_root)])
+
+    assert result.exit_code == 0, result.output
+    assert broken_run.exists()
+    assert not done_run.exists()
+    archived_done = loops_root / ".archive" / "done-run"
+    assert archived_done.exists()
+
+
 def test_normalize_argv_preserves_known_subcommands() -> None:
     argv = ["python", "doctor"]
     assert _normalize_argv(argv) == argv
+    clean_argv = ["python", "clean"]
+    assert _normalize_argv(clean_argv) == clean_argv
 
 
 def test_normalize_argv_routes_legacy_flags_to_run() -> None:
