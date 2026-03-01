@@ -1567,22 +1567,32 @@ def _run_auto_approve_eval(
 
 
 def _extract_pr_from_output(output: str) -> Optional[RunPR]:
+    candidates: list[str] = []
     for line in output.splitlines():
+        stripped = line.strip()
+        if stripped:
+            direct_match = _run_pr_from_url(stripped)
+            if direct_match is not None:
+                candidates.append(direct_match.url)
         try:
             payload = json.loads(line)
         except json.JSONDecodeError:
-            continue
+            payload = None
         if isinstance(payload, dict):
-            for key in ("pr_url", "pull_request_url", "url"):
+            for key in ("pr_url", "pull_request_url", "url", "pr"):
                 value = payload.get(key)
                 if isinstance(value, str):
                     pr = _run_pr_from_url(value)
                     if pr is not None:
-                        return pr
-    match = GITHUB_PR_PATTERN.search(output)
-    if not match:
+                        candidates.append(pr.url)
+            continue
+        for match in GITHUB_PR_PATTERN.finditer(line):
+            pr = _run_pr_from_url(match.group(0))
+            if pr is not None:
+                candidates.append(pr.url)
+    if not candidates:
         return None
-    return _run_pr_from_url(match.group(0))
+    return _run_pr_from_url(candidates[-1])
 
 
 def _extract_trailing_state_marker(output: str) -> Optional[RunState]:

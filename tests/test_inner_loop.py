@@ -2166,6 +2166,22 @@ def test_extract_pr_from_output_matches_json_url_field() -> None:
     assert pr.url == "https://github.com/acme/api/pull/42"
 
 
+def test_extract_pr_from_output_prefers_latest_detected_pr_url() -> None:
+    output = "\n".join(
+        [
+            "Opened PR https://github.com/acme/api/pull/41",
+            json.dumps({"url": "https://github.com/acme/api/pull/42"}),
+            "https://github.com/acme/api/pull/43",
+            "",
+        ]
+    )
+
+    pr = inner_loop_module._extract_pr_from_output(output)
+
+    assert pr is not None
+    assert pr.url == "https://github.com/acme/api/pull/43"
+
+
 def test_run_codex_turn_sets_needs_input_from_trailing_state_marker(
     tmp_path: Path,
     monkeypatch,
