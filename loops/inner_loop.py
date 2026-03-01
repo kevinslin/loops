@@ -115,10 +115,6 @@ class CommentApprovalSettings:
     def enabled(self) -> bool:
         return bool(self.allowed_usernames)
 
-    @property
-    def review_actor_filter_enabled(self) -> bool:
-        return True
-
 
 @dataclass(frozen=True)
 class InnerLoopRuntimeContext:

@@ -21,6 +21,26 @@ def test_provider_config_allowlist_normalizes_on_provider() -> None:
     assert provider.review_actor_allowlist == ("maintainer", "review-bot")
 
 
+def test_provider_config_allowlist_empty_denies_all_review_actors() -> None:
+    provider = GithubProjectsV2TaskProvider(
+        GithubProjectsV2TaskProviderConfig(
+            url="https://github.com/orgs/acme/projects/1",
+            allowlist=[],
+        )
+    )
+    assert provider.review_actor_allowlist == ()
+
+
+def test_provider_config_allowlist_wildcard_allows_all_review_actors() -> None:
+    provider = GithubProjectsV2TaskProvider(
+        GithubProjectsV2TaskProviderConfig(
+            url="https://github.com/orgs/acme/projects/1",
+            allowlist=["*"],
+        )
+    )
+    assert provider.review_actor_allowlist == ("*",)
+
+
 def test_parse_project_url_org() -> None:
     locator = parse_project_url("https://github.com/orgs/acme/projects/42")
     assert locator.owner_type == "organization"
