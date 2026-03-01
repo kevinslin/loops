@@ -210,19 +210,20 @@ def reset_run_record(run_dir: Path) -> RunRecord:
         task = _build_reset_task_from_env(resolved_run_dir)
 
     runtime_config = _load_runtime_config(run_dir=resolved_run_dir, run_log=run_log)
+    runtime_env = runtime_config.env if runtime_config is not None else None
+    runtime_environ = _apply_runtime_env_overrides(runtime_env)
+    runtime_environ = _configure_log_streaming(
+        runtime_config=runtime_config,
+        environ=runtime_environ,
+    )
+    effective_stream_logs_stdout = should_stream_logs_to_stdout(environ=runtime_environ)
     reset_record = RunRecord(
         task=task,
         pr=_build_reset_pr(existing_record.pr if existing_record is not None else None),
         codex_session=None,
         needs_user_input=False,
         needs_user_input_payload=None,
-        stream_logs_stdout=(
-            existing_record.stream_logs_stdout
-            if existing_record is not None and existing_record.stream_logs_stdout is not None
-            else runtime_config.stream_logs_stdout
-            if runtime_config is not None
-            else None
-        ),
+        stream_logs_stdout=effective_stream_logs_stdout,
         last_state="RUNNING",
         updated_at="",
     )

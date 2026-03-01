@@ -127,6 +127,22 @@ def test_read_run_record_rejects_non_bool_stream_logs_stdout(tmp_path) -> None:
         read_run_record(path)
 
 
+def test_write_run_record_rejects_non_bool_stream_logs_stdout(tmp_path) -> None:
+    record = RunRecord(
+        task=_task(),
+        pr=None,
+        codex_session=None,
+        needs_user_input=False,
+        stream_logs_stdout="true",  # type: ignore[arg-type]
+        last_state="RUNNING",
+        updated_at="",
+    )
+    path = tmp_path / "run.json"
+
+    with pytest.raises(TypeError):
+        write_run_record(path, record)
+
+
 def test_read_run_record_accepts_needs_user_input_payload(tmp_path) -> None:
     payload = {
         "task": _task().to_dict(),

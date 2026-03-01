@@ -296,6 +296,93 @@ def test_inner_loop_reset_uses_runtime_stream_logs_stdout(
     assert record.stream_logs_stdout is True
 
 
+def test_inner_loop_reset_runtime_stream_logs_overrides_existing_record(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runner = CliRunner()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    write_run_record(
+        run_dir / "run.json",
+        RunRecord(
+            task=Task(
+                provider_id="github",
+                id="12",
+                title="Existing task",
+                status="ready",
+                url="https://github.com/acme/api/issues/12",
+                created_at="2026-02-09T00:00:00Z",
+                updated_at="2026-02-09T00:00:00Z",
+            ),
+            pr=None,
+            codex_session=None,
+            needs_user_input=True,
+            needs_user_input_payload={"message": "old prompt"},
+            stream_logs_stdout=True,
+            last_state="NEEDS_INPUT",
+            updated_at="",
+        ),
+    )
+    write_inner_loop_runtime_config(
+        run_dir,
+        InnerLoopRuntimeConfig(stream_logs_stdout=False),
+    )
+
+    def _should_not_run(*_args, **_kwargs) -> None:
+        raise AssertionError("should not run")
+
+    monkeypatch.setattr(cli_module, "run_inner_loop", _should_not_run)
+
+    result = runner.invoke(main, ["inner-loop", "--run-dir", str(run_dir), "--reset"])
+
+    assert result.exit_code == 0, result.output
+    record = read_run_record(run_dir / "run.json")
+    assert record.stream_logs_stdout is False
+
+
+def test_inner_loop_reset_uses_env_stream_logs_stdout_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runner = CliRunner()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    write_run_record(
+        run_dir / "run.json",
+        RunRecord(
+            task=Task(
+                provider_id="github",
+                id="13",
+                title="Existing task",
+                status="ready",
+                url="https://github.com/acme/api/issues/13",
+                created_at="2026-02-09T00:00:00Z",
+                updated_at="2026-02-09T00:00:00Z",
+            ),
+            pr=None,
+            codex_session=None,
+            needs_user_input=True,
+            needs_user_input_payload={"message": "old prompt"},
+            stream_logs_stdout=True,
+            last_state="NEEDS_INPUT",
+            updated_at="",
+        ),
+    )
+    monkeypatch.setenv("LOOPS_STREAM_LOGS_STDOUT", "0")
+
+    def _should_not_run(*_args, **_kwargs) -> None:
+        raise AssertionError("should not run")
+
+    monkeypatch.setattr(cli_module, "run_inner_loop", _should_not_run)
+
+    result = runner.invoke(main, ["inner-loop", "--run-dir", str(run_dir), "--reset"])
+
+    assert result.exit_code == 0, result.output
+    record = read_run_record(run_dir / "run.json")
+    assert record.stream_logs_stdout is False
+
+
 def test_run_command_passes_task_url_to_outer_loop(tmp_path: Path, monkeypatch) -> None:
     runner = CliRunner()
     config_path = tmp_path / "config.json"

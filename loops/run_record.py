@@ -325,6 +325,9 @@ def write_run_record(
     needs_user_input_payload = _validate_needs_user_input_payload(
         record.needs_user_input_payload
     )
+    stream_logs_stdout = record.stream_logs_stdout
+    if stream_logs_stdout is not None and not isinstance(stream_logs_stdout, bool):
+        raise TypeError("record.stream_logs_stdout must be a boolean or null")
     updated_record = RunRecord(
         task=record.task,
         pr=record.pr,
@@ -332,7 +335,7 @@ def write_run_record(
         auto_approve=record.auto_approve,
         needs_user_input=record.needs_user_input,
         needs_user_input_payload=needs_user_input_payload,
-        stream_logs_stdout=record.stream_logs_stdout,
+        stream_logs_stdout=stream_logs_stdout,
         last_state=derive_run_state(
             record.pr,
             record.needs_user_input,
