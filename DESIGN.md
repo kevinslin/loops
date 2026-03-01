@@ -169,6 +169,8 @@ type RunRecord = {
     auto_approve?: RunAutoApprove
     codex_session?: CodexSession
     needs_user_input: boolean
+    // effective inner-loop run.log stdout mirroring setting for this run
+    stream_logs_stdout?: boolean
     last_state: RunState
     updated_at: string
 }
@@ -381,6 +383,7 @@ Task provider (GitHub Projects V2)
 - `codex_session`: `{ id, last_prompt }`.
 - `needs_user_input`: boolean flag (readers must validate this is a boolean and reject malformed values).
 - `needs_user_input_payload`: optional JSON object used to carry handoff context (for example `{ "message": "...", "context": {...} }`).
+- `stream_logs_stdout`: optional boolean snapshot of effective `run.log` stdout mirroring (`true`/`false`) for this run.
 - `last_state`: cached derived state.
 - `updated_at`: ISO timestamp.
 

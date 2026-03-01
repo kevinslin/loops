@@ -205,6 +205,7 @@ class RunRecord:
     updated_at: str
     auto_approve: Optional[RunAutoApprove] = None
     needs_user_input_payload: Optional[Dict[str, Any]] = None
+    stream_logs_stdout: Optional[bool] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -218,6 +219,7 @@ class RunRecord:
             ),
             "needs_user_input": self.needs_user_input,
             "needs_user_input_payload": self.needs_user_input_payload,
+            "stream_logs_stdout": self.stream_logs_stdout,
             "last_state": self.last_state,
             "updated_at": self.updated_at,
         }
@@ -290,6 +292,9 @@ def read_run_record(path: str | Path) -> RunRecord:
     needs_user_input_payload = _validate_needs_user_input_payload(
         payload.get("needs_user_input_payload")
     )
+    stream_logs_stdout = payload.get("stream_logs_stdout")
+    if stream_logs_stdout is not None and not isinstance(stream_logs_stdout, bool):
+        raise TypeError('payload["stream_logs_stdout"] must be a boolean or null')
     return RunRecord(
         task=Task.from_dict(payload["task"]),
         pr=RunPR.from_dict(payload["pr"]) if payload.get("pr") else None,
@@ -305,6 +310,7 @@ def read_run_record(path: str | Path) -> RunRecord:
         ),
         needs_user_input=needs_user_input,
         needs_user_input_payload=needs_user_input_payload,
+        stream_logs_stdout=stream_logs_stdout,
         last_state=payload["last_state"],
         updated_at=payload["updated_at"],
     )
@@ -326,6 +332,7 @@ def write_run_record(
         auto_approve=record.auto_approve,
         needs_user_input=record.needs_user_input,
         needs_user_input_payload=needs_user_input_payload,
+        stream_logs_stdout=record.stream_logs_stdout,
         last_state=derive_run_state(
             record.pr,
             record.needs_user_input,

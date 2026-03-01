@@ -216,6 +216,13 @@ def reset_run_record(run_dir: Path) -> RunRecord:
         codex_session=None,
         needs_user_input=False,
         needs_user_input_payload=None,
+        stream_logs_stdout=(
+            existing_record.stream_logs_stdout
+            if existing_record is not None and existing_record.stream_logs_stdout is not None
+            else runtime_config.stream_logs_stdout
+            if runtime_config is not None
+            else None
+        ),
         last_state="RUNNING",
         updated_at="",
     )
@@ -268,9 +275,8 @@ def run_inner_loop(
         runtime_config=runtime_config,
         environ=runtime_environ,
     )
-    stream_logs_token = set_stream_logs_stdout_override(
-        should_stream_logs_to_stdout(environ=runtime_environ)
-    )
+    effective_stream_logs_stdout = should_stream_logs_to_stdout(environ=runtime_environ)
+    stream_logs_token = set_stream_logs_stdout_override(effective_stream_logs_stdout)
 
     try:
         base_prompt = _load_prompt_file(
@@ -331,7 +337,23 @@ def run_inner_loop(
             allow_env_fallback=True,
             environ=runtime_environ,
         )
+        auto_approve_enabled = _load_auto_approve_enabled(
+            runtime_auto_approve_enabled=(
+                runtime_config.auto_approve_enabled if runtime_config is not None else None
+            ),
+            allow_env_fallback=True,
+            environ=runtime_environ,
+        )
         initial_run_record = read_run_record(run_json_path)
+        if initial_run_record.stream_logs_stdout != effective_stream_logs_stdout:
+            initial_run_record = write_run_record(
+                run_json_path,
+                replace(
+                    initial_run_record,
+                    stream_logs_stdout=effective_stream_logs_stdout,
+                ),
+                auto_approve_enabled=auto_approve_enabled,
+            )
         if user_handoff_handler is None:
             user_handoff_handler = resolve_builtin_handoff_handler(
                 configured_handoff_handler,
@@ -349,13 +371,6 @@ def run_inner_loop(
         append_log(run_log, f"[loops] using handoff handler: {selected_handoff_handler}")
         non_interactive_default_handoff = (
             using_default_handoff_handler and not _has_interactive_stdin()
-        )
-        auto_approve_enabled = _load_auto_approve_enabled(
-            runtime_auto_approve_enabled=(
-                runtime_config.auto_approve_enabled if runtime_config is not None else None
-            ),
-            allow_env_fallback=True,
-            environ=runtime_environ,
         )
         runtime = InnerLoopRuntimeContext(
             run_dir=run_dir,

@@ -146,7 +146,7 @@ None identified.
 | `outer_state.tasks` ledger | Updated per ready task via `record_task` (`loops/outer_loop.py:174`) then persisted (`loops/outer_loop.py:205`) | Loaded at cycle start (`loops/outer_loop.py:163`) | Used by `has_task` dedupe gate (`loops/outer_loop.py:173`) | Yes |
 | `ready_tasks` | Created from provider poll filtered by `_is_ready` (`loops/outer_loop.py:164`) | Snapshot per cycle in memory | Used to build emit set and log counts (`loops/outer_loop.py:172`, `loops/outer_loop.py:206`) | Yes |
 | `emit_tasks` | Built in cycle loop (`loops/outer_loop.py:168`, `loops/outer_loop.py:179`) | Snapshot before launch (`loops/outer_loop.py:183`) | Drives run-dir creation + launcher dispatch (`loops/outer_loop.py:184`, `loops/outer_loop.py:199`) | Yes |
-| `run.json` initial state | Written by `write_run_record` (`loops/outer_loop.py:194`) | Materialized before launcher call | Consumed by inner loop as authoritative starting state | Yes |
+| `run.json` initial state (including `stream_logs_stdout`) | Written by `write_run_record` (`loops/outer_loop.py:194`) | Materialized before launcher call | Consumed by inner loop as authoritative starting state and log-streaming snapshot | Yes |
 | `inner_loop_runtime_config.json` | Written in launcher from `loop_config` + `inner_loop.env` + provider review-actor allowlist | Materialized before child process execution | Consumed by inner loop for handoff handler, auto-approve flag, sync-mode log mirroring, comment-approval settings, review-actor allowlist, and runtime env map | Yes |
 | `oloops.log` cycle summary | Appended in finally block (`loops/outer_loop.py:206`, formatter at `loops/outer_loop.py:493`) | N/A | Used for operational summaries (`ready`/`processed`) | Yes |
 
@@ -230,6 +230,7 @@ class OuterLoopRunner
           pr=None,
           codex_session=None,
           needs_user_input=False,
+          stream_logs_stdout=self.config.sync_mode,
           last_state="RUNNING",
           updated_at=now_iso,
         ),
@@ -393,6 +394,7 @@ A: Loops prints a resume command for the interrupted run directory so you can co
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+- 2026-03-01: Documented `run.json.stream_logs_stdout` persistence from outer-loop `sync_mode` during run materialization. (019cab67-3061-7ce1-81c1-e30f80798fb0)
 - 2026-03-01: Replaced launcher env-based inner-loop config transport with run-scoped `inner_loop_runtime_config.json`; outer loop now injects only `LOOPS_RUN_DIR` for `loops.inner_loop` launches while preserving `inner_loop.env` merge for non-`loops.inner_loop` commands. (019caae6-1189-7d83-a9cd-1665818fba36)
 - 2026-03-01: Renamed outer config schema references to `task_provider_id`/`task_provider_config` (v2) and aligned provider/filter docs accordingly. (019caa8b-0807-7603-a519-4a6be2b8e53c)
 - 2026-03-01: Documented sync-mode `Ctrl+C` resume instructions for interrupted foreground launches. (019caa47-6d09-7cf1-a25a-83245c71f987)

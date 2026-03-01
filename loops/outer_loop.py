@@ -290,6 +290,7 @@ class OuterLoopRunner:
                 pr=None,
                 codex_session=None,
                 needs_user_input=False,
+                stream_logs_stdout=self.config.sync_mode,
                 last_state="RUNNING",
                 updated_at=now_iso,
             )
