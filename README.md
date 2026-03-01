@@ -279,3 +279,18 @@ Run tests:
 ```sh
 make test
 ```
+
+Run live integration harness (opt-in):
+
+```sh
+LOOPS_INTEG_LIVE=1 python -m pytest tests/integ -k outer_loop_pickup_live -s
+```
+
+Live integration prerequisites:
+- `gh` in `PATH` and authenticated with a token that can mutate the target project/repo.
+- `codex` in `PATH` and authenticated.
+- `GITHUB_TOKEN` or `GH_TOKEN` exported.
+
+Notes:
+- The live harness currently targets `https://github.com/users/kevinslin/projects/6/views/1`.
+- Test issues are created in `kevinslin/loops-integ` and are cleaned up at test end.
