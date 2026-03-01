@@ -513,6 +513,34 @@ def test_doctor_upgrades_legacy_config(tmp_path: Path) -> None:
     assert payload["loop_config"]["handoff_handler"] == "stdin_handler"
 
 
+def test_doctor_upgrades_versionless_legacy_config(tmp_path: Path) -> None:
+    runner = CliRunner()
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "provider_id": "github_projects_v2",
+                "provider_config": {"url": "https://github.com/orgs/acme/projects/8"},
+            }
+        )
+    )
+
+    result = runner.invoke(main, ["doctor", "--config", str(config_path)])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(config_path.read_text())
+    assert payload["version"] == LATEST_LOOPS_CONFIG_VERSION
+    assert "provider_id" not in payload
+    assert "provider_config" not in payload
+    assert payload["task_provider_id"] == "github_projects_v2"
+    assert payload["task_provider_config"] == {
+        "allowlist": [],
+        "page_size": 50,
+        "status_field": "Status",
+        "url": "https://github.com/orgs/acme/projects/8",
+    }
+
+
 def test_doctor_reports_when_config_is_up_to_date(tmp_path: Path) -> None:
     runner = CliRunner()
     config_path = tmp_path / "config.json"

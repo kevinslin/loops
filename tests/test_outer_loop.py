@@ -367,6 +367,25 @@ def test_load_config_migrates_legacy_provider_keys(tmp_path: Path) -> None:
     }
 
 
+def test_load_config_migrates_versionless_legacy_provider_keys(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    payload = {
+        "provider_id": "github_projects_v2",
+        "provider_config": {"url": "https://github.com/orgs/acme/projects/2"},
+    }
+    config_path.write_text(json.dumps(payload))
+
+    config = load_config(config_path)
+    assert config.version == LATEST_LOOPS_CONFIG_VERSION
+    assert config.task_provider_id == "github_projects_v2"
+    assert config.task_provider_config == {
+        "allowlist": [],
+        "page_size": 50,
+        "status_field": "Status",
+        "url": "https://github.com/orgs/acme/projects/2",
+    }
+
+
 def test_load_config_rejects_invalid_handoff_handler(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     payload = {
