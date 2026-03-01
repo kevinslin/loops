@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 import os
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from loops.outer_loop import (
     LATEST_LOOPS_CONFIG_VERSION,
     OuterLoopRunner,
     OuterLoopState,
+    SyncModeInterruptedError,
     build_default_loop_config_payload,
     build_inner_loop_launcher,
     build_provider,
@@ -281,10 +283,24 @@ def _run_outer_loop(
         inner_loop_launcher=launcher,
     )
     effective_run_once = run_once or task_url is not None
-    if effective_run_once:
-        runner.run_once(limit=limit, forced_task_url=task_url)
-    else:
-        runner.run_forever(limit=limit)
+    try:
+        if effective_run_once:
+            runner.run_once(limit=limit, forced_task_url=task_url)
+        else:
+            runner.run_forever(limit=limit)
+    except KeyboardInterrupt as exc:
+        if isinstance(exc, SyncModeInterruptedError):
+            _print_sync_resume_instructions(run_dir=exc.run_dir)
+        raise click.Abort() from exc
+
+
+def _print_sync_resume_instructions(*, run_dir: Path) -> None:
+    """Print instructions for resuming an interrupted sync-mode inner loop."""
+
+    click.echo(
+        "Sync mode interrupted. Resume this run with:\n"
+        f"loops inner-loop --run-dir {shlex.quote(str(run_dir))}"
+    )
 
 
 def _resolve_run_dir_option(run_dir: Optional[Path]) -> Path:

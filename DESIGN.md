@@ -600,6 +600,7 @@ Prompt-related configuration and runtime inputs:
 
 - Non-fatal errors set `needs_user_input=true` and write the error message to `run.log`.
 - Fatal errors still write to `run.json` and terminate the run.
+- In `sync_mode=true`, if `Ctrl+C` interrupts an active inner-loop launch, the CLI prints a resume command (`loops inner-loop --run-dir <path>`) so the run can be resumed directly.
 - On restart, the inner loop recomputes derived state from `run.json` and resumes accordingly.
 - Repeated polling idleness in `WAITING_ON_REVIEW` or `PR_APPROVED` forces `NEEDS_INPUT` after the configured idle threshold.
 

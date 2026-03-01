@@ -367,6 +367,7 @@ Related launch output behavior:
 
 - Detached mode routes child stdout/stderr to per-run `run.log` (`loops/outer_loop.py:319`).
 - Sync mode uses foreground `subprocess.run`, does not detach, and enables inner-loop `run.log` stdout mirroring (`loops/outer_loop.py:310`).
+- In sync mode, `Ctrl+C` during foreground launch prints resume guidance for `loops inner-loop --run-dir ...` before CLI abort.
 
 ## FAQ
 
@@ -388,11 +389,15 @@ A: They are configured in `loop_config` and written into each run directory as `
 Q: How does handoff handler selection reach inner loop?
 A: Outer loop injects `LOOPS_HANDOFF_HANDLER` from `loop_config.handoff_handler` into each launched inner-loop process.
 
+Q: What happens if I press `Ctrl+C` during a sync-mode inner-loop run?
+A: Loops prints a resume command for the interrupted run directory so you can continue with `loops inner-loop --run-dir <path>`.
+
 ## Manual Notes 
 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+- 2026-03-01: Documented sync-mode `Ctrl+C` resume instructions for interrupted foreground launches. (019caa47-6d09-7cf1-a25a-83245c71f987)
 - 2026-02-28: Removed configurable log timestamp precision; log timestamps are local no-timezone format with fixed fractional precision. (019ca742-f800-78a3-a5f3-11d807a04164)
 - 2026-02-16: Created outer-loop flow doc covering poll, dedupe, run materialization, and launch semantics. (019c6863-d581-7f83-9809-fabbefa042e8)
 - 2026-02-16: Revised outer-loop pseudocode to use grepable runtime names and focus on main execution flow over plumbing details. (019c6863-d581-7f83-9809-fabbefa042e8)

@@ -18,6 +18,7 @@ from loops.outer_loop import (
     LoopsConfig,
     OuterLoopConfig,
     OuterLoopRunner,
+    SyncModeInterruptedError,
     build_provider,
     build_inner_loop_launcher,
     load_config,
@@ -541,6 +542,36 @@ def test_build_inner_loop_launcher_sync_mode_uses_subprocess_run(
     assert env["LOOPS_STREAM_LOGS_STDOUT"] == "1"
     assert "LOOPS_APPROVAL_COMMENT_USERNAMES" not in env
     assert "LOOPS_APPROVAL_COMMENT_PATTERN" not in env
+
+
+def test_build_inner_loop_launcher_sync_mode_interrupt_raises_typed_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    task = make_task("1", "Ship it")
+
+    config = LoopsConfig(
+        version=LATEST_LOOPS_CONFIG_VERSION,
+        provider_id="github_projects_v2",
+        provider_config={"url": "https://github.com/orgs/acme/projects/1"},
+        loop_config=OuterLoopConfig(sync_mode=True),
+        inner_loop=InnerLoopCommandConfig(
+            command=["echo", "hello"],
+            append_task_url=False,
+        ),
+    )
+    launcher = build_inner_loop_launcher(config)
+
+    def fake_run(*_args, **_kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("loops.outer_loop.subprocess.run", fake_run)
+
+    with pytest.raises(SyncModeInterruptedError) as exc_info:
+        launcher(run_dir, task)
+
+    assert exc_info.value.run_dir == run_dir
 
 
 def test_run_once_sync_mode_streams_outer_logs_to_stdout(

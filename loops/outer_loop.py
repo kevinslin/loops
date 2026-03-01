@@ -38,6 +38,14 @@ INNER_LOOP_RUNS_DIR_NAME = "jobs"
 LATEST_LOOPS_CONFIG_VERSION = 1
 
 
+class SyncModeInterruptedError(KeyboardInterrupt):
+    """Raised when sync-mode inner-loop execution is interrupted."""
+
+    def __init__(self, *, run_dir: Path) -> None:
+        super().__init__()
+        self.run_dir = run_dir
+
+
 @dataclass(frozen=True)
 class OuterLoopConfig:
     """Configuration for the outer loop polling and dispatch behavior."""
@@ -481,12 +489,15 @@ def build_inner_loop_launcher(
             command.append(task.url)
 
         if sync_mode:
-            subprocess.run(
-                command,
-                cwd=inner_loop.working_dir,
-                env=env,
-                check=False,
-            )
+            try:
+                subprocess.run(
+                    command,
+                    cwd=inner_loop.working_dir,
+                    env=env,
+                    check=False,
+                )
+            except KeyboardInterrupt as exc:
+                raise SyncModeInterruptedError(run_dir=run_dir) from exc
             return
 
         log_fd = os.open(str(run_log), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
