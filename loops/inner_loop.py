@@ -73,6 +73,8 @@ PROMPT_TEMPLATE = (
     "Include session context in the initial PR body using: sessionid: [session]\n"
     "When posting PR progress comments, avoid duplicate messages by checking your latest "
     "PR comment before posting a new one.\n"
+    "Do not reuse stock opener text (for example: 'Addressed the new discussion feedback'); "
+    "write a specific update for the current change or skip commenting when nothing changed.\n"
     "When posting markdown comments with backticks via gh, use --body-file or a single-quoted "
     "heredoc to avoid shell interpolation issues.\n"
     "Task: {task}\n"

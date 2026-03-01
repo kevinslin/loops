@@ -1035,6 +1035,11 @@ def test_inner_loop_consumes_signal_and_uses_user_response_in_prompt(
         in prompts
     )
     assert (
+        "Do not reuse stock opener text (for example: 'Addressed the new discussion feedback'); "
+        "write a specific update for the current change or skip commenting when nothing changed."
+        in prompts
+    )
+    assert (
         "If you need input from user, print what you need help with and end current "
         "conversation with <state>NEEDS_INPUT</>"
         in prompts
