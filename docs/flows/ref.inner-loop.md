@@ -70,7 +70,7 @@ function run_inner_loop(run_dir):
 - Core state is derived each iteration from `run.json` (`pr`, `needs_user_input`), not from cached in-memory state.
 - Transition gates include: review freshness (`latest_review_submitted_at > review_addressed_at`), idle polling threshold escalation, and max-iteration fallback.
 - Additional inline review gate: when review is not already approved and `ci_status == success`, if `auto_approve_enabled` is true and `RunRecord.auto_approve` is unset/`none`, run one-time `$ag-judge` and persist judgement on `RunRecord`.
-- Runtime config comes from CLI options plus run-scoped files (`inner_loop_approval_config.json`, `inner_loop_runtime_config.json`), with env fallbacks only for direct/manual inner-loop runs.
+- Runtime config comes from CLI options plus run-scoped files (`inner_loop_approval_config.json`, `inner_loop_runtime_config.json`), with env fallbacks for keys omitted from runtime config (or when runtime config is unavailable).
 - In sync-mode launches, outer loop writes `stream_logs_stdout=true` in `inner_loop_runtime_config.json`, which causes inner-loop `run.log` appends to be mirrored to stdout.
 
 ## Sequence diagram
@@ -114,9 +114,9 @@ None identified.
 | Name | Where Read | Default | Effect on Flow |
 |---|---|---|---|
 | `LOOPS_RUN_DIR` | `loops/inner_loop.py:973`, `loops/cli.py:223` | Required when `--run-dir` is omitted | Selects the run directory that provides `run.json` and runtime logs. |
-| `CODEX_CMD` | `loops/inner_loop.py` command resolver fallback | `codex exec --yolo` | Direct/manual-run fallback for base Codex command when no run-scoped runtime config is present. |
-| `LOOPS_PROMPT_FILE` | `loops/inner_loop.py` prompt resolver fallback | unset | Direct/manual-run fallback prompt file when no run-scoped runtime config is present. |
-| `CODEX_PROMPT_FILE` | `loops/inner_loop.py` prompt resolver fallback | unset | Secondary direct/manual-run fallback prompt file. |
+| `CODEX_CMD` | `loops/inner_loop.py` command resolver fallback | `codex exec --yolo` | Fallback base Codex command when runtime config env payload does not provide `CODEX_CMD` (or runtime config is unavailable). |
+| `LOOPS_PROMPT_FILE` | `loops/inner_loop.py` prompt resolver fallback | unset | Fallback prompt file when runtime config env payload does not provide one (or runtime config is unavailable). |
+| `CODEX_PROMPT_FILE` | `loops/inner_loop.py` prompt resolver fallback | unset | Secondary fallback prompt file. |
 | `LOOPS_HANDOFF_HANDLER` | `loops/inner_loop.py` handoff resolver fallback | `stdin_handler` | Direct/manual-run fallback built-in NEEDS_INPUT handoff strategy. |
 | `LOOPS_STREAM_LOGS_STDOUT` | `loops/logging_utils.py` | unset | When set to truthy values (for example `1`), inner-loop `run.log` writes are mirrored to stdout. |
 | `GITHUB_TOKEN` / `GH_TOKEN` | Read by `gh` subprocess invoked from `loops/inner_loop.py:767` | environment-dependent | Determines whether PR status polling via `gh pr view` succeeds in review/merge polling states. |
@@ -337,7 +337,7 @@ A: Inner loop only. Signal producers append to queue; they do not mutate `run.js
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
-- 2026-03-01: Switched runtime config transport to run-scoped `inner_loop_runtime_config.json`; env variables are now fallback-only for direct/manual inner-loop runs. (019caae6-1189-7d83-a9cd-1665818fba36)
+- 2026-03-01: Switched runtime config transport to run-scoped `inner_loop_runtime_config.json`; env variables remain fallback inputs when runtime config omits keys or is unavailable. (019caae6-1189-7d83-a9cd-1665818fba36)
 - 2026-03-01: Updated prompt contract notes to require posting `a-review` output and `ag-judge` verdict/scores to PR comments. (019caaa4-f4d8-7822-a0d0-03315986d5ef)
 - 2026-03-01: Updated review-allowlist config references to `task_provider_config.allowlist` for config schema v2 alignment. (019caa8b-0807-7603-a519-4a6be2b8e53c)
 - 2026-03-01: Added provider-driven review-actor filtering (`task_provider_config.allowlist`) to inner-loop review polling semantics. (019caa52-baf6-7913-b365-3c89049a5716)

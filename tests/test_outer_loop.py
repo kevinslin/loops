@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -707,6 +708,47 @@ def test_build_inner_loop_launcher_writes_runtime_env_to_run_config(
         "CODEX_CMD": "codex exec --json",
         "CUSTOM_VAR": "present",
     }
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["LOOPS_RUN_DIR"] == str(run_dir)
+    assert env["CODEX_CMD"] == "codex exec --json"
+    assert env["CUSTOM_VAR"] == "present"
+
+
+def test_build_inner_loop_launcher_does_not_inject_runtime_env_for_loops_inner_loop_command(
+    tmp_path: Path, monkeypatch
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    task = make_task("1", "Ship it")
+    config = LoopsConfig(
+        version=LATEST_LOOPS_CONFIG_VERSION,
+        task_provider_id="github_projects_v2",
+        task_provider_config={"url": "https://github.com/orgs/acme/projects/1"},
+        loop_config=OuterLoopConfig(sync_mode=False),
+        inner_loop=InnerLoopCommandConfig(
+            command=[sys.executable, "-m", "loops.inner_loop"],
+            env={"CODEX_CMD": "codex exec --json", "CUSTOM_VAR": "present"},
+            append_task_url=False,
+        ),
+    )
+    launcher = build_inner_loop_launcher(config)
+    captured: dict[str, object] = {}
+
+    def fake_popen(command, *, cwd, stdout, stderr, env):
+        captured["command"] = command
+        captured["cwd"] = cwd
+        captured["stdout"] = stdout
+        captured["stderr"] = stderr
+        captured["env"] = env
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("loops.outer_loop.subprocess.Popen", fake_popen)
+    monkeypatch.delenv("CODEX_CMD", raising=False)
+    monkeypatch.delenv("CUSTOM_VAR", raising=False)
+
+    launcher(run_dir, task)
+
     env = captured["env"]
     assert isinstance(env, dict)
     assert env["LOOPS_RUN_DIR"] == str(run_dir)

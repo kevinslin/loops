@@ -1801,6 +1801,73 @@ def test_inner_loop_runtime_config_codex_cmd_overrides_process_env(
     assert args == ["exec", "exec resume session-1"]
 
 
+def test_inner_loop_runtime_config_keeps_process_env_codex_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(run_dir)
+
+    stub = tmp_path / "codex"
+    _write_codex_cli_stub(stub)
+    counter_path = tmp_path / "counter.txt"
+    prompt_log_path = tmp_path / "prompts.log"
+    args_log_path = tmp_path / "args.log"
+    write_inner_loop_runtime_config(
+        run_dir,
+        InnerLoopRuntimeConfig(
+            env={
+                "STUB_COUNTER_PATH": str(counter_path),
+                "STUB_PROMPT_LOG": str(prompt_log_path),
+                "STUB_ARGS_LOG": str(args_log_path),
+            },
+        ),
+    )
+    monkeypatch.setenv(
+        "CODEX_CMD",
+        f"{shlex.quote(str(stub))} exec",
+    )
+
+    poll_calls = {"count": 0}
+
+    def pr_status_fetcher(pr: RunPR) -> RunPR:
+        poll_calls["count"] += 1
+        if poll_calls["count"] == 1:
+            return RunPR(
+                url=pr.url,
+                number=pr.number,
+                repo=pr.repo,
+                review_status="approved",
+                ci_status="success",
+                merged_at=None,
+                last_checked_at="2026-02-09T00:00:01Z",
+            )
+        return RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="approved",
+            ci_status="success",
+            merged_at="2026-02-09T00:00:02Z",
+            last_checked_at="2026-02-09T00:00:02Z",
+        )
+
+    result = run_inner_loop(
+        run_dir,
+        pr_status_fetcher=pr_status_fetcher,
+        sleep_fn=lambda _seconds: None,
+        max_iterations=20,
+    )
+
+    assert result.last_state == "DONE"
+    assert result.pr is not None
+    assert result.pr.merged_at == "2026-02-09T00:00:02Z"
+    assert counter_path.read_text() == "2"
+    args = [line.strip() for line in args_log_path.read_text().splitlines() if line]
+    assert args == ["exec", "exec resume session-1"]
+
+
 def test_build_codex_turn_command_adds_resume_for_codex_exec() -> None:
     session = inner_loop_module.CodexSession(id="session-123")
     command, strategy = inner_loop_module._build_codex_turn_command(

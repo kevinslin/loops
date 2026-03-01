@@ -297,12 +297,12 @@ Notes:
 ### Environment variables
 - `GITHUB_TOKEN` or `GH_TOKEN`: required for GitHub provider startup checks (`GH_TOKEN` is supported as alias fallback).
 - `LOOPS_RUN_DIR`: required path to the inner loop run directory.
-- `CODEX_CMD`: direct/manual-run fallback command used to invoke Codex (default: `codex exec --yolo`).
-- `LOOPS_PROMPT_FILE` / `CODEX_PROMPT_FILE`: direct/manual-run fallback base prompt file path.
+- `CODEX_CMD`: fallback command used when run-scoped runtime config does not set one (default: `codex exec --yolo`).
+- `LOOPS_PROMPT_FILE` / `CODEX_PROMPT_FILE`: fallback base prompt file path when run-scoped runtime config does not set one.
 - `LOOPS_HANDOFF_HANDLER`: direct/manual-run fallback built-in handoff handler name.
 - `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`: legacy fallback task metadata used only when resetting a run with missing `run.json`.
 - `LOOPS_STREAM_LOGS_STDOUT`: direct/manual-run fallback toggle for mirroring `run.log` lines to stdout.
-- Outer-loop-launched runs now persist runtime settings in `inner_loop_runtime_config.json` under each run directory, instead of injecting config via child-process env vars.
+- Outer-loop-launched runs persist runtime settings in `inner_loop_runtime_config.json` under each run directory, instead of injecting config via child-process env vars. For non-`loops.inner_loop` custom launch commands, `inner_loop.env` remains merged into child env for backward compatibility.
 
 ## 4. Architecture
 
@@ -607,8 +607,8 @@ Prompt-related configuration and runtime inputs:
 
 - `loops inner-loop --prompt-file PATH`: prepend file contents to every Codex prompt for the run.
 - `inner_loop_runtime_config.json` (`env.LOOPS_PROMPT_FILE` / `env.CODEX_PROMPT_FILE`): run-scoped prompt-file source for outer-loop-launched runs when `--prompt-file` is unset.
-- `LOOPS_PROMPT_FILE`: direct/manual-run env fallback prompt file when `--prompt-file` is unset and no run-scoped runtime config is present.
-- `CODEX_PROMPT_FILE`: second direct/manual-run env fallback when `LOOPS_PROMPT_FILE` is unset.
+- `LOOPS_PROMPT_FILE`: env fallback prompt file when `--prompt-file` is unset and runtime config does not provide a prompt path.
+- `CODEX_PROMPT_FILE`: second env fallback when `LOOPS_PROMPT_FILE` is unset.
 - `loop_config.auto_approve_enabled`: enables one-time auto-approve evaluation when review is not already approved.
 - Auto-approve defaults are fixed in runtime design: require green CI and judge with `references/jb.coding.md`.
 - `loop_config.handoff_handler` (`stdin_handler` or `gh_comment_handler`): changes where NEEDS_INPUT prompt messages are delivered.

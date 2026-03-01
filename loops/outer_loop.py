@@ -552,6 +552,9 @@ def build_inner_loop_launcher(
         env = os.environ.copy()
         env["LOOPS_RUN_DIR"] = str(run_dir)
         command = list(inner_loop.command)
+        launches_loops_inner_loop = _is_loops_inner_loop_command(command)
+        if inner_loop.env and not launches_loops_inner_loop:
+            env.update(inner_loop.env)
         if inner_loop.append_task_url:
             command.append(task.url)
 
@@ -580,6 +583,17 @@ def build_inner_loop_launcher(
             os.close(log_fd)
 
     return launcher
+
+
+def _is_loops_inner_loop_command(command: list[str]) -> bool:
+    if not command:
+        return False
+    first = Path(command[0]).name.casefold()
+    if first == "loops":
+        return len(command) > 1 and command[1] == "inner-loop"
+    if first.startswith("python"):
+        return len(command) > 2 and command[1] == "-m" and command[2] == "loops.inner_loop"
+    return False
 
 
 def read_outer_state(path: str | Path) -> OuterLoopState:

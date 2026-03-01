@@ -239,11 +239,11 @@ def run_inner_loop(
     base_prompt = _load_prompt_file(
         prompt_file,
         runtime_env=runtime_env,
-        allow_env_fallback=runtime_config is None,
+        allow_env_fallback=True,
     )
     command = _resolve_codex_command(
         runtime_env=runtime_env,
-        allow_env_fallback=runtime_config is None,
+        allow_env_fallback=True,
     )
     comment_approval = _load_comment_approval_settings(run_dir)
     if comment_approval.config_load_error is not None:
@@ -958,7 +958,7 @@ def _resolve_codex_command(
     raw_command = None
     if runtime_env is not None:
         raw_command = runtime_env.get("CODEX_CMD")
-    elif allow_env_fallback:
+    if raw_command is None and allow_env_fallback:
         raw_command = os.environ.get("CODEX_CMD")
     if raw_command is None:
         raw_command = "codex exec --yolo"
@@ -1027,7 +1027,7 @@ def _load_prompt_file(
             prompt_path = runtime_env.get("LOOPS_PROMPT_FILE") or runtime_env.get(
                 "CODEX_PROMPT_FILE"
             )
-        elif allow_env_fallback:
+        if prompt_path is None and allow_env_fallback:
             prompt_path = os.environ.get("LOOPS_PROMPT_FILE") or os.environ.get(
                 "CODEX_PROMPT_FILE"
             )
