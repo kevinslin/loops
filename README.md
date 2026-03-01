@@ -283,6 +283,12 @@ Run tests:
 make test
 ```
 
+Run a targeted test module:
+
+```sh
+python -m pytest tests/test_outer_loop.py -q
+```
+
 Run live integration harness (opt-in):
 
 ```sh
@@ -297,3 +303,4 @@ Live integration prerequisites:
 Notes:
 - The live harness currently targets `https://github.com/users/kevinslin/projects/6/views/1`.
 - Test issues are created in `kevinslin/loops-integ` and are cleaned up at test end.
+- Pytest startup enforces this repository root at `sys.path[0]` (`tests/conftest.py`) so imports resolve to the active worktree checkout.
