@@ -26,6 +26,7 @@ from loops.outer_loop import (
     SyncModeInterruptedError,
     build_provider,
     build_inner_loop_launcher,
+    _is_loops_inner_loop_command,
     load_config,
     read_outer_state,
 )
@@ -70,6 +71,24 @@ def list_run_dirs(loops_root: Path) -> list[Path]:
     if not runs_root.exists():
         return []
     return sorted([path for path in runs_root.iterdir() if path.is_dir()])
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (["loops", "inner-loop"], True),
+        (["uv", "run", "loops", "inner-loop"], True),
+        ([sys.executable, "-m", "loops.inner_loop"], True),
+        (["uv", "run", sys.executable, "-X", "dev", "-m", "loops.inner_loop"], True),
+        (["python", "-m", "loops.other"], False),
+        (["echo", "hello"], False),
+    ],
+)
+def test_is_loops_inner_loop_command_detects_wrapped_invocations(
+    command: list[str],
+    expected: bool,
+) -> None:
+    assert _is_loops_inner_loop_command(command) is expected
 
 
 def test_run_once_creates_run_records(tmp_path: Path) -> None:

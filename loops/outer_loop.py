@@ -588,11 +588,18 @@ def build_inner_loop_launcher(
 def _is_loops_inner_loop_command(command: list[str]) -> bool:
     if not command:
         return False
-    first = Path(command[0]).name.casefold()
-    if first == "loops":
-        return len(command) > 1 and command[1] == "inner-loop"
-    if first.startswith("python"):
-        return len(command) > 2 and command[1] == "-m" and command[2] == "loops.inner_loop"
+    for index, item in enumerate(command):
+        name = Path(item).name.casefold()
+        if name == "loops" and index + 1 < len(command):
+            if command[index + 1].casefold() == "inner-loop":
+                return True
+        if item == "-m" and index + 1 < len(command):
+            if command[index + 1] == "loops.inner_loop":
+                return True
+        if name == "loops.inner_loop":
+            return True
+    if " ".join(command).strip().casefold().endswith("loops.inner_loop"):
+        return True
     return False
 
 
