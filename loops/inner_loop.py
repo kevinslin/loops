@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, cast
 
 from loops.approval_config import (
     DEFAULT_APPROVAL_COMMENT_PATTERN,
@@ -32,6 +32,7 @@ from loops.run_record import (
     RunAutoApprove,
     RunPR,
     RunRecord,
+    RunState,
     Task,
     derive_run_state,
     read_run_record,
@@ -75,6 +76,11 @@ UUID_PATTERN = re.compile(
     r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
     re.IGNORECASE,
 )
+TRAILING_STATE_MARKER_PATTERN = re.compile(
+    r"<state>\s*([A-Za-z_]+)\s*</(?:state)?>",
+    re.IGNORECASE,
+)
+STATE_MARKER_VALUES = {"RUNNING", "WAITING_ON_REVIEW", "NEEDS_INPUT", "PR_APPROVED", "DONE"}
 UserHandoffHandler = Callable[[dict[str, Any]], HandoffResult | str | None]
 PRStatusFetcher = Callable[[RunPR], RunPR]
 SleepFn = Callable[[float], None]
@@ -1205,6 +1211,9 @@ def _run_codex_turn(
 
     discovered_pr = _extract_pr_from_output(output)
     pr = _merge_pr_records(run_record.pr, discovered_pr)
+    requested_state = _extract_trailing_state_marker(output)
+    if requested_state is not None:
+        append_log(run_log, f"[loops] codex requested state via marker: {requested_state}")
     needs_user_input = exit_code != 0
     needs_user_input_payload = run_record.needs_user_input_payload
     if exit_code != 0:
@@ -1212,6 +1221,14 @@ def _run_codex_turn(
         needs_user_input_payload = {
             "message": "Codex exited with a non-zero status. Provide guidance.",
             "context": {"exit_code": exit_code},
+        }
+    elif requested_state == "NEEDS_INPUT":
+        needs_user_input = True
+        needs_user_input_payload = {
+            "message": (
+                "Codex requested user input via trailing state marker. "
+                "Provide guidance."
+            )
         }
     elif pr is None:
         needs_user_input = True
@@ -1389,6 +1406,22 @@ def _extract_pr_from_output(output: str) -> Optional[RunPR]:
     if not match:
         return None
     return _run_pr_from_url(match.group(0))
+
+
+def _extract_trailing_state_marker(output: str) -> Optional[RunState]:
+    stripped_output = output.rstrip()
+    if not stripped_output:
+        return None
+    last_line = stripped_output.splitlines()[-1].strip()
+    if not last_line:
+        return None
+    match = TRAILING_STATE_MARKER_PATTERN.search(last_line)
+    if match is None:
+        return None
+    state_value = match.group(1).strip().upper()
+    if state_value not in STATE_MARKER_VALUES:
+        return None
+    return cast(RunState, state_value)
 
 
 def _run_pr_from_url(url: str) -> Optional[RunPR]:

@@ -207,8 +207,8 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
   - Base prompt contract explicitly forbids using the `gen-notifier` skill while running inside loops.
   - Selects invocation strategy (new session vs `resume <session_id>`) from `run_record.codex_session`.
   - Streams stdout/stderr into `agent.log` and appends the same output to `run.log`.
-  - Extracts session id and PR URL from output.
-  - Sets `needs_user_input=true` on non-zero exits or successful turns with no PR detected.
+  - Extracts session id, PR URL, and a trailing `<state>...</state>` marker from output (if present on the final line).
+  - Sets `needs_user_input=true` on non-zero exits, on trailing `NEEDS_INPUT` state markers, or on successful turns with no PR detected.
 
 - Review polling behavior (`loops/inner_loop.py:767`):
   - Loads comment-approval settings once per run from `inner_loop_approval_config.json` and compiles approval pattern with safe fallback.

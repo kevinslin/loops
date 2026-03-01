@@ -1670,6 +1670,76 @@ def test_invoke_codex_retries_without_resume_on_resume_failure(
     assert inner_loop_module._extract_session_id(output) == "session-fresh"
 
 
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        ("work complete\n<state>NEEDS_INPUT</state>\n", "NEEDS_INPUT"),
+        ("work complete\n<state>needs_input</>\n", "NEEDS_INPUT"),
+        ("work complete\nstatus: <state>WAITING_ON_REVIEW</state>\n", "WAITING_ON_REVIEW"),
+        ("work complete\n<state>NEEDS_INPUT</state>\nfollow up\n", None),
+        ("work complete\n<state>UNKNOWN</state>\n", None),
+    ],
+)
+def test_extract_trailing_state_marker(output: str, expected: str | None) -> None:
+    assert inner_loop_module._extract_trailing_state_marker(output) == expected
+
+
+def test_run_codex_turn_sets_needs_input_from_trailing_state_marker(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        pr=RunPR(
+            url="https://github.com/acme/api/pull/42",
+            number=42,
+            repo="acme/api",
+            review_status="open",
+        ),
+    )
+
+    def fake_invoke_codex(
+        *,
+        base_command: list[str],
+        prompt: str,
+        agent_log: Path,
+        run_log: Path,
+        codex_session: inner_loop_module.CodexSession | None,
+        turn_label: str,
+    ) -> tuple[str, int, bool]:
+        del base_command, prompt, agent_log, run_log, codex_session, turn_label
+        return (
+            json.dumps({"session_id": "session-2"})
+            + "\nOpened PR https://github.com/acme/api/pull/42\n<state>NEEDS_INPUT</state>\n",
+            0,
+            False,
+        )
+
+    monkeypatch.setattr(inner_loop_module, "_invoke_codex", fake_invoke_codex)
+    run_json_path = run_dir / "run.json"
+    updated = inner_loop_module._run_codex_turn(
+        run_json_path=run_json_path,
+        run_log=run_dir / "run.log",
+        agent_log=run_dir / "agent.log",
+        run_record=read_run_record(run_json_path),
+        command=["codex", "exec"],
+        base_prompt=None,
+        review_feedback=False,
+    )
+
+    assert updated.needs_user_input is True
+    assert updated.needs_user_input_payload == {
+        "message": "Codex requested user input via trailing state marker. Provide guidance."
+    }
+    assert updated.pr is not None
+    assert updated.pr.url == "https://github.com/acme/api/pull/42"
+    assert updated.codex_session is not None
+    assert updated.codex_session.id == "session-2"
+    assert "codex requested state via marker: NEEDS_INPUT" in (run_dir / "run.log").read_text()
+
+
 def test_run_codex_turn_clears_stale_session_after_failed_resume_fallback(
     tmp_path: Path,
     monkeypatch,
