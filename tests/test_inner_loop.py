@@ -638,18 +638,14 @@ def test_inner_loop_consumes_signal_and_uses_user_response_in_prompt(
     assert persisted.needs_user_input_payload is None
 
     prompts = prompt_log_path.read_text()
+    assert "Use dev.do to implement the task and open a PR." in prompts
+    assert "Wait only for review from the a-review subagent." in prompts
     assert (
-        "Use dev.do to implement the task, open a PR, wait only for review from the "
-        "a-review subagent, address feedback, and trigger:merge-pr when the state "
-        "is exactly <state>PR_APPROVED</state>."
+        "NEVER wait for human PR review/comments inside the agent; the harness "
+        "monitors review activity and will re-invoke you when feedback arrives."
         in prompts
     )
-    assert (
-        "You are running inside the loops test harness. NEVER wait for human PR "
-        "review/comments inside the agent; the harness monitors review activity and "
-        "will re-invoke you when feedback arrives."
-        in prompts
-    )
+    assert "trigger:merge-pr when the state is exactly <state>PR_APPROVED</state>." in prompts
     assert (
         "If you need input from user, print what you need help with and end current "
         "conversation with <state>NEEDS_INPUT</>"
