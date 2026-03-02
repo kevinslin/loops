@@ -7,11 +7,11 @@ This file explains where important code lives and which files to edit for common
 Runtime flow:
 
 1. `python -m loops` enters `loops/__main__.py`.
-2. CLI parsing and subcommands are in `loops/cli.py`.
-3. Outer-loop orchestration is in `loops/outer_loop.py`.
-4. Per-task inner-loop orchestration is in `loops/inner_loop.py`.
-5. Shared run-state schema and persistence are in `loops/run_record.py`.
-6. Provider interface and GitHub provider implementation are in `loops/task_provider.py` and `loops/providers/github_projects_v2.py`.
+2. CLI parsing and subcommands are in `loops/core/cli.py`.
+3. Outer-loop orchestration is in `loops/core/outer_loop.py`.
+4. Per-task inner-loop orchestration is in `loops/core/inner_loop.py`.
+5. Shared run-state schema and persistence are in `loops/state/run_record.py`.
+6. Provider interface and GitHub provider implementation are in `loops/task_providers/base.py` and `loops/task_providers/github_projects_v2.py`.
 
 ## Repository map
 
@@ -28,11 +28,32 @@ Runtime flow:
 ├── loops/
 │   ├── __init__.py
 │   ├── __main__.py
+│   ├── core/
+│   │   ├── cli.py
+│   │   ├── inner_loop.py
+│   │   └── outer_loop.py
+│   ├── commands/
+│   │   ├── run.py
+│   │   ├── inner_loop.py
+│   │   ├── init.py
+│   │   ├── doctor.py
+│   │   └── clean.py
+│   ├── state/
+│   │   ├── constants.py
+│   │   ├── run_record.py
+│   │   ├── approval_config.py
+│   │   ├── inner_loop_runtime_config.py
+│   │   └── provider_types.py
+│   ├── task_providers/
+│   │   ├── base.py
+│   │   ├── github_projects_v2.py
+│   │   └── registry.py
+│   ├── utils/
+│   │   └── logging.py
 │   ├── cli.py
-│   ├── outer_loop.py
 │   ├── inner_loop.py
+│   ├── outer_loop.py
 │   ├── run_record.py
-│   ├── task_provider.py
 │   └── providers/
 │       ├── __init__.py
 │       └── github_projects_v2.py
@@ -72,32 +93,32 @@ Runtime flow:
   - Entry-point shim for `python -m loops`.
   - Normalizes legacy argv into subcommand form.
 
-- `loops/cli.py`
+- `loops/core/cli.py`
   - Click-based command surface (`init`, `run`, `inner-loop`, `doctor`, `clean`).
   - Builds default config payload on init.
   - Wires CLI options to outer/inner loop functions.
 
-- `loops/outer_loop.py`
+- `loops/core/outer_loop.py`
   - Outer polling/dispatch orchestration.
   - Config models (`OuterLoopConfig`, `LoopsConfig`, `InnerLoopCommandConfig`).
   - Outer state ledger (`outer_state.json`) read/write.
   - Run directory creation and inner-loop process launching.
 
-- `loops/inner_loop.py`
+- `loops/core/inner_loop.py`
   - Inner-loop state machine and Codex turn orchestration.
   - Reads/writes `run.json` as authoritative state.
   - Handles user handoff, polls PR status, runs cleanup, and exits on DONE.
   - Writes orchestration logs to `run.log` and streams agent output to `agent.log`.
 
-- `loops/run_record.py`
+- `loops/state/run_record.py`
   - Core dataclasses (`Task`, `RunPR`, `CodexSession`, `RunRecord`).
   - `derive_run_state` logic.
   - Validated persistence helpers (`read_run_record`, `write_run_record`).
 
-- `loops/task_provider.py`
+- `loops/task_providers/base.py`
   - Provider protocol abstraction (`poll`).
 
-- `loops/providers/github_projects_v2.py`
+- `loops/task_providers/github_projects_v2.py`
   - GitHub Projects V2 provider implementation.
   - Parses project URL, runs GraphQL via `gh`, maps project items to `Task`.
 
@@ -132,36 +153,36 @@ These are generated under `.loops/` at runtime:
 ## Where to change what
 
 - Add or modify CLI flags/commands:
-  - `loops/cli.py`
+  - `loops/core/cli.py`
   - Possibly `loops/__main__.py` (for argv normalization changes)
 
 - Change outer-loop polling/dispatch/dedupe behavior:
-  - `loops/outer_loop.py`
+  - `loops/core/outer_loop.py`
   - Tests: `tests/test_outer_loop.py`
 
 - Change inner-loop state transitions, retry behavior, prompt construction, or logs:
-  - `loops/inner_loop.py`
+  - `loops/core/inner_loop.py`
   - Tests: `tests/test_inner_loop.py`
 
 - Change run schema or state-derivation rules:
-  - `loops/run_record.py`
+  - `loops/state/run_record.py`
   - Tests: `tests/test_run_record.py`
   - Update `DESIGN.md` if semantics changed.
 
 - Add a new task provider:
-  - New provider file under `loops/providers/`
-  - Provider construction path in `loops/outer_loop.py` (`build_provider`)
+  - New provider file under `loops/task_providers/`
+  - Provider construction path in `loops/core/outer_loop.py` (`build_provider`)
   - Tests alongside provider tests
 
 - Change GitHub Projects V2 mapping/query behavior:
-  - `loops/providers/github_projects_v2.py`
+  - `loops/task_providers/github_projects_v2.py`
   - Tests: `tests/test_github_projects_v2_provider.py`
 
 ## Recommended read order for an LLM
 
 1. `README.md` (operational context)
 2. `DESIGN.md` (architecture and invariants)
-3. `loops/cli.py` and `loops/__main__.py` (entrypoints)
-4. `loops/outer_loop.py` and `loops/inner_loop.py` (runtime logic)
-5. `loops/run_record.py` (state contract)
+3. `loops/core/cli.py` and `loops/__main__.py` (entrypoints)
+4. `loops/core/outer_loop.py` and `loops/core/inner_loop.py` (runtime logic)
+5. `loops/state/run_record.py` (state contract)
 6. Relevant test file(s) for the area being edited

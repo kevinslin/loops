@@ -1,42 +1,7 @@
-from __future__ import annotations
+"""Backward-compatible alias for `loops.state.provider_types`."""
 
-from dataclasses import dataclass, field
+import sys as _sys
 
-from pydantic import BaseModel
+from loops.state import provider_types as _module
 
-
-@dataclass(frozen=True)
-class SecretRequirement:
-    """Declare an env-var secret requirement for a provider."""
-
-    name: str
-    description: str
-    alias: tuple[str, ...] = field(default_factory=tuple)
-
-    def env_names(self) -> tuple[str, ...]:
-        """Return canonical + alias env names with stable de-duplication."""
-
-        names: list[str] = []
-        seen: set[str] = set()
-        for candidate in (self.name, *self.alias):
-            normalized = candidate.strip()
-            if not normalized or normalized in seen:
-                continue
-            names.append(normalized)
-            seen.add(normalized)
-        return tuple(names)
-
-
-@dataclass(frozen=True)
-class LoopsProviderConfig:
-    """Provider metadata used for config validation and startup checks."""
-
-    id: str
-    provider_config_model: type[BaseModel]
-    name: str | None = None
-    required_secrets: tuple[SecretRequirement, ...] = field(default_factory=tuple)
-
-    def display_name(self) -> str:
-        """Return a human-friendly provider name."""
-
-        return self.name or self.id
+_sys.modules[__name__] = _module

@@ -1,11 +1,7 @@
-from __future__ import annotations
+"""Backward-compatible alias for `loops.task_providers.base`."""
 
-from typing import Protocol
+import sys as _sys
 
-from loops.run_record import Task
+from loops.task_providers import base as _module
 
-
-class TaskProvider(Protocol):
-    def poll(self, limit: int | None = None) -> list[Task]:
-        """Return a list of tasks from the provider."""
-        ...
+_sys.modules[__name__] = _module

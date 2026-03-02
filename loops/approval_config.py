@@ -1,19 +1,7 @@
-from __future__ import annotations
+"""Backward-compatible alias for `loops.state.approval_config`."""
 
-from collections.abc import Iterable
+import sys as _sys
 
-DEFAULT_APPROVAL_COMMENT_PATTERN = r"^\s*/approve\b"
+from loops.state import approval_config as _module
 
-
-def normalize_approval_usernames(usernames: Iterable[str]) -> tuple[str, ...]:
-    """Normalize usernames for case-insensitive allowlist matching."""
-
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for value in usernames:
-        candidate = value.strip().casefold()
-        if not candidate or candidate in seen:
-            continue
-        normalized.append(candidate)
-        seen.add(candidate)
-    return tuple(normalized)
+_sys.modules[__name__] = _module

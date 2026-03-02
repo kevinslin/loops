@@ -1,6 +1,6 @@
-"""Backward-compatible exports for `loops.task_providers`."""
+"""Task provider implementations."""
 
-from loops.task_providers import (
+from loops.task_providers.github_projects_v2 import (
     GITHUB_PROJECTS_V2_PROVIDER_CONFIG,
     GITHUB_PROJECTS_V2_PROVIDER_ID,
     GithubProjectsV2TaskProvider,

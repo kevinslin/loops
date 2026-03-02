@@ -363,6 +363,66 @@ Task provider (GitHub Projects V2)
 - Called when the agent needs input.
 - Default implementation reads from stdin and returns the user response.
 
+## 4.5 Source layout (target)
+
+Refactor target for runtime source modules:
+
+```text
+loops/
+  __init__.py
+  __main__.py
+  commands/
+    clean.py
+    doctor.py
+    init.py
+    inner_loop.py
+    run.py
+  core/
+    cli.py
+    handoff_handlers.py
+    inner_loop.py
+    outer_loop.py
+  state/
+    approval_config.py
+    constants.py
+    inner_loop_runtime_config.py
+    provider_types.py
+    run_record.py
+  task_providers/
+    __init__.py
+    base.py
+    github_projects_v2.py
+    registry.py
+  utils/
+    logging.py
+```
+
+File organization plan for all existing `loops/` source files:
+
+| Existing path | Canonical path | Notes |
+|---|---|---|
+| `loops/__init__.py` | `loops/__init__.py` | Package marker; keep. |
+| `loops/__main__.py` | `loops/__main__.py` | Entry-point shim; keep. |
+| `loops/TODO.md` | `loops/TODO.md` | Local package TODO notes; keep in place. |
+| `loops/cli.py` | `loops/core/cli.py` | `loops/cli.py` remains as compatibility shim. |
+| `loops/outer_loop.py` | `loops/core/outer_loop.py` | `loops/outer_loop.py` remains as compatibility shim. |
+| `loops/inner_loop.py` | `loops/core/inner_loop.py` | `loops/inner_loop.py` remains as compatibility shim for `python -m loops.inner_loop`. |
+| `loops/handoff_handlers.py` | `loops/core/handoff_handlers.py` | Compatibility shim retained at legacy path. |
+| `loops/cleanup.py` | `loops/commands/clean.py` | Cleanup planner/executor lives with clean command; legacy shim kept. |
+| `loops/approval_config.py` | `loops/state/approval_config.py` | Moved under shared state/config models. |
+| `loops/inner_loop_runtime_config.py` | `loops/state/inner_loop_runtime_config.py` | Runtime config model/IO under `state`. |
+| `loops/provider_types.py` | `loops/state/provider_types.py` | Provider metadata contracts under `state`. |
+| `loops/run_record.py` | `loops/state/run_record.py` | Run schema and persistence under `state`. |
+| `loops/logging_utils.py` | `loops/utils/logging.py` | Logging helpers moved under `utils`; legacy shim retained. |
+| `loops/task_provider.py` | `loops/task_providers/base.py` | Provider protocol moved to task provider package. |
+| `loops/providers/github_projects_v2.py` | `loops/task_providers/github_projects_v2.py` | Legacy `loops/providers/*` path stays as thin shim package. |
+| `loops/providers/registry.py` | `loops/task_providers/registry.py` | Provider registry moved under task provider package. |
+| `loops/providers/__init__.py` | `loops/task_providers/__init__.py` | Legacy package wrapper retained for compatibility imports. |
+
+Constants policy:
+- Shared global constants (paths, file names, config version, checkout mode enums) move to `loops/state/constants.py`.
+- Module-private constants that only affect one runtime module may remain local.
+
 ## 5. Storage layout
 
 `LOOPS_ROOT` is runtime state and logs. Each inner loop run gets its own directory.
@@ -510,7 +570,7 @@ From any non-DONE state:
 
 Implementation note: `run_inner_loop` is a loop kernel that reads state, derives the
 current state, dispatches to explicit per-state handlers, persists updates, and
-schedules next poll timing. Handler boundaries in `loops/inner_loop.py` are:
+schedules next poll timing. Handler boundaries in `loops/core/inner_loop.py` are:
 `_handle_running_state`, `_handle_needs_input_state`,
 `_handle_waiting_on_review_state`, and `_handle_pr_approved_state`.
 
@@ -555,7 +615,7 @@ The inner loop relies on a small explicit skill surface. These skills are part o
 | `trigger:merge-pr` | `PR_APPROVED` path and cleanup prompt | Performs merge/cleanup in an idempotent way; Loops keeps polling until `pr.merged_at` confirms transition to `DONE`. |
 | `gen-notifier` (forbidden) | Base prompt hard guardrail | Prevents out-of-band desktop notification side effects from inside harness-managed runs; keeps Loops control flow deterministic and contained to run artifacts/logs. |
 
-Practical invariant: if this skill contract changes, update `loops/inner_loop.py` prompt builders, `tests/test_inner_loop.py` prompt assertions, and related flow docs in `docs/flows/`.
+Practical invariant: if this skill contract changes, update `loops/core/inner_loop.py` prompt builders, `tests/test_inner_loop.py` prompt assertions, and related flow docs in `docs/flows/`.
 
 ### CLI callers
 
@@ -576,7 +636,7 @@ Practical invariant: if this skill contract changes, update `loops/inner_loop.py
 
 ### Prompt catalog
 
-The inner loop builds prompts in `loops/inner_loop.py` from a shared base template plus a state-specific suffix.
+The inner loop builds prompts in `loops/core/inner_loop.py` from a shared base template plus a state-specific suffix.
 
 Base template (always present in Codex turns):
 
