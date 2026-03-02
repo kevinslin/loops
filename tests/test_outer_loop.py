@@ -386,6 +386,8 @@ def test_load_config_migrates_legacy_provider_keys(tmp_path: Path) -> None:
     assert config.version == LATEST_LOOPS_CONFIG_VERSION
     assert config.task_provider_id == "github_projects_v2"
     assert config.task_provider_config == {
+        "approval_comment_pattern": r"^\s*/approve\b",
+        "approval_comment_usernames": [],
         "allowlist": [],
         "page_size": 50,
         "status_field": "Status",
@@ -405,6 +407,8 @@ def test_load_config_migrates_versionless_legacy_provider_keys(tmp_path: Path) -
     assert config.version == LATEST_LOOPS_CONFIG_VERSION
     assert config.task_provider_id == "github_projects_v2"
     assert config.task_provider_config == {
+        "approval_comment_pattern": r"^\s*/approve\b",
+        "approval_comment_usernames": [],
         "allowlist": [],
         "page_size": 50,
         "status_field": "Status",
@@ -442,8 +446,7 @@ def test_load_config_reads_comment_approval_config(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     payload = {
         "task_provider_id": "github_projects_v2",
-        "task_provider_config": {},
-        "loop_config": {
+        "task_provider_config": {
             "approval_comment_usernames": ["Maintainer", "review-bot", "maintainer"],
             "approval_comment_pattern": r"^\s*/shipit\b",
         },
@@ -452,11 +455,38 @@ def test_load_config_reads_comment_approval_config(tmp_path: Path) -> None:
 
     config = load_config(config_path)
     assert config.version == LATEST_LOOPS_CONFIG_VERSION
-    assert config.loop_config.approval_comment_usernames == (
-        "maintainer",
+    assert config.task_provider_config["approval_comment_usernames"] == [
+        "Maintainer",
         "review-bot",
-    )
-    assert config.loop_config.approval_comment_pattern == r"^\s*/shipit\b"
+        "maintainer",
+    ]
+    assert config.task_provider_config["approval_comment_pattern"] == r"^\s*/shipit\b"
+
+
+def test_load_config_migrates_legacy_loop_approval_keys_to_provider_config(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.json"
+    payload = {
+        "version": 2,
+        "task_provider_id": "github_projects_v2",
+        "task_provider_config": {
+            "url": "https://github.com/orgs/acme/projects/1",
+        },
+        "loop_config": {
+            "approval_comment_usernames": ["Maintainer", "review-bot"],
+            "approval_comment_pattern": r"^\s*/shipit\b",
+        },
+    }
+    config_path.write_text(json.dumps(payload))
+
+    config = load_config(config_path)
+    assert config.version == LATEST_LOOPS_CONFIG_VERSION
+    assert config.task_provider_config["approval_comment_usernames"] == [
+        "Maintainer",
+        "review-bot",
+    ]
+    assert config.task_provider_config["approval_comment_pattern"] == r"^\s*/shipit\b"
 
 
 def test_load_config_backfills_github_provider_defaults(tmp_path: Path) -> None:
@@ -469,6 +499,8 @@ def test_load_config_backfills_github_provider_defaults(tmp_path: Path) -> None:
 
     config = load_config(config_path)
     assert config.task_provider_config == {
+        "approval_comment_pattern": r"^\s*/approve\b",
+        "approval_comment_usernames": [],
         "allowlist": [],
         "page_size": 50,
         "status_field": "Status",
@@ -489,6 +521,8 @@ def test_load_config_does_not_backfill_missing_github_provider_url(
 
     config = load_config(config_path)
     assert config.task_provider_config == {
+        "approval_comment_pattern": r"^\s*/approve\b",
+        "approval_comment_usernames": [],
         "allowlist": [],
         "page_size": 50,
         "status_field": "Status",
@@ -499,17 +533,24 @@ def test_load_config_does_not_backfill_missing_github_provider_url(
         build_provider(config)
 
 
-def test_load_config_rejects_invalid_comment_approval_usernames(tmp_path: Path) -> None:
+def test_load_config_rejects_invalid_comment_approval_usernames(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     config_path = tmp_path / "config.json"
     payload = {
         "task_provider_id": "github_projects_v2",
-        "task_provider_config": {},
-        "loop_config": {"approval_comment_usernames": "maintainer"},
+        "task_provider_config": {
+            "url": "https://github.com/orgs/acme/projects/1",
+            "approval_comment_usernames": "maintainer",
+        },
     }
     config_path.write_text(json.dumps(payload))
 
-    with pytest.raises(TypeError, match="approval_comment_usernames"):
-        load_config(config_path)
+    config = load_config(config_path)
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    with pytest.raises(ValueError, match="task_provider_config is invalid"):
+        build_provider(config)
 
 
 def test_load_config_rejects_bool_ints(tmp_path: Path) -> None:
@@ -605,17 +646,17 @@ def test_build_inner_loop_launcher_sync_mode_uses_subprocess_run(
         version=LATEST_LOOPS_CONFIG_VERSION,
         task_provider_id="github_projects_v2",
         task_provider_config={"url": "https://github.com/orgs/acme/projects/1"},
-        loop_config=OuterLoopConfig(
-            sync_mode=True,
-            approval_comment_usernames=("maintainer", "review-bot"),
-            approval_comment_pattern=r"^\s*/shipit\b",
-        ),
+        loop_config=OuterLoopConfig(sync_mode=True),
         inner_loop=InnerLoopCommandConfig(
             command=["echo", "hello"],
             append_task_url=False,
         ),
     )
-    launcher = build_inner_loop_launcher(config)
+    launcher = build_inner_loop_launcher(
+        config,
+        approval_comment_usernames=("maintainer", "review-bot"),
+        approval_comment_pattern=r"^\s*/shipit\b",
+    )
 
     captured: dict[str, object] = {}
 
@@ -831,16 +872,17 @@ def test_build_inner_loop_launcher_writes_custom_comment_approval_settings(
         version=LATEST_LOOPS_CONFIG_VERSION,
         task_provider_id="github_projects_v2",
         task_provider_config={"url": "https://github.com/orgs/acme/projects/1"},
-        loop_config=OuterLoopConfig(
-            approval_comment_usernames=("maintainer", "review-bot"),
-            approval_comment_pattern=r"^\s*/shipit\b",
-        ),
+        loop_config=OuterLoopConfig(),
         inner_loop=InnerLoopCommandConfig(
             command=["echo", "hello"],
             append_task_url=False,
         ),
     )
-    launcher = build_inner_loop_launcher(config)
+    launcher = build_inner_loop_launcher(
+        config,
+        approval_comment_usernames=("maintainer", "review-bot"),
+        approval_comment_pattern=r"^\s*/shipit\b",
+    )
 
     def fake_popen(command, *, cwd, stdout, stderr, env):
         del cwd, stdout, stderr, env

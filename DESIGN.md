@@ -74,10 +74,6 @@ type OuterLoopConfig = {
     force: boolean
     // status of the task that is ready to be processed
     task_ready_status: string
-    // allowlisted usernames whose approval signals can mark PR approved
-    approval_comment_usernames: string[]
-    // regex pattern for approval text in comments/reviews from allowlisted usernames
-    approval_comment_pattern: string
     // run ag-judge before merge when review and CI gates are satisfied
     auto_approve_enabled: boolean
     // NEEDS_INPUT handoff strategy
@@ -246,8 +242,6 @@ type OuterLoopConfig = {
     emit_on_first_run?: boolean
     force?: boolean
     task_ready_status?: string
-    approval_comment_usernames?: string[]
-    approval_comment_pattern?: string
     auto_approve_enabled?: boolean
     handoff_handler?: string
 }
@@ -264,6 +258,8 @@ type GithubProjectsV2TaskProviderConfig = {
     status_field: "Status"
     page_size?: number
     github_token?: string
+    approval_comment_usernames?: string[]
+    approval_comment_pattern?: string
     // usernames allowed to contribute review-phase PR comments/review signals
     allowlist?: string[]
     // provider-side key=value filters. supported keys:
@@ -279,14 +275,13 @@ Notes:
 - `task_provider_id` currently supports only `"github_projects_v2"`.
 - `task_provider_config` is validated by the provider's Pydantic model.
 - `task_provider_config` init defaults are emitted from provider-owned canonical builders (for `github_projects_v2`, from `loops.providers.github_projects_v2`).
-- `loops doctor` also backfills missing GitHub `task_provider_config` defaults (`status_field`, `page_size`, `allowlist`) without overwriting existing values.
+- `loops doctor` also backfills missing GitHub `task_provider_config` defaults (`status_field`, `page_size`, `approval_comment_usernames`, `approval_comment_pattern`, `allowlist`) without overwriting existing values.
 - `task_provider_config.filters` supports provider-side `key=value` filters for GitHub Projects V2 (`repository`, `tag`).
+- `task_provider_config.approval_comment_usernames` and `task_provider_config.approval_comment_pattern` configure comment-based PR approval override matching.
 - `task_provider_config.allowlist` (GitHub provider) restricts review-phase PR comment/review signals to listed usernames; non-allowlisted actors are ignored during review polling.
 - Required provider secrets are validated from environment variables before provider construction.
 - `loop_config` is optional; omitted keys fall back to defaults.
 - `loop_config` defaults are sourced from one canonical implementation in `loops.outer_loop` and reused by `loops init`, `loops doctor`, and runtime config loading.
-- `loop_config.approval_comment_usernames` allows comment-based PR approval overrides from specific usernames.
-- `loop_config.approval_comment_pattern` controls which comment bodies count as approval signals.
 - `loop_config.auto_approve_enabled` enables the additional auto-approve path while the PR is still not approved.
 - Auto-approve defaults are fixed when enabled: CI green is required and `ag-judge` uses `references/jb.coding.md`.
 - `loop_config.handoff_handler` selects built-in NEEDS_INPUT handoff behavior (`stdin_handler` default, `gh_comment_handler` for issue-comment handoff).

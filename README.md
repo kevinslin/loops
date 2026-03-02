@@ -74,12 +74,14 @@ Loops writes runtime state under `.loops/`:
 Top-level config file: `.loops/config.json`
 
 - `task_provider_id` (string, required): currently only `"github_projects_v2"`.
-- `version` (integer, required for latest schema): config schema version. Legacy files without this field are treated as version `0`; latest is `2`.
+- `version` (integer, required for latest schema): config schema version. Legacy files without this field are treated as version `0`; latest is `3`.
 - `task_provider_config` (object, required):
 - `task_provider_config.url` (string, required): GitHub Projects V2 URL, for example `https://github.com/orgs/acme/projects/7`.
 - `task_provider_config.status_field` (string, optional, default `"Status"`): Project field name to map task status.
 - `task_provider_config.page_size` (integer, optional, default `50`): GraphQL page size.
 - `task_provider_config.github_token` (string, optional): Overrides token used by the provider once launched.
+- `task_provider_config.approval_comment_usernames` (string[], optional, default `[]`): allowlisted GitHub usernames whose approval comments/review bodies can mark a PR as approved.
+- `task_provider_config.approval_comment_pattern` (string, optional, default `^\s*/approve\b`): regex used to match approval comments/review bodies from `task_provider_config.approval_comment_usernames`.
 - `task_provider_config.allowlist` (string[], optional, default `[]`): GitHub usernames allowed to contribute review-phase signals (PR comments/reviews) during inner-loop polling. When set, non-allowlisted actors are ignored in review polling.
 - `task_provider_config.filters` (string[], optional): provider-side `key=value` filters. Supported keys:
   - `repository=<owner>/<repo>` (repeatable; multiple repository filters are OR)
@@ -94,8 +96,6 @@ Top-level config file: `.loops/config.json`
 - `loop_config.emit_on_first_run` (boolean, default `false`)
 - `loop_config.force` (boolean, default `false`)
 - `loop_config.task_ready_status` (string, default `"Ready"`)
-- `loop_config.approval_comment_usernames` (string[], default `[]`): allowlisted GitHub usernames whose approval comments can mark a PR as approved.
-- `loop_config.approval_comment_pattern` (string, default `^\s*/approve\b`): regex used to match approval comments from allowlisted usernames.
 - `loop_config.auto_approve_enabled` (boolean, default `false`): enables one-time `$ag-judge` auto-approval evaluation when review is not already approved and CI is green.
 - `loop_config.handoff_handler` (string, default `"stdin_handler"`): built-in NEEDS_INPUT handoff strategy. Supported values:
   - `stdin_handler`: prompt on stdin/stdout (interactive mode).
@@ -179,7 +179,7 @@ Notes:
 - `--task-url` bypasses ready-status filtering for the selected task and raises an error when the URL is missing or ambiguous in poll results.
 - Provider filters (`task_provider_config.filters`) are applied during provider polling before outer-loop status filtering.
 - Outer loop always injects `LOOPS_RUN_DIR` into launched inner-loop processes. For non-`loops.inner_loop` custom launch commands, `inner_loop.env` is also merged into child env; for `loops.inner_loop` commands, runtime settings are read from run-scoped `inner_loop_runtime_config.json`.
-- PR approval is detected from GitHub review decision or from allowlisted approval comments configured in `loop_config`, after optional review-actor filtering from `task_provider_config.allowlist`.
+- PR approval is detected from GitHub review decision or from allowlisted approval comments configured in `task_provider_config`, after optional review-actor filtering from `task_provider_config.allowlist`.
 
 ### `loops clean`
 
@@ -252,7 +252,7 @@ Behavior summary:
 - If run-scoped runtime config has `stream_logs_stdout=true` (written by outer loop in `sync_mode=true`), also mirrors `run.log` lines to stdout.
 - Uses `CODEX_CMD` from run-scoped runtime config when present; if absent there, it falls back to process `CODEX_CMD`. Default command is `codex exec --yolo`.
 - Polls PR state with `gh pr view` when a PR is present.
-- In review polling, Loops treats a PR as approved if `reviewDecision=APPROVED` or if a matching approval comment from `loop_config.approval_comment_usernames` is newer than the latest `CHANGES_REQUESTED` review.
+- In review polling, Loops treats a PR as approved if `reviewDecision=APPROVED` or if a matching approval comment from `task_provider_config.approval_comment_usernames` is newer than the latest `CHANGES_REQUESTED` review.
 - If `task_provider_config.allowlist` is configured, review polling filters PR comments/reviews to those actors before deriving feedback and review-status signals.
 - Selects handoff behavior from run-scoped runtime config (or `LOOPS_HANDOFF_HANDLER` for direct/manual runs):
   - `stdin_handler`: prompt directly in terminal.

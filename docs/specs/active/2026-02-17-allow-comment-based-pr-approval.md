@@ -66,7 +66,7 @@ Add a comment-based approval override path inside `_fetch_pr_status_with_gh(...)
 
 ### Configuration Surface
 
-Add explicit fields to `OuterLoopConfig`:
+Add explicit fields to `GithubProjectsV2TaskProviderConfig`:
 
 - `approval_comment_usernames`:
   - list/tuple of GitHub usernames
@@ -86,19 +86,19 @@ Add explicit fields to `OuterLoopConfig`:
   - extract latest review timestamp by state (reuse for `CHANGES_REQUESTED`)
   - extract latest qualifying approval comment timestamp
   - compute final review status with override guard
-- Update run materialization in `loops/outer_loop.py` so each run includes deterministic approval settings from `OuterLoopConfig` (without requiring user-set env vars).
+- Update run materialization in `loops/outer_loop.py` so each run includes deterministic approval settings from provider config (without requiring user-set env vars).
 
 ### Integration Points
 
 - `loops/outer_loop.py`:
-  - `OuterLoopConfig` schema and config loading
+  - Provider config schema + config loading
   - launcher propagation of approval settings
 - `loops/inner_loop.py`:
   - `_fetch_pr_status_with_gh`
   - review status extraction helpers
   - run log message when comment-based approval override is applied
 - `README.md`:
-  - document new `loop_config` fields
+  - document new `task_provider_config` fields
 - `DESIGN.md`:
   - note alternate approval signal path (review decision OR allowlisted approval comment)
 
@@ -133,7 +133,7 @@ Add explicit fields to `OuterLoopConfig`:
 - [x] Emit run-log entry when comment override is used.
 
 ### Phase 3: Documentation and hardening
-- [x] Update `README.md` with `loop_config` fields and examples.
+- [x] Update `README.md` with `task_provider_config` fields and examples.
 - [x] Update `DESIGN.md` approval path description.
 - [x] Add clear error/log behavior for invalid regex configuration.
 
@@ -158,7 +158,7 @@ Unit tests:
 - [x] Timestamp ordering helper for `changes_requested` vs approval comment.
 
 Manual validation:
-- [x] Configure `loop_config.approval_comment_usernames`.
+- [x] Configure `task_provider_config.approval_comment_usernames`.
 - [x] Simulate a PR with no approved review decision but allowlisted approval comment.
 - [x] Confirm `run.log` records comment-based approval detection and loop enters cleanup path.
 
@@ -219,7 +219,7 @@ Manual validation:
 
 ## Notes
 
-- Simplification: keep user-facing configuration in `OuterLoopConfig`; inner-loop reads run-scoped approval config materialized by outer loop.
+- Simplification: keep user-facing configuration in provider config; inner-loop reads run-scoped approval config materialized by outer loop.
 - Simplification: keep `RunPR` schema unchanged; only review-status computation is extended.
 
 ## Manual Notes 
@@ -227,6 +227,7 @@ Manual validation:
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+- 2026-03-02: Moved approval comment settings from `loop_config` to GitHub provider config and updated doctor/config docs accordingly. (019cabd8-6116-7542-aead-8d1fd6d6b985)
 - 2026-03-01: Added deterministic best-effort 👍 reactions when an allowlisted plain PR comment is the winning approval signal in review polling. (019cab4c-0485-7542-b9eb-ff1c83ca0942)
 - 2026-02-17: Created initial feature spec for allowlisted comment-based PR approval override. (019c68ed-a6c5-78e0-891a-6b70a1a1450c)
 - 2026-02-17: Implemented `OuterLoopConfig`-driven comment approval override, tests, and docs updates. (019c68ed-a6c5-78e0-891a-6b70a1a1450c)

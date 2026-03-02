@@ -47,8 +47,11 @@ def test_init_creates_default_loops_structure(tmp_path: Path) -> None:
     assert config_payload["loop_config"] == build_default_loop_config_payload()
     assert config_payload["inner_loop"] == cli_module._build_default_inner_loop_payload()
     assert config_payload["loop_config"]["sync_mode"] is False
-    assert config_payload["loop_config"]["approval_comment_usernames"] == []
-    assert config_payload["loop_config"]["approval_comment_pattern"] == r"^\s*/approve\b"
+    assert config_payload["task_provider_config"]["approval_comment_usernames"] == []
+    assert (
+        config_payload["task_provider_config"]["approval_comment_pattern"]
+        == r"^\s*/approve\b"
+    )
     assert config_payload["loop_config"]["auto_approve_enabled"] is False
     assert config_payload["loop_config"]["handoff_handler"] == "stdin_handler"
     assert config_payload["inner_loop"]["append_task_url"] is False
@@ -769,7 +772,13 @@ def test_run_outer_loop_task_url_implies_run_once_and_force(
         inner_loop=None,
     )
     captured: dict[str, object] = {}
-    provider = object()
+
+    class ProviderStub:
+        approval_comment_usernames = ("Maintainer", "review-bot", "maintainer")
+        approval_comment_pattern = r"^\s*/shipit\b"
+        review_actor_allowlist = ("Reviewer", "review-bot", "reviewer")
+
+    provider = ProviderStub()
     launcher = object()
 
     class FakeRunner:
@@ -808,9 +817,13 @@ def test_run_outer_loop_task_url_implies_run_once_and_force(
     def fake_build_inner_loop_launcher(
         config: LoopsConfig,
         *,
+        approval_comment_usernames: tuple[str, ...] = (),
+        approval_comment_pattern: str = r"^\s*/approve\b",
         review_actor_usernames: tuple[str, ...] = (),
     ) -> object:
         captured["launcher_sync_mode"] = config.loop_config.sync_mode
+        captured["approval_comment_usernames"] = approval_comment_usernames
+        captured["approval_comment_pattern"] = approval_comment_pattern
         captured["review_actor_usernames"] = review_actor_usernames
         return launcher
 
@@ -841,7 +854,9 @@ def test_run_outer_loop_task_url_implies_run_once_and_force(
     assert captured["inner_loop_launcher"] is launcher
     assert captured["run_once_limit"] == 7
     assert captured["run_once_task_url"] == "https://github.com/acme/api/issues/9"
-    assert captured["review_actor_usernames"] == ()
+    assert captured["approval_comment_usernames"] == ("maintainer", "review-bot")
+    assert captured["approval_comment_pattern"] == r"^\s*/shipit\b"
+    assert captured["review_actor_usernames"] == ("reviewer", "review-bot")
     assert "run_forever_limit" not in captured
 
 
@@ -975,6 +990,8 @@ def test_doctor_upgrades_legacy_config(tmp_path: Path) -> None:
     assert "provider_config" not in payload
     assert payload["task_provider_id"] == "github_projects_v2"
     assert payload["task_provider_config"] == {
+        "approval_comment_pattern": r"^\s*/approve\b",
+        "approval_comment_usernames": [],
         "allowlist": [],
         "page_size": 50,
         "status_field": "Status",
@@ -982,9 +999,43 @@ def test_doctor_upgrades_legacy_config(tmp_path: Path) -> None:
     }
     assert payload["loop_config"]["task_ready_status"] == "Todo"
     assert payload["loop_config"]["parallel_tasks"] is False
-    assert payload["loop_config"]["approval_comment_usernames"] == []
     assert payload["loop_config"]["auto_approve_enabled"] is False
     assert payload["loop_config"]["handoff_handler"] == "stdin_handler"
+
+
+def test_doctor_moves_legacy_loop_approval_keys_to_provider_config(
+    tmp_path: Path,
+) -> None:
+    runner = CliRunner()
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "task_provider_id": "github_projects_v2",
+                "task_provider_config": {
+                    "url": "https://github.com/orgs/acme/projects/9",
+                },
+                "loop_config": {
+                    "approval_comment_usernames": ["Maintainer", "review-bot"],
+                    "approval_comment_pattern": r"^\s*/shipit\b",
+                },
+            }
+        )
+    )
+
+    result = runner.invoke(main, ["doctor", "--config", str(config_path)])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(config_path.read_text())
+    assert payload["version"] == LATEST_LOOPS_CONFIG_VERSION
+    assert payload["task_provider_config"]["approval_comment_usernames"] == [
+        "Maintainer",
+        "review-bot",
+    ]
+    assert payload["task_provider_config"]["approval_comment_pattern"] == r"^\s*/shipit\b"
+    assert "approval_comment_usernames" not in payload["loop_config"]
+    assert "approval_comment_pattern" not in payload["loop_config"]
 
 
 def test_doctor_upgrades_versionless_legacy_config(tmp_path: Path) -> None:
@@ -1008,6 +1059,8 @@ def test_doctor_upgrades_versionless_legacy_config(tmp_path: Path) -> None:
     assert "provider_config" not in payload
     assert payload["task_provider_id"] == "github_projects_v2"
     assert payload["task_provider_config"] == {
+        "approval_comment_pattern": r"^\s*/approve\b",
+        "approval_comment_usernames": [],
         "allowlist": [],
         "page_size": 50,
         "status_field": "Status",
@@ -1043,6 +1096,8 @@ def test_doctor_does_not_synthesize_missing_github_provider_url(tmp_path: Path) 
     assert result.exit_code == 0, result.output
     payload = json.loads(config_path.read_text())
     assert payload["task_provider_config"] == {
+        "approval_comment_pattern": r"^\s*/approve\b",
+        "approval_comment_usernames": [],
         "allowlist": [],
         "page_size": 50,
         "status_field": "Status",
@@ -1084,9 +1139,6 @@ def test_loop_config_defaults_are_consistent_across_entrypoints(tmp_path: Path) 
     )
     loaded = load_config(loader_config_path)
     loaded_defaults = asdict(loaded.loop_config)
-    loaded_defaults["approval_comment_usernames"] = list(
-        loaded_defaults["approval_comment_usernames"]
-    )
     assert loaded_defaults == expected_defaults
 
 

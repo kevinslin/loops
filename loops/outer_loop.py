@@ -41,7 +41,7 @@ from loops.run_record import RunRecord, Task, write_run_record
 from loops.task_provider import TaskProvider
 
 INNER_LOOP_RUNS_DIR_NAME = "jobs"
-LATEST_LOOPS_CONFIG_VERSION = 2
+LATEST_LOOPS_CONFIG_VERSION = 3
 
 
 class SyncModeInterruptedError(KeyboardInterrupt):
@@ -63,8 +63,6 @@ class OuterLoopConfig:
     emit_on_first_run: bool = False
     force: bool = False
     task_ready_status: str = "Ready"
-    approval_comment_usernames: tuple[str, ...] = ()
-    approval_comment_pattern: str = DEFAULT_APPROVAL_COMMENT_PATTERN
     auto_approve_enabled: bool = False
     handoff_handler: str = DEFAULT_HANDOFF_HANDLER
 
@@ -447,6 +445,19 @@ def upgrade_config_payload(payload: Any) -> tuple[dict[str, Any], bool]:
     else:
         raise TypeError("loop_config must be an object")
 
+    legacy_approval_comment_usernames = loop_payload.pop(
+        "approval_comment_usernames",
+        None,
+    )
+    if legacy_approval_comment_usernames is not None:
+        changed = True
+    legacy_approval_comment_pattern = loop_payload.pop(
+        "approval_comment_pattern",
+        None,
+    )
+    if legacy_approval_comment_pattern is not None:
+        changed = True
+
     for key, value in build_default_loop_config_payload().items():
         if key not in loop_payload:
             loop_payload[key] = value
@@ -475,7 +486,18 @@ def upgrade_config_payload(payload: Any) -> tuple[dict[str, Any], bool]:
             if key == "url":
                 continue
             if key not in provider_payload:
-                provider_payload[key] = value
+                if (
+                    key == "approval_comment_usernames"
+                    and legacy_approval_comment_usernames is not None
+                ):
+                    provider_payload[key] = legacy_approval_comment_usernames
+                elif (
+                    key == "approval_comment_pattern"
+                    and legacy_approval_comment_pattern is not None
+                ):
+                    provider_payload[key] = legacy_approval_comment_pattern
+                else:
+                    provider_payload[key] = value
                 changed = True
         if existing_provider_payload != provider_payload:
             upgraded["task_provider_config"] = provider_payload
@@ -515,10 +537,38 @@ def _resolve_provider_review_actor_usernames(provider: TaskProvider) -> tuple[st
     return normalize_approval_usernames(usernames)
 
 
+def _resolve_provider_comment_approval_usernames(
+    provider: TaskProvider,
+) -> tuple[str, ...]:
+    """Resolve provider-defined comment approval usernames."""
+
+    raw_usernames = getattr(provider, "approval_comment_usernames", ())
+    if isinstance(raw_usernames, tuple):
+        usernames = raw_usernames
+    elif isinstance(raw_usernames, list):
+        usernames = tuple(raw_usernames)
+    else:
+        return ()
+    if not all(isinstance(item, str) for item in usernames):
+        return ()
+    return normalize_approval_usernames(usernames)
+
+
+def _resolve_provider_comment_approval_pattern(provider: TaskProvider) -> str:
+    """Resolve provider-defined approval regex pattern."""
+
+    raw_pattern = getattr(provider, "approval_comment_pattern", "")
+    if not isinstance(raw_pattern, str):
+        return DEFAULT_APPROVAL_COMMENT_PATTERN
+    return raw_pattern or DEFAULT_APPROVAL_COMMENT_PATTERN
+
+
 def build_inner_loop_launcher(
     config: LoopsConfig,
     *,
     review_actor_usernames: tuple[str, ...] = (),
+    approval_comment_usernames: tuple[str, ...] = (),
+    approval_comment_pattern: str = DEFAULT_APPROVAL_COMMENT_PATTERN,
 ) -> Callable[[Path, Task], None]:
     """Build the launcher callable for inner loop executions."""
 
@@ -528,6 +578,12 @@ def build_inner_loop_launcher(
     sync_mode = config.loop_config.sync_mode
     normalized_review_actor_usernames = normalize_approval_usernames(
         review_actor_usernames
+    )
+    normalized_approval_comment_usernames = normalize_approval_usernames(
+        approval_comment_usernames
+    )
+    resolved_approval_comment_pattern = (
+        approval_comment_pattern or DEFAULT_APPROVAL_COMMENT_PATTERN
     )
 
     def launcher(run_dir: Path, task: Task) -> None:
@@ -542,8 +598,8 @@ def build_inner_loop_launcher(
                 auto_approve_enabled=config.loop_config.auto_approve_enabled,
                 stream_logs_stdout=sync_mode,
                 env=dict(inner_loop.env) if inner_loop.env else None,
-                approval_comment_usernames=config.loop_config.approval_comment_usernames,
-                approval_comment_pattern=config.loop_config.approval_comment_pattern,
+                approval_comment_usernames=normalized_approval_comment_usernames,
+                approval_comment_pattern=resolved_approval_comment_pattern,
                 review_actor_usernames=normalized_review_actor_usernames,
             ),
         )
@@ -706,18 +762,6 @@ def _load_outer_loop_config(payload: Any) -> OuterLoopConfig:
             "task_ready_status",
             defaults["task_ready_status"],
         ),
-        approval_comment_usernames=normalize_approval_usernames(
-            _load_str_list(
-                merged_payload,
-                "approval_comment_usernames",
-                tuple(defaults["approval_comment_usernames"]),
-            )
-        ),
-        approval_comment_pattern=_load_str(
-            merged_payload,
-            "approval_comment_pattern",
-            defaults["approval_comment_pattern"],
-        ),
         auto_approve_enabled=_load_bool(
             merged_payload,
             "auto_approve_enabled",
@@ -745,8 +789,6 @@ def build_default_loop_config_payload() -> dict[str, Any]:
         "emit_on_first_run": defaults.emit_on_first_run,
         "force": defaults.force,
         "task_ready_status": defaults.task_ready_status,
-        "approval_comment_usernames": list(defaults.approval_comment_usernames),
-        "approval_comment_pattern": defaults.approval_comment_pattern,
         "auto_approve_enabled": defaults.auto_approve_enabled,
         "handoff_handler": defaults.handoff_handler,
     }
@@ -815,25 +857,6 @@ def _load_str(payload: dict[str, Any], key: str, default: str) -> str:
     if not isinstance(value, str):
         raise TypeError(f"{key} must be a string")
     return value
-
-
-def _load_str_list(
-    payload: dict[str, Any],
-    key: str,
-    default: tuple[str, ...],
-) -> tuple[str, ...]:
-    """Load a list of strings with validation."""
-
-    value = payload.get(key, default)
-    if isinstance(value, tuple):
-        candidate = list(value)
-    else:
-        candidate = value
-    if not isinstance(candidate, list) or not all(
-        isinstance(item, str) for item in candidate
-    ):
-        raise TypeError(f"{key} must be a list of strings")
-    return tuple(candidate)
 
 
 def _load_config_version(payload: dict[str, Any]) -> int:
