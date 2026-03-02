@@ -38,16 +38,56 @@ def _require_loops_run_dir() -> Path:
     return run_dir
 
 
-def _write_body_template(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "[feat|enhance|chore|fix|docs]: [description of change]\n\n"
-        "## Context\n"
-        "[what this change does]\n\n"
-        "## Testing\n"
-        "[description of tests]\n",
-        encoding="utf-8",
+def _resolve_head_branch() -> str:
+    branch_lookup = _run_command(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+    if branch_lookup.returncode != 0:
+        return "unknown-branch"
+    branch = branch_lookup.stdout.strip()
+    return branch or "unknown-branch"
+
+
+def _collect_commit_summaries(base_branch: str) -> list[str]:
+    primary_range = f"origin/{base_branch}..HEAD"
+    primary = _run_command(["git", "log", "--format=%s", "--reverse", primary_range])
+    lines = [line.strip() for line in primary.stdout.splitlines() if line.strip()]
+    if primary.returncode == 0 and lines:
+        return lines
+    fallback = _run_command(["git", "log", "--format=%s", "-n", "5"])
+    fallback_lines = [line.strip() for line in fallback.stdout.splitlines() if line.strip()]
+    return fallback_lines
+
+
+def _render_pr_body(*, pr_title: str, base_branch: str) -> str:
+    head_branch = _resolve_head_branch()
+    commit_summaries = _collect_commit_summaries(base_branch)
+    lines: list[str] = [
+        pr_title,
+        "",
+        "## Context",
+        f"- Branch: `{head_branch}`",
+        f"- Base branch: `{base_branch}`",
+        "- Changes:",
+    ]
+    if commit_summaries:
+        for summary in commit_summaries[:8]:
+            lines.append(f"  - {summary}")
+    else:
+        lines.append("  - Commit summary unavailable.")
+    lines.extend(
+        [
+            "",
+            "## Testing",
+            "- [ ] Describe automated and manual tests run for this branch.",
+            "",
+        ]
     )
+    return "\n".join(lines)
+
+
+def _write_body_template(path: Path, *, pr_title: str, base_branch: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = _render_pr_body(pr_title=pr_title, base_branch=base_branch)
+    path.write_text(body, encoding="utf-8")
 
 
 def _run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
@@ -122,8 +162,12 @@ def main(argv: list[str] | None = None) -> int:
         run_dir = _require_loops_run_dir()
         body_file = Path(args.pr_body_file).expanduser()
 
-        _write_body_template(body_file)
         base_branch = _resolve_base_branch()
+        _write_body_template(
+            body_file,
+            pr_title=args.pr_title,
+            base_branch=base_branch,
+        )
         pr_url = _create_pr(
             title=args.pr_title,
             body_file=body_file,
