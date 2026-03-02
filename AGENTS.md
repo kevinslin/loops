@@ -6,6 +6,7 @@
 - If current changes deviate or add more detail to DESIGN.md, make sure to also edit DESIGN.md
 - When updating `loop_config` schema/defaults, always update `loops doctor` (config upgrade path + tests) so older configs are backfilled correctly.
 - When changing config schema/defaults (`loop_config` or provider config), bump config `version`, treat it as a breaking change (do not add runtime backward-compat paths), and add/update `loops doctor` migration logic + tests.
+- When changing Loops config version/schema/defaults, also update `tests/integ/test_end2end_live.py` (`write_end2end_config`) and any related integration docs/tests that depend on generated config shape.
 - When introducing changes - always ask if the design could be simpler. We want to keep loops as simple as possible.
 
 ## Parameters and Configuration

@@ -15,7 +15,18 @@ STATUS_FIELD_NAME = "Status"
 READY_STATUS_NAME = "Todo"
 NON_READY_STATUS_CANDIDATES = ("Backlog", "Todo", "To Do", "In Progress")
 COMPLETED_STATUS_CANDIDATES = ("Done", "Completed")
-END2END_DEFAULT_ANIMAL = "otter"
+END2END_ANIMAL_CANDIDATES = (
+    "otter",
+    "beaver",
+    "capybara",
+    "lemur",
+    "penguin",
+    "walrus",
+    "raccoon",
+    "platypus",
+    "hedgehog",
+    "narwhal",
+)
 LABEL_COLOR = "1d76db"
 DEFAULT_GH_TIMEOUT_SECONDS = 60.0
 
@@ -288,7 +299,7 @@ def create_end2end_issue_bundle(
     token: str,
     project_url: str = LOOPS_INTEG_PROJECT_URL,
     repo: str = LOOPS_INTEG_REPO,
-    animal: str = END2END_DEFAULT_ANIMAL,
+    animal: str | None = None,
 ) -> End2EndIssueBundle:
     locator = parse_project_url(project_url)
     project = fetch_project_metadata(locator, token=token)
@@ -296,7 +307,8 @@ def create_end2end_issue_bundle(
     created_issues: list[IssueHandle] = []
     created_item_ids: list[str] = []
 
-    normalized_animal = animal.strip().lower()
+    selected_animal = choose_end2end_default_animal() if animal is None else animal
+    normalized_animal = selected_animal.strip().lower()
     if not normalized_animal:
         raise ValueError("animal must be a non-empty string")
 
@@ -342,6 +354,10 @@ def create_end2end_issue_bundle(
                 f"setup_error={exc}; cleanup_errors={'; '.join(rollback_errors)}"
             ) from exc
         raise
+
+
+def choose_end2end_default_animal() -> str:
+    return secrets.choice(END2END_ANIMAL_CANDIDATES)
 
 
 def build_end2end_task_body(animal: str) -> str:

@@ -338,7 +338,8 @@ None identified.
 | `LOOPS_INTEG_POLL_DELAY_SECONDS` | `tests/integ/test_outer_loop_pickup_live.py:run_until_single_run_dir` | `2.0` | Delay between `loops run` retries. |
 | `LOOPS_INTEG_END2END_POLL_ATTEMPTS` | `tests/integ/test_end2end_live.py:run_until_single_run_dir` | `2` | Number of retries when end-to-end run dir is not yet materialized. |
 | `LOOPS_INTEG_END2END_POLL_DELAY_SECONDS` | `tests/integ/test_end2end_live.py:run_until_single_run_dir` | `5.0` | Delay between end-to-end retries. |
-| `LOOPS_INTEG_END2END_ANIMAL` | `tests/integ/test_end2end_live.py` | `otter` | Selects deterministic animal payload in the "make animal" issue body. |
+| `LOOPS_INTEG_END2END_PROJECT_URL` | `tests/integ/test_end2end_live.py:resolve_end2end_project_url` | `https://github.com/users/kevinslin/projects/6/views/1` | Selects the GitHub Project used for both issue setup and provider polling config in the end-to-end harness. |
+| `LOOPS_INTEG_END2END_ANIMAL` | `tests/integ/test_end2end_live.py` | random choice from `END2END_ANIMAL_CANDIDATES` | Overrides the animal payload in the "make animal" issue body. |
 | `LOOPS_INTEG_GH_TIMEOUT_SECONDS` | `tests/integ/github_setup.py:_resolve_gh_timeout_seconds` | `60.0` | Timeout for each `gh` command during setup/cleanup. |
 | `PYTHONPATH` | `tests/integ/test_outer_loop_pickup_live.py:build_pythonpath` | inherited env | Ensures repository package importability in subprocess run. |
 
@@ -348,7 +349,7 @@ None identified.
 |---|---|---|---|
 | `project_url` argument to `create_live_issue_bundle` | function arg | `tests/integ/github_setup.py` | Chooses target GitHub Projects board used by live test setup. |
 | `repo` argument to `create_live_issue_bundle` | function arg | `tests/integ/github_setup.py` | Chooses repo where test issues are created and later closed. |
-| `animal` argument to `create_end2end_issue_bundle` | function arg | `tests/integ/github_setup.py` | Controls deterministic payload for the full lifecycle "make animal" issue. |
+| `animal` argument to `create_end2end_issue_bundle` | function arg | `tests/integ/github_setup.py` | Controls payload for the full lifecycle "make animal" issue; defaults to one random animal from a 10-item list when omitted. |
 | `.loops/config.json` payload from `write_live_config` | generated test config | `loops run --config ...` subprocess | Controls provider filters, ready status, sync mode, and inner loop command/env. |
 | `.integ/loops-integ/.loops/config.json` payload from `write_end2end_config` | generated test config | `loops run --config ...` subprocess | Controls full lifecycle run settings including auto-approve and repository checkout root. |
 | CLI flags `--run-once --limit 1 --config` | subprocess args | `python -m loops run` | Forces one-cycle pickup and deterministic single-task selection in the harness run. |
@@ -418,4 +419,5 @@ Useful debug checkpoints:
 
 ## Changelog
 - 2026-03-01: Created integration test harness flow doc for live setup, run, assertion, and cleanup behavior. (019cabf3-d850-7bb0-ba2c-53d1a13dfc6e)
+- 2026-03-01: Documented shared `LOOPS_INTEG_END2END_PROJECT_URL` usage and randomized default animal selection for end-to-end harness setup. (019cacf8-0a3d-7601-b17c-9302a9f6fb4c)
 - 2026-03-02: Added full lifecycle end-to-end live harness flow (`test_end2end_live`) including bootstrap, merge assertions, and teardown sequence. (019cacf8-0a3d-7601-b17c-9302a9f6fb4c)

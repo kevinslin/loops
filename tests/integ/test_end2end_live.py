@@ -14,9 +14,9 @@ import pytest
 
 from loops.outer_loop import LATEST_LOOPS_CONFIG_VERSION
 from tests.integ.github_setup import (
-    END2END_DEFAULT_ANIMAL,
     LOOPS_INTEG_PROJECT_URL,
     LOOPS_INTEG_REPO,
+    choose_end2end_default_animal,
     cleanup_end2end_issue_bundle,
     create_end2end_issue_bundle,
     fetch_project_item_status_option_id,
@@ -61,14 +61,21 @@ def test_end2end_live() -> None:
     primary_error: Exception | None = None
     cleanup_errors: list[str] = []
 
-    animal = os.environ.get("LOOPS_INTEG_END2END_ANIMAL", END2END_DEFAULT_ANIMAL)
+    animal = os.environ.get("LOOPS_INTEG_END2END_ANIMAL")
+    if animal is None:
+        animal = choose_end2end_default_animal()
+    project_url = resolve_end2end_project_url()
 
     try:
         bootstrap_integ_repo()
-        bundle = create_end2end_issue_bundle(token=token, animal=animal)
+        bundle = create_end2end_issue_bundle(token=token, animal=animal, project_url=project_url)
         loops_root = INTEG_REPO_DIR / ".loops"
         config_path = loops_root / "config.json"
-        write_end2end_config(config_path=config_path, run_label=bundle.run_label)
+        write_end2end_config(
+            config_path=config_path,
+            run_label=bundle.run_label,
+            project_url=project_url,
+        )
 
         env = build_run_env(token=token)
         timeout_seconds = read_int_env(
@@ -169,16 +176,26 @@ def test_end2end_live() -> None:
         raise RuntimeError("cleanup failed:\n- " + "\n- ".join(cleanup_errors))
 
 
-def write_end2end_config(*, config_path: Path, run_label: str) -> None:
-    config_path.parent.mkdir(parents=True, exist_ok=True)
+def resolve_end2end_project_url() -> str:
     project_url = os.environ.get("LOOPS_INTEG_END2END_PROJECT_URL", DEFAULT_PROJECT_URL)
-    if not isinstance(project_url, str) or not project_url.strip():
+    if not isinstance(project_url, str):
         raise ValueError("LOOPS_INTEG_END2END_PROJECT_URL must be a non-empty string")
+    resolved = project_url.strip()
+    if not resolved:
+        raise ValueError("LOOPS_INTEG_END2END_PROJECT_URL must be a non-empty string")
+    return resolved
+
+
+def write_end2end_config(*, config_path: Path, run_label: str, project_url: str) -> None:
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    resolved_project_url = project_url.strip()
+    if not resolved_project_url:
+        raise ValueError("project_url must be a non-empty string")
     payload = {
         "version": LATEST_LOOPS_CONFIG_VERSION,
         "task_provider_id": "github_projects_v2",
         "task_provider_config": {
-            "url": project_url,
+            "url": resolved_project_url,
             "status_field": "Status",
             "filters": [
                 f"repository={LOOPS_INTEG_REPO}",

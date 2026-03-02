@@ -155,6 +155,46 @@ def test_select_completed_option_id_raises_when_missing() -> None:
         github_setup.select_completed_option_id(option_by_name={"todo": "TODO"})
 
 
+def test_create_end2end_issue_bundle_uses_generated_default_animal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = github_setup.ProjectMetadata(
+        project_id="PROJ",
+        status_field_id="STATUS",
+        ready_option_id="READY",
+        non_ready_option_id="BACKLOG",
+        completed_option_id="DONE",
+    )
+    locator = github_setup.ProjectLocator(owner_type="user", login="kevinslin", number=6)
+    issue = _build_issue(number=302, node_id="ISSUE302", title="task")
+    captured: dict[str, str] = {}
+
+    monkeypatch.setattr(github_setup, "parse_project_url", lambda _url: locator)
+    monkeypatch.setattr(
+        github_setup,
+        "fetch_project_metadata",
+        lambda _locator, *, token: project,
+    )
+    monkeypatch.setattr(github_setup, "build_run_label", lambda: "run-label")
+    monkeypatch.setattr(github_setup, "ensure_repo_label", lambda **_kwargs: None)
+    monkeypatch.setattr(github_setup, "choose_end2end_default_animal", lambda: "lemur")
+
+    def _create_issue(**kwargs: str) -> github_setup.IssueHandle:
+        captured["title"] = kwargs["title"]
+        captured["body"] = kwargs["body"]
+        return issue
+
+    monkeypatch.setattr(github_setup, "create_issue", _create_issue)
+    monkeypatch.setattr(github_setup, "add_issue_to_project", lambda **_kwargs: "ITEM302")
+    monkeypatch.setattr(github_setup, "set_project_item_status", lambda **_kwargs: None)
+
+    bundle = github_setup.create_end2end_issue_bundle(token="token")
+
+    assert captured["title"] == "Create lemur.md file"
+    assert "ASCII art of a lemur saying a bad pun." in captured["body"]
+    assert bundle.task.item_id == "ITEM302"
+
+
 def test_create_end2end_issue_bundle_rolls_back_on_setup_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
