@@ -54,6 +54,7 @@ def test_init_creates_default_loops_structure(tmp_path: Path) -> None:
     )
     assert config_payload["loop_config"]["auto_approve_enabled"] is False
     assert config_payload["loop_config"]["handoff_handler"] == "stdin_handler"
+    assert config_payload["loop_config"]["checkout_mode"] == "branch"
     assert config_payload["inner_loop"]["append_task_url"] is False
     assert config_payload["inner_loop"]["command"] == [
         sys.executable,
@@ -1001,6 +1002,7 @@ def test_doctor_upgrades_legacy_config(tmp_path: Path) -> None:
     assert payload["loop_config"]["parallel_tasks"] is False
     assert payload["loop_config"]["auto_approve_enabled"] is False
     assert payload["loop_config"]["handoff_handler"] == "stdin_handler"
+    assert payload["loop_config"]["checkout_mode"] == "branch"
 
 
 def test_doctor_moves_legacy_loop_approval_keys_to_provider_config(

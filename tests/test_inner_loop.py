@@ -56,6 +56,8 @@ def _write_run_record(
     codex_session: inner_loop_module.CodexSession | None = None,
     needs_user_input: bool = False,
     needs_user_input_payload: dict[str, object] | None = None,
+    checkout_mode: str = "branch",
+    starting_commit: str = "unknown",
 ) -> None:
     record = RunRecord(
         task=_task(),
@@ -63,6 +65,8 @@ def _write_run_record(
         codex_session=codex_session,
         needs_user_input=needs_user_input,
         needs_user_input_payload=needs_user_input_payload,
+        checkout_mode=checkout_mode,
+        starting_commit=starting_commit,
         last_state="NEEDS_INPUT" if needs_user_input else "RUNNING",
         updated_at="",
     )
@@ -1049,6 +1053,54 @@ def test_inner_loop_uses_existing_needs_input_payload_and_user_response_in_promp
     assert re.search(
         r"\[loops\] user input for codex turn: present=True length=\d+",
         run_log,
+    )
+
+
+def test_inner_loop_includes_worktree_instruction_in_initial_prompt(
+    tmp_path, monkeypatch
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        checkout_mode="worktree",
+        starting_commit="abc123",
+    )
+
+    stub = tmp_path / "codex_stub.py"
+    _write_codex_stub(stub)
+    counter_path = tmp_path / "counter.txt"
+    prompt_log_path = tmp_path / "prompts.log"
+    monkeypatch.setenv("STUB_COUNTER_PATH", str(counter_path))
+    monkeypatch.setenv("STUB_PROMPT_LOG", str(prompt_log_path))
+    monkeypatch.setenv(
+        "CODEX_CMD",
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(stub))}",
+    )
+
+    def pr_status_fetcher(pr: RunPR) -> RunPR:
+        return RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="approved",
+            merged_at="2026-02-09T00:00:09Z",
+            last_checked_at="2026-02-09T00:00:09Z",
+        )
+
+    result = run_inner_loop(
+        run_dir,
+        pr_status_fetcher=pr_status_fetcher,
+        sleep_fn=lambda _seconds: None,
+        max_iterations=20,
+    )
+
+    assert result.last_state == "DONE"
+    prompts = prompt_log_path.read_text()
+    assert (
+        "Before making code changes, create and switch to a new git worktree for this "
+        "task and complete implementation from that worktree."
+        in prompts
     )
 
 

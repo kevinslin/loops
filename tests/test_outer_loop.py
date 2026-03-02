@@ -114,6 +114,14 @@ def test_run_once_creates_run_records(tmp_path: Path) -> None:
         read_run_record(run_dir / "run.json").stream_logs_stdout is False
         for run_dir in run_dirs
     )
+    assert all(
+        read_run_record(run_dir / "run.json").checkout_mode == "branch"
+        for run_dir in run_dirs
+    )
+    assert all(
+        read_run_record(run_dir / "run.json").starting_commit == "unknown"
+        for run_dir in run_dirs
+    )
     assert all((run_dir / "agent.log").exists() for run_dir in run_dirs)
     assert len(launched) == 2
 
@@ -305,6 +313,39 @@ def test_run_once_writes_detailed_logs(tmp_path: Path) -> None:
     assert f"run_dir={run_dirs[0]}" in log_text
 
 
+def test_run_once_logs_and_persists_checkout_mode_and_starting_commit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    task = make_task("1", "Ship it")
+    provider = StubProvider([task])
+    loops_root = tmp_path / ".loops"
+    runner = OuterLoopRunner(
+        provider,
+        OuterLoopConfig(
+            task_ready_status="Ready",
+            emit_on_first_run=True,
+            checkout_mode="worktree",
+        ),
+        loops_root=loops_root,
+        inner_loop_launcher=lambda _run_dir, _task: None,
+    )
+    monkeypatch.setattr(
+        "loops.outer_loop._resolve_starting_commit",
+        lambda _loops_root: "abc123",
+    )
+
+    run_dirs = runner.run_once(limit=1)
+
+    run_record = read_run_record(run_dirs[0] / "run.json")
+    assert run_record.checkout_mode == "worktree"
+    assert run_record.starting_commit == "abc123"
+
+    log_text = (loops_root / "oloops.log").read_text()
+    assert "checkout_mode=worktree" in log_text
+    assert "starting_commit=abc123" in log_text
+
+
 def test_load_config_resolves_working_dir(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     payload = {
@@ -371,6 +412,32 @@ def test_load_config_reads_handoff_handler(tmp_path: Path) -> None:
 
     config = load_config(config_path)
     assert config.loop_config.handoff_handler == HANDOFF_HANDLER_GH_COMMENT
+
+
+def test_load_config_reads_checkout_mode(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    payload = {
+        "task_provider_id": "github_projects_v2",
+        "task_provider_config": {},
+        "loop_config": {"checkout_mode": "worktree"},
+    }
+    config_path.write_text(json.dumps(payload))
+
+    config = load_config(config_path)
+    assert config.loop_config.checkout_mode == "worktree"
+
+
+def test_load_config_rejects_invalid_checkout_mode(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    payload = {
+        "task_provider_id": "github_projects_v2",
+        "task_provider_config": {},
+        "loop_config": {"checkout_mode": "detached"},
+    }
+    config_path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="checkout_mode"):
+        load_config(config_path)
 
 
 def test_load_config_migrates_legacy_provider_keys(tmp_path: Path) -> None:

@@ -68,8 +68,9 @@ function run_inner_loop(run_dir):
 - Core state is derived each iteration from `run.json` (`pr`, `needs_user_input`), not from cached in-memory state.
 - Transition gates include: review freshness (`latest_review_submitted_at > review_addressed_at`), idle polling threshold escalation, and max-iteration fallback.
 - Additional inline review gate: when review is not already approved and `ci_status == success`, if `auto_approve_enabled` is true and `RunRecord.auto_approve` is unset/`none`, run one-time `$ag-judge` and persist judgement on `RunRecord`.
-- Runtime config comes from CLI options plus run-scoped files (`inner_loop_approval_config.json`, `inner_loop_runtime_config.json`); env fallbacks are limited to designated runtime keys (`CODEX_CMD`, `LOOPS_PROMPT_FILE`/`CODEX_PROMPT_FILE`, `LOOPS_HANDOFF_HANDLER`, `LOOPS_AUTO_APPROVE_ENABLED`, `LOOPS_STREAM_LOGS_STDOUT`) when runtime config is absent or omits them. `stream_logs_stdout` in `inner_loop_runtime_config.json` controls `run.log` stdout mirroring, and malformed runtime config is treated as a startup error.
+- Runtime config comes from CLI options plus run-scoped `inner_loop_runtime_config.json`; env fallbacks are limited to designated runtime keys (`CODEX_CMD`, `LOOPS_PROMPT_FILE`/`CODEX_PROMPT_FILE`, `LOOPS_HANDOFF_HANDLER`, `LOOPS_AUTO_APPROVE_ENABLED`, `LOOPS_STREAM_LOGS_STDOUT`) when runtime config is absent or omits them. `stream_logs_stdout` in `inner_loop_runtime_config.json` controls `run.log` stdout mirroring, and malformed runtime config is treated as a startup error.
 - In sync-mode launches, outer loop writes `stream_logs_stdout=true` in `inner_loop_runtime_config.json`, which causes inner-loop `run.log` appends to be mirrored to stdout.
+- Initial Codex prompt setup now reads `RunRecord.checkout_mode`; when mode is `worktree`, the first RUNNING turn adds explicit instructions to create/switch to a task worktree before edits.
 
 ## Sequence diagram
 
@@ -128,7 +129,7 @@ None identified.
 | `task_provider_config.approval_comment_usernames` / `task_provider_config.approval_comment_pattern` | Config file fields (provider) | validated in provider model, then resolved by `loops/outer_loop.py` and written to `inner_loop_runtime_config.json` | Controls comment-based approval override behavior in review polling. |
 | `task_provider_config.allowlist` (GitHub provider) | Config file field (outer loop/provider) | `loops/cli.py` + `loops/outer_loop.py` -> resolved and written to `inner_loop_runtime_config.json` as `review_actor_usernames` | Filters review-phase PR comments/reviews to allowlisted actors during polling. |
 | `loop_config.handoff_handler`, `loop_config.auto_approve_enabled`, `loop_config.sync_mode`, `inner_loop.env` | Config file fields (outer loop) | `loops/outer_loop.py` -> written to `inner_loop_runtime_config.json` | Controls runtime handoff strategy, auto-approve gate, log mirroring, and optional run-scoped env payload for inner-loop subprocess behavior. |
-| `run.json` content (`pr`, `needs_user_input`, `needs_user_input_payload`, `stream_logs_stdout`) | Persisted state | `loops/run_record.py` | Determines state-machine branch selection and exposes effective log-streaming mode for observability. |
+| `run.json` content (`pr`, `needs_user_input`, `needs_user_input_payload`, `stream_logs_stdout`, `checkout_mode`, `starting_commit`) | Persisted state | `loops/run_record.py` | Determines state-machine branch selection, exposes effective log-streaming mode, and carries checkout guidance for initial prompt construction. |
 | `run_inner_loop(...)` polling params | Function args | `loops/inner_loop.py:58` | Controls max iterations, poll backoff, and idle escalation thresholds. |
 
 ## Flow
@@ -159,7 +160,7 @@ None identified.
 ```ts
 function runInnerLoop(runDir: Path, opts: Options): RunRecord {
   initializePathsAndDefaults(runDir, opts)
-  commentApproval = loadCommentApprovalSettings(runDir) // reads inner_loop_runtime_config.json (legacy approval file fallback)
+  commentApproval = loadCommentApprovalSettings(runDir) // reads inner_loop_runtime_config.json
   if (commentApproval.configLoadError) {
     log("[loops] failed to load run approval config; using defaults")
   }
@@ -201,6 +202,7 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
 
 - Codex turn behavior (`loops/inner_loop.py:601`):
   - Builds prompt (standard vs review-feedback path).
+  - On the first RUNNING turn, if `run_record.checkout_mode == worktree`, prepends worktree setup instructions to the prompt.
   - Base prompt contract says Codex may wait for the `a-review` subagent but must not wait for human PR comments/reviews because the outer harness performs comment monitoring and re-invokes Codex when needed.
   - Base prompt contract requires posting `a-review` output to PR comments whenever `a-review` runs, including explicit no-findings comments.
   - Base prompt contract explicitly forbids using the `gen-notifier` skill while running inside loops.
@@ -210,7 +212,7 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
   - Sets `needs_user_input=true` on non-zero exits, on trailing `NEEDS_INPUT` state markers, or on successful turns with no PR detected.
 
 - Review polling behavior (`loops/inner_loop.py:767`):
-  - Loads comment-approval settings once per run from `inner_loop_runtime_config.json` (legacy approval-file fallback) and compiles approval pattern with safe fallback.
+  - Loads comment-approval settings once per run from `inner_loop_runtime_config.json` and compiles approval pattern with safe fallback.
   - When provider review-actor allowlist is configured, filters `latestReviews`, `reviews`, and `comments` to allowlisted actors before deriving review status/feedback.
   - Calls `gh pr view ... --json reviewDecision,mergedAt,url,number,latestReviews,reviews,comments`.
   - Maps decision into `review_status`, captures latest relevant review timestamp, and may override to approved when the newest allowlisted approval signal (plain PR comment or `COMMENTED`/`APPROVED` review body matching pattern) is newer than latest `CHANGES_REQUESTED` review.
@@ -331,6 +333,7 @@ A: Inner loop only.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+- 2026-03-02: Documented run-record checkout metadata (`checkout_mode`, `starting_commit`) and worktree setup instruction injection on initial RUNNING prompts. (019cabf2-f02b-7521-b814-5b0fcafe3d34)
 - 2026-03-01: Removed state-signal queue references after deleting `loops signal`/`loops.state_signal`; NEEDS_INPUT now documents direct `run.json` handoff behavior. (019cabbd-8be2-7f00-ba1e-0856ed6096dc)
 - 2026-03-01: Added deterministic best-effort 👍 reactions for allowlisted plain-comment approval signals during `WAITING_ON_REVIEW` polling. (019cab4c-0485-7542-b9eb-ff1c83ca0942)
 - 2026-03-01: Documented `run.json.stream_logs_stdout` persistence as the effective log-streaming snapshot loaded from runtime config/env fallbacks. (019cab67-3061-7ce1-81c1-e30f80798fb0)

@@ -4,13 +4,15 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Literal, Mapping, Optional
+from typing import Any, Dict, Literal, Mapping, Optional, cast
 
 RunState = Literal["RUNNING", "WAITING_ON_REVIEW", "NEEDS_INPUT", "PR_APPROVED", "DONE"]
 ReviewStatus = Literal["open", "changes_requested", "approved"]
 CIStatus = Literal["pending", "success", "failure"]
 AutoApproveVerdict = Literal["none", "APPROVE", "REJECT", "ESCALATE"]
+CheckoutMode = Literal["branch", "worktree"]
 MAX_NEEDS_USER_INPUT_PAYLOAD_BYTES = 16 * 1024
+VALID_CHECKOUT_MODES = {"branch", "worktree"}
 
 
 @dataclass(frozen=True)
@@ -206,6 +208,8 @@ class RunRecord:
     auto_approve: Optional[RunAutoApprove] = None
     needs_user_input_payload: Optional[Dict[str, Any]] = None
     stream_logs_stdout: Optional[bool] = None
+    checkout_mode: CheckoutMode = "branch"
+    starting_commit: str = "unknown"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -220,6 +224,8 @@ class RunRecord:
             "needs_user_input": self.needs_user_input,
             "needs_user_input_payload": self.needs_user_input_payload,
             "stream_logs_stdout": self.stream_logs_stdout,
+            "checkout_mode": self.checkout_mode,
+            "starting_commit": self.starting_commit,
             "last_state": self.last_state,
             "updated_at": self.updated_at,
         }
@@ -284,6 +290,15 @@ def _validate_needs_user_input_payload(
     return normalized
 
 
+def _validate_checkout_mode(value: Any, *, key: str) -> CheckoutMode:
+    if not isinstance(value, str):
+        raise TypeError(f"{key} must be a string")
+    normalized = value.strip().casefold()
+    if normalized not in VALID_CHECKOUT_MODES:
+        raise ValueError(f"{key} must be one of: branch, worktree")
+    return cast(CheckoutMode, normalized)
+
+
 def read_run_record(path: str | Path) -> RunRecord:
     payload = json.loads(Path(path).read_text())
     needs_user_input = payload.get("needs_user_input")
@@ -295,6 +310,13 @@ def read_run_record(path: str | Path) -> RunRecord:
     stream_logs_stdout = payload.get("stream_logs_stdout")
     if stream_logs_stdout is not None and not isinstance(stream_logs_stdout, bool):
         raise TypeError('payload["stream_logs_stdout"] must be a boolean or null')
+    checkout_mode = _validate_checkout_mode(
+        payload.get("checkout_mode", "branch"),
+        key='payload["checkout_mode"]',
+    )
+    starting_commit = payload.get("starting_commit", "unknown")
+    if not isinstance(starting_commit, str):
+        raise TypeError('payload["starting_commit"] must be a string')
     return RunRecord(
         task=Task.from_dict(payload["task"]),
         pr=RunPR.from_dict(payload["pr"]) if payload.get("pr") else None,
@@ -311,6 +333,8 @@ def read_run_record(path: str | Path) -> RunRecord:
         needs_user_input=needs_user_input,
         needs_user_input_payload=needs_user_input_payload,
         stream_logs_stdout=stream_logs_stdout,
+        checkout_mode=checkout_mode,
+        starting_commit=starting_commit.strip() or "unknown",
         last_state=payload["last_state"],
         updated_at=payload["updated_at"],
     )
@@ -328,6 +352,13 @@ def write_run_record(
     stream_logs_stdout = record.stream_logs_stdout
     if stream_logs_stdout is not None and not isinstance(stream_logs_stdout, bool):
         raise TypeError("record.stream_logs_stdout must be a boolean or null")
+    checkout_mode = _validate_checkout_mode(
+        record.checkout_mode,
+        key="record.checkout_mode",
+    )
+    starting_commit = record.starting_commit
+    if not isinstance(starting_commit, str):
+        raise TypeError("record.starting_commit must be a string")
     updated_record = RunRecord(
         task=record.task,
         pr=record.pr,
@@ -336,6 +367,8 @@ def write_run_record(
         needs_user_input=record.needs_user_input,
         needs_user_input_payload=needs_user_input_payload,
         stream_logs_stdout=stream_logs_stdout,
+        checkout_mode=checkout_mode,
+        starting_commit=starting_commit.strip() or "unknown",
         last_state=derive_run_state(
             record.pr,
             record.needs_user_input,
