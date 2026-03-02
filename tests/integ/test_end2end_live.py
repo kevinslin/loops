@@ -87,6 +87,7 @@ def test_end2end_live() -> None:
             env=env,
             loops_root=loops_root,
             timeout_seconds=timeout_seconds,
+            run_label=bundle.run_label,
         )
         run_record = json.loads((run_dir / "run.json").read_text())
 
@@ -202,6 +203,7 @@ def run_until_single_run_dir(
     env: dict[str, str],
     loops_root: Path,
     timeout_seconds: int,
+    run_label: str,
 ) -> tuple[Path, subprocess.CompletedProcess[str]]:
     attempts = int(
         os.environ.get(
@@ -238,10 +240,16 @@ def run_until_single_run_dir(
         )
 
         if runs_root.exists():
-            run_dirs = sorted(path for path in runs_root.iterdir() if path.is_dir())
+            run_dirs = sorted(
+                path
+                for path in runs_root.iterdir()
+                if path.is_dir() and run_label in path.name
+            )
             if len(run_dirs) == 1:
                 return run_dirs[0], result
-            assert len(run_dirs) == 0, f"expected at most 1 run dir, got {run_dirs}"
+            assert len(run_dirs) == 0, (
+                f"expected at most 1 run dir for run_label={run_label!r}, got {run_dirs}"
+            )
 
         if attempt < attempts:
             time.sleep(delay_seconds)
