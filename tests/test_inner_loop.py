@@ -1034,8 +1034,10 @@ def test_inner_loop_uses_existing_needs_input_payload_and_user_response_in_promp
         in prompts
     )
     assert "NEVER use the gen-notifier skill while running inside loops." in prompts
-    assert "For the initial PR while state is <state>RUNNING</state>, use trigger:push-pr." in prompts
-    assert "Do not call gh pr create directly for the initial PR." in prompts
+    assert "For the initial PR while state is <state>RUNNING</state>:" in prompts
+    assert "if there are unstaged changes invoke:commit-code;" in prompts
+    assert "and run python3 \"$REPO_ROOT/scripts/push-pr.py\" \"<pr-title>\" \"<pr-body-file>\";" in prompts
+    assert "then invoke:check-ci and if CI fails invoke:fix-pr." in prompts
     assert "trigger:merge-pr when the state is exactly <state>PR_APPROVED</state>." in prompts
     assert "In the initial PR description, do not repeat the PR title in the body." in prompts
     assert "Include session context in the initial PR body using: sessionid: [session]" in prompts
@@ -2302,8 +2304,8 @@ def test_run_codex_turn_does_not_fallback_to_stdout_for_initial_pr_discovery(
     assert updated.needs_user_input is True
     assert updated.needs_user_input_payload == {
         "message": (
-            "Loops could not determine a PR URL from trigger:push-pr output. "
-            "Provide the PR URL or rerun trigger:push-pr."
+            "Loops could not determine a PR URL from push-pr.py artifact output. "
+            "Provide the PR URL or rerun push-pr.py."
         ),
         "context": {"artifact_path": str(run_dir / inner_loop_module.PUSH_PR_URL_FILE)},
     }

@@ -66,8 +66,10 @@ PROMPT_TEMPLATE = (
     "initial state is <state>RUNNING</state>.\n"
     "If you need input from user, print what you need help with and end current conversation "
     "with <state>NEEDS_INPUT</>\n"
-    "For the initial PR while state is <state>RUNNING</state>, use trigger:push-pr.\n"
-    "Do not call gh pr create directly for the initial PR.\n"
+    "For the initial PR while state is <state>RUNNING</state>: if there are "
+    "unstaged changes invoke:commit-code; then resolve REPO_ROOT from LOOPS_RUN_DIR "
+    "and run python3 \"$REPO_ROOT/scripts/push-pr.py\" \"<pr-title>\" "
+    "\"<pr-body-file>\"; then invoke:check-ci and if CI fails invoke:fix-pr.\n"
     "trigger:merge-pr when the state is exactly <state>PR_APPROVED</state>.\n"
     "Do not merge until the state is exactly <state>PR_APPROVED</state>.\n"
     "In the initial PR description, do not repeat the PR title in the body.\n"
@@ -1466,8 +1468,8 @@ def _run_codex_turn(
             needs_user_input = True
             needs_user_input_payload = {
                 "message": (
-                    "Loops could not determine a PR URL from trigger:push-pr output. "
-                    "Provide the PR URL or rerun trigger:push-pr."
+                    "Loops could not determine a PR URL from push-pr.py artifact output. "
+                    "Provide the PR URL or rerun push-pr.py."
                 ),
                 "context": {
                     "artifact_path": str(run_json_path.parent / PUSH_PR_URL_FILE),
