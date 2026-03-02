@@ -625,6 +625,49 @@ def test_inner_loop_reset_uses_runtime_stream_logs_stdout(
     assert record.stream_logs_stdout is True
 
 
+def test_inner_loop_reset_preserves_checkout_metadata(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runner = CliRunner()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    write_run_record(
+        run_dir / "run.json",
+        RunRecord(
+            task=Task(
+                provider_id="github",
+                id="14",
+                title="Existing task",
+                status="ready",
+                url="https://github.com/acme/api/issues/14",
+                created_at="2026-02-09T00:00:00Z",
+                updated_at="2026-02-09T00:00:00Z",
+            ),
+            pr=None,
+            codex_session=None,
+            needs_user_input=True,
+            needs_user_input_payload={"message": "old prompt"},
+            checkout_mode="worktree",
+            starting_commit="abc123",
+            last_state="NEEDS_INPUT",
+            updated_at="",
+        ),
+    )
+
+    def _should_not_run(*_args, **_kwargs) -> None:
+        raise AssertionError("should not run")
+
+    monkeypatch.setattr(cli_module, "run_inner_loop", _should_not_run)
+
+    result = runner.invoke(main, ["inner-loop", "--run-dir", str(run_dir), "--reset"])
+
+    assert result.exit_code == 0, result.output
+    record = read_run_record(run_dir / "run.json")
+    assert record.checkout_mode == "worktree"
+    assert record.starting_commit == "abc123"
+
+
 def test_inner_loop_reset_runtime_stream_logs_overrides_existing_record(
     tmp_path: Path,
     monkeypatch,

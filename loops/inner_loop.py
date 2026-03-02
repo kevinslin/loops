@@ -223,6 +223,12 @@ def reset_run_record(run_dir: Path) -> RunRecord:
         needs_user_input=False,
         needs_user_input_payload=None,
         stream_logs_stdout=effective_stream_logs_stdout,
+        checkout_mode=(
+            existing_record.checkout_mode if existing_record is not None else "branch"
+        ),
+        starting_commit=(
+            existing_record.starting_commit if existing_record is not None else "unknown"
+        ),
         last_state="RUNNING",
         updated_at="",
     )
