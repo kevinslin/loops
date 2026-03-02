@@ -15,7 +15,6 @@ import pytest
 
 from loops.approval_config import (
     DEFAULT_APPROVAL_COMMENT_PATTERN,
-    INNER_LOOP_APPROVAL_CONFIG_FILE,
 )
 from loops.handoff_handlers import HandoffResult
 from loops.inner_loop_runtime_config import (
@@ -3786,19 +3785,14 @@ def test_fetch_pr_status_does_not_override_newer_changes_requested(monkeypatch) 
 
 
 def test_load_comment_approval_settings_invalid_pattern_falls_back(tmp_path) -> None:
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    (run_dir / INNER_LOOP_APPROVAL_CONFIG_FILE).write_text(
-        json.dumps(
-            {
-                "approval_comment_usernames": ["Maintainer"],
-                "approval_comment_pattern": "[",
-                "review_actor_usernames": ["Reviewer"],
-            }
-        )
+    runtime_config = InnerLoopRuntimeConfig(
+        approval_comment_usernames=("maintainer",),
+        approval_comment_pattern="[",
+        review_actor_usernames=("reviewer",),
     )
-
-    settings = inner_loop_module._load_comment_approval_settings(run_dir)
+    settings = inner_loop_module._load_comment_approval_settings(
+        runtime_config=runtime_config
+    )
 
     assert settings.allowed_usernames == ("maintainer",)
     assert settings.review_actor_usernames == ("reviewer",)

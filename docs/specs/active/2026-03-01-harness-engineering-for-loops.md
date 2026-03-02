@@ -157,7 +157,7 @@ Implement harness engineering as five practical workstreams aligned to OpenAI gu
 - [ ] Implement `scripts/harness/check_runtime_invariants.py`:
   - verify `derive_run_state` precedence invariants.
   - verify outer-loop defaults alignment between init/doctor/runtime loaders.
-  - verify required run artifacts are created during scheduling (`run.json`, `run.log`, `agent.log`, approval config).
+  - verify required run artifacts are created during scheduling (`run.json`, `run.log`, `agent.log`, `inner_loop_runtime_config.json`).
 - [ ] Wire harness checks into test/CI pathways via:
   - [Makefile](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/Makefile)
   - [tests/test_cli.py](/Users/kevinlin/.worktrees/loops/dev/2026-02-09-create-integration-testing-harness-for-loops/tests/test_cli.py)

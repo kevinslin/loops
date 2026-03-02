@@ -71,7 +71,7 @@ We need an end-to-end integration test that validates the GitHub Projects v2 pro
 ### Important Context
 - Provider poll order is oldest-first after filter application; tests should avoid relying on global board ordering.
 - Outer loop creates run dirs under `.loops/jobs/` and writes `run.json` when it emits tasks.
-- Outer loop materializes `run.json`, `run.log`, `agent.log`, and run-scoped approval config before launch.
+- Outer loop materializes `run.json`, `run.log`, `agent.log`, and `inner_loop_runtime_config.json` before launch.
 - `loops run --run-once` is the canonical command for one cycle.
 - For clarity and control, the integration config should set an explicit `inner_loop.command` that executes Loops inner loop (which in turn invokes Codex).
 

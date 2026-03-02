@@ -161,12 +161,9 @@ None identified.
 ```ts
 function runInnerLoop(runDir: Path, opts: Options): RunRecord {
   initializePathsAndDefaults(runDir, opts)
-  commentApproval = loadCommentApprovalSettings(runDir) // reads inner_loop_runtime_config.json
-  if (commentApproval.configLoadError) {
-    log("[loops] failed to load run approval config; using defaults")
-  }
+  commentApproval = loadCommentApprovalSettings(runtimeConfig) // reads approval fields from inner_loop_runtime_config.json
   if (commentApproval.usedDefaultPattern) {
-    log("[loops] invalid approval comment pattern in run approval config; falling back to default")
+    log("[loops] invalid approval comment pattern in run runtime config; falling back to default")
   }
   if (prStatusFetcher is null) {
     prStatusFetcher = (pr) => {
@@ -338,6 +335,7 @@ A: Inner loop only.
 
 ## Changelog
 - 2026-03-02: Documented run-record checkout metadata (`checkout_mode`, `starting_commit`) and worktree setup instruction injection on initial RUNNING prompts. (019cabf2-f02b-7521-b814-5b0fcafe3d34)
+- 2026-03-02: Removed legacy `inner_loop_approval_config.json` fallback; comment-approval settings now load only from `inner_loop_runtime_config.json`. (019cabe9-52d6-73a2-b856-da28851da5b5)
 - 2026-03-01: Removed state-signal queue references after deleting `loops signal`/`loops.state_signal`; NEEDS_INPUT now documents direct `run.json` handoff behavior. (019cabbd-8be2-7f00-ba1e-0856ed6096dc)
 - 2026-03-01: Added deterministic best-effort 👍 reactions for allowlisted plain-comment approval signals during `WAITING_ON_REVIEW` polling. (019cab4c-0485-7542-b9eb-ff1c83ca0942)
 - 2026-03-01: Documented `run.json.stream_logs_stdout` persistence as the effective log-streaming snapshot loaded from runtime config/env fallbacks. (019cab67-3061-7ce1-81c1-e30f80798fb0)
