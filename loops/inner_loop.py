@@ -81,6 +81,7 @@ PROMPT_TEMPLATE = (
 PROMPT_STATE_RUNNING = "RUNNING"
 PROMPT_STATE_WAITING_ON_REVIEW = "WAITING_ON_REVIEW"
 PROMPT_STATE_PR_APPROVED = "PR_APPROVED"
+CHECKOUT_MODE_WORKTREE = "worktree"
 DEFAULT_MAX_ITERATIONS = 200
 DEFAULT_REVIEW_POLL_SECONDS = 5.0
 DEFAULT_MAX_REVIEW_POLL_SECONDS = 60.0
@@ -222,6 +223,12 @@ def reset_run_record(run_dir: Path) -> RunRecord:
         needs_user_input=False,
         needs_user_input_payload=None,
         stream_logs_stdout=effective_stream_logs_stdout,
+        checkout_mode=(
+            existing_record.checkout_mode if existing_record is not None else "branch"
+        ),
+        starting_commit=(
+            existing_record.starting_commit if existing_record is not None else "unknown"
+        ),
         last_state="RUNNING",
         updated_at="",
     )
@@ -1126,8 +1133,16 @@ def _build_prompt(
     *,
     user_response: Optional[str] = None,
     state: Optional[str] = PROMPT_STATE_RUNNING,
+    checkout_mode: str = "branch",
+    include_checkout_setup_instruction: bool = False,
 ) -> str:
     prompt = PROMPT_TEMPLATE.format(task=task_url)
+    if include_checkout_setup_instruction:
+        checkout_setup_instruction = _build_checkout_mode_setup_instruction(
+            checkout_mode
+        )
+        if checkout_setup_instruction is not None:
+            prompt += f"\n{checkout_setup_instruction}\n"
     if user_response is not None and user_response.strip():
         prompt += f"\nUser input:\n{user_response.strip()}\n"
     if base_prompt:
@@ -1141,6 +1156,15 @@ def _build_prompt(
 def _append_state_tag(prompt: str, state: str) -> str:
     state_value = state.strip().upper()
     return f"{prompt.rstrip()}\n<state>{state_value}</state>\n"
+
+
+def _build_checkout_mode_setup_instruction(checkout_mode: str) -> str | None:
+    if checkout_mode.strip().casefold() != CHECKOUT_MODE_WORKTREE:
+        return None
+    return (
+        "Before making code changes, create and switch to a new git worktree for this "
+        "task and complete implementation from that worktree."
+    )
 
 
 def _build_cleanup_prompt(task_url: str, base_prompt: Optional[str]) -> str:
@@ -1384,6 +1408,8 @@ def _run_codex_turn(
             run_record.task.url,
             base_prompt,
             user_response=user_response,
+            checkout_mode=run_record.checkout_mode,
+            include_checkout_setup_instruction=run_record.codex_session is None,
         )
 
     output, exit_code, resume_fallback_used = _invoke_codex(

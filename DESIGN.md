@@ -79,6 +79,9 @@ type OuterLoopConfig = {
     // NEEDS_INPUT handoff strategy
     // stdin_handler | gh_comment_handler
     handoff_handler: string
+    // git checkout strategy for task implementation
+    // branch | worktree
+    checkout_mode: string
 }
 
 /**
@@ -166,6 +169,10 @@ type RunRecord = {
     needs_user_input: boolean
     // effective inner-loop run.log stdout mirroring setting for this run
     stream_logs_stdout?: boolean
+    // branch | worktree
+    checkout_mode: string
+    // git commit from which task execution started
+    starting_commit: string
     last_state: RunState
     updated_at: string
 }
@@ -210,12 +217,12 @@ type LoopsProviderConfig = {
 
 
 Key types:
-- `OuterLoopConfig`: poll interval, parallelism, task status filter, force mode, and merge-gate controls (CI + auto-approve evaluation).
+- `OuterLoopConfig`: poll interval, parallelism, task status filter, force mode, merge-gate controls, handoff strategy, and checkout strategy (`branch` or `worktree`).
 - `InnerLoopConfig`: single prompt, required skills, user handoff handler.
 - `Task`: provider metadata (id, title, status, url, timestamps, optional repo).
 - `TaskProvider`: provider interface with `poll(limit?)`.
 - `RunState`: `RUNNING | WAITING_ON_REVIEW | NEEDS_INPUT | PR_APPROVED | DONE`.
-- `RunRecord`: persisted run metadata for `run.json`.
+- `RunRecord`: persisted run metadata for `run.json`, including checkout strategy and starting commit for the run.
 
 ## 3. Configuration
 
@@ -244,6 +251,7 @@ type OuterLoopConfig = {
     task_ready_status?: string
     auto_approve_enabled?: boolean
     handoff_handler?: string
+    checkout_mode?: string
 }
 
 type InnerLoopCommandConfig = {
@@ -285,6 +293,7 @@ Notes:
 - `loop_config.auto_approve_enabled` enables the additional auto-approve path while the PR is still not approved.
 - Auto-approve defaults are fixed when enabled: CI green is required and `ag-judge` uses `references/jb.coding.md`.
 - `loop_config.handoff_handler` selects built-in NEEDS_INPUT handoff behavior (`stdin_handler` default, `gh_comment_handler` for issue-comment handoff).
+- `loop_config.checkout_mode` sets checkout guidance for agent execution (`branch` default, `worktree` alternate).
 - `inner_loop` is optional when running via the CLI; if omitted, the CLI uses
   a canonical default builder for `python -m loops.inner_loop` with `append_task_url=false`.
 - `python -m loops run --task-url <task-url>` targets exactly one task from the provider poll, implies `run-once`, `force=true`, and `sync_mode=true`, and does not mutate `task_provider_config.url`.

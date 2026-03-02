@@ -41,7 +41,10 @@ from loops.run_record import RunRecord, Task, write_run_record
 from loops.task_provider import TaskProvider
 
 INNER_LOOP_RUNS_DIR_NAME = "jobs"
-LATEST_LOOPS_CONFIG_VERSION = 3
+LATEST_LOOPS_CONFIG_VERSION = 4
+CHECKOUT_MODE_BRANCH = "branch"
+CHECKOUT_MODE_WORKTREE = "worktree"
+VALID_CHECKOUT_MODES = {CHECKOUT_MODE_BRANCH, CHECKOUT_MODE_WORKTREE}
 
 
 class SyncModeInterruptedError(KeyboardInterrupt):
@@ -65,6 +68,7 @@ class OuterLoopConfig:
     task_ready_status: str = "Ready"
     auto_approve_enabled: bool = False
     handoff_handler: str = DEFAULT_HANDOFF_HANDLER
+    checkout_mode: str = CHECKOUT_MODE_BRANCH
 
 
 @dataclass(frozen=True)
@@ -203,7 +207,8 @@ class OuterLoopRunner:
             f"forced_task_url={'set' if forced_task_url is not None else 'none'} "
             f"emit_on_first_run={self.config.emit_on_first_run} "
             f"force={self.config.force} "
-            f"ready_status={self.config.task_ready_status!r}",
+            f"ready_status={self.config.task_ready_status!r} "
+            f"checkout_mode={self.config.checkout_mode}",
             stream_to_stdout=self.config.sync_mode,
         )
 
@@ -272,6 +277,9 @@ class OuterLoopRunner:
                 "no task ready to be scheduled",
                 stream_to_stdout=self.config.sync_mode,
             )
+        starting_commit = (
+            _resolve_starting_commit(self.loops_root) if emit_tasks else "unknown"
+        )
         to_launch: list[tuple[Path, Task]] = []
         for task in emit_tasks:
             run_dir = create_run_dir(task, self.loops_root)
@@ -280,7 +288,9 @@ class OuterLoopRunner:
                 "run_once.schedule "
                 f"key={_task_key(task)} "
                 f"url={task.url} "
-                f"run_dir={run_dir}",
+                f"run_dir={run_dir} "
+                f"checkout_mode={self.config.checkout_mode} "
+                f"starting_commit={starting_commit}",
                 stream_to_stdout=self.config.sync_mode,
             )
             record = RunRecord(
@@ -289,6 +299,8 @@ class OuterLoopRunner:
                 codex_session=None,
                 needs_user_input=False,
                 stream_logs_stdout=self.config.sync_mode,
+                checkout_mode=self.config.checkout_mode,
+                starting_commit=starting_commit,
                 last_state="RUNNING",
                 updated_at=now_iso,
             )
@@ -774,6 +786,11 @@ def _load_outer_loop_config(payload: Any) -> OuterLoopConfig:
                 defaults["handoff_handler"],
             )
         ),
+        checkout_mode=_load_checkout_mode(
+            merged_payload,
+            "checkout_mode",
+            defaults["checkout_mode"],
+        ),
     )
 
 
@@ -791,6 +808,7 @@ def build_default_loop_config_payload() -> dict[str, Any]:
         "task_ready_status": defaults.task_ready_status,
         "auto_approve_enabled": defaults.auto_approve_enabled,
         "handoff_handler": defaults.handoff_handler,
+        "checkout_mode": defaults.checkout_mode,
     }
 
 
@@ -857,6 +875,15 @@ def _load_str(payload: dict[str, Any], key: str, default: str) -> str:
     if not isinstance(value, str):
         raise TypeError(f"{key} must be a string")
     return value
+
+
+def _load_checkout_mode(payload: dict[str, Any], key: str, default: str) -> str:
+    """Load and validate checkout mode."""
+
+    checkout_mode = _load_str(payload, key, default).strip().casefold()
+    if checkout_mode not in VALID_CHECKOUT_MODES:
+        raise ValueError(f"{key} must be one of: branch, worktree")
+    return checkout_mode
 
 
 def _load_config_version(payload: dict[str, Any]) -> int:
@@ -989,3 +1016,21 @@ def _touch(path: Path) -> None:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.touch(exist_ok=True)
+
+
+def _resolve_starting_commit(loops_root: Path) -> str:
+    """Resolve git HEAD for the workspace being orchestrated."""
+
+    repo_root = loops_root.resolve().parent
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    commit = completed.stdout.strip()
+    return commit or "unknown"

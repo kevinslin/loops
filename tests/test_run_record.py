@@ -80,6 +80,8 @@ def test_write_run_record_writes_required_keys(tmp_path) -> None:
             "needs_user_input",
             "needs_user_input_payload",
             "stream_logs_stdout",
+            "checkout_mode",
+            "starting_commit",
             "last_state",
             "updated_at",
         ]
@@ -87,6 +89,8 @@ def test_write_run_record_writes_required_keys(tmp_path) -> None:
     assert payload["pr"] is None
     assert payload["codex_session"]["id"] == "session-1"
     assert payload["auto_approve"] is None
+    assert payload["checkout_mode"] == "branch"
+    assert payload["starting_commit"] == "unknown"
     assert payload["last_state"] == updated.last_state
     assert payload["updated_at"]
 
@@ -140,6 +144,40 @@ def test_write_run_record_rejects_non_bool_stream_logs_stdout(tmp_path) -> None:
     path = tmp_path / "run.json"
 
     with pytest.raises(TypeError):
+        write_run_record(path, record)
+
+
+def test_read_run_record_rejects_invalid_checkout_mode(tmp_path) -> None:
+    payload = {
+        "task": _task().to_dict(),
+        "pr": None,
+        "codex_session": None,
+        "needs_user_input": False,
+        "checkout_mode": "detached",
+        "starting_commit": "abc123",
+        "last_state": "RUNNING",
+        "updated_at": "2026-02-03T00:00:00Z",
+    }
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="checkout_mode"):
+        read_run_record(path)
+
+
+def test_write_run_record_rejects_invalid_checkout_mode(tmp_path) -> None:
+    record = RunRecord(
+        task=_task(),
+        pr=None,
+        codex_session=None,
+        needs_user_input=False,
+        checkout_mode="detached",  # type: ignore[arg-type]
+        last_state="RUNNING",
+        updated_at="",
+    )
+    path = tmp_path / "run.json"
+
+    with pytest.raises(ValueError, match="checkout_mode"):
         write_run_record(path, record)
 
 
@@ -213,6 +251,25 @@ def test_run_record_round_trips_stream_logs_stdout(tmp_path) -> None:
 
     restored = read_run_record(path)
     assert restored.stream_logs_stdout is True
+
+
+def test_run_record_round_trips_checkout_metadata(tmp_path) -> None:
+    record = RunRecord(
+        task=_task(),
+        pr=None,
+        codex_session=CodexSession(id="session-1"),
+        needs_user_input=False,
+        checkout_mode="worktree",
+        starting_commit="abc123",
+        last_state="RUNNING",
+        updated_at="",
+    )
+    path = tmp_path / "run.json"
+    write_run_record(path, record)
+
+    restored = read_run_record(path)
+    assert restored.checkout_mode == "worktree"
+    assert restored.starting_commit == "abc123"
 
 
 def test_derive_run_state_keeps_manual_approval_path_when_auto_approve_enabled() -> None:
