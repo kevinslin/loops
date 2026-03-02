@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -11,8 +12,10 @@ import time
 
 import pytest
 
+from loops.outer_loop import LATEST_LOOPS_CONFIG_VERSION
 from tests.integ.github_setup import (
     END2END_DEFAULT_ANIMAL,
+    LOOPS_INTEG_PROJECT_URL,
     LOOPS_INTEG_REPO,
     cleanup_end2end_issue_bundle,
     create_end2end_issue_bundle,
@@ -32,6 +35,7 @@ END2END_CODEX_CMD = os.environ.get(
 DEFAULT_TIMEOUT_SECONDS = 900
 DEFAULT_POLL_ATTEMPTS = 2
 DEFAULT_POLL_DELAY_SECONDS = 5.0
+DEFAULT_PROJECT_URL = LOOPS_INTEG_PROJECT_URL
 
 
 pytestmark = pytest.mark.skipif(
@@ -67,8 +71,10 @@ def test_end2end_live() -> None:
         write_end2end_config(config_path=config_path, run_label=bundle.run_label)
 
         env = build_run_env(token=token)
-        timeout_seconds = int(
-            os.environ.get("LOOPS_INTEG_END2END_TIMEOUT_SECONDS", str(DEFAULT_TIMEOUT_SECONDS))
+        timeout_seconds = read_int_env(
+            "LOOPS_INTEG_END2END_TIMEOUT_SECONDS",
+            default=DEFAULT_TIMEOUT_SECONDS,
+            min_value=1,
         )
         command = [
             sys.executable,
@@ -105,16 +111,6 @@ def test_end2end_live() -> None:
         merged_at = pr_payload.get("merged_at")
         assert isinstance(merged_at, str) and merged_at
 
-        auto_approve = run_record.get("auto_approve") or {}
-        assert auto_approve.get("verdict") == "APPROVE"
-
-        assert bundle.task.item_id is not None
-        item_status_option_id = fetch_project_item_status_option_id(
-            item_id=bundle.task.item_id,
-            token=token,
-        )
-        assert item_status_option_id == bundle.project.completed_option_id
-
         pr_details = fetch_pull_request(
             repo=pr_repo,
             pull_number=pr_number,
@@ -129,6 +125,16 @@ def test_end2end_live() -> None:
             number=pr_number,
             merge_commit_sha=merge_commit_sha,
         )
+
+        auto_approve = run_record.get("auto_approve") or {}
+        assert auto_approve.get("verdict") == "APPROVE"
+
+        assert bundle.task.item_id is not None
+        item_status_option_id = fetch_project_item_status_option_id(
+            item_id=bundle.task.item_id,
+            token=token,
+        )
+        assert item_status_option_id == bundle.project.completed_option_id
     except Exception as exc:  # pragma: no cover - exercised in live mode
         primary_error = exc
     finally:
@@ -165,11 +171,14 @@ def test_end2end_live() -> None:
 
 def write_end2end_config(*, config_path: Path, run_label: str) -> None:
     config_path.parent.mkdir(parents=True, exist_ok=True)
+    project_url = os.environ.get("LOOPS_INTEG_END2END_PROJECT_URL", DEFAULT_PROJECT_URL)
+    if not isinstance(project_url, str) or not project_url.strip():
+        raise ValueError("LOOPS_INTEG_END2END_PROJECT_URL must be a non-empty string")
     payload = {
-        "version": 4,
+        "version": LATEST_LOOPS_CONFIG_VERSION,
         "task_provider_id": "github_projects_v2",
         "task_provider_config": {
-            "url": "https://github.com/users/kevinslin/projects/6/views/1",
+            "url": project_url,
             "status_field": "Status",
             "filters": [
                 f"repository={LOOPS_INTEG_REPO}",
@@ -205,20 +214,16 @@ def run_until_single_run_dir(
     timeout_seconds: int,
     run_label: str,
 ) -> tuple[Path, subprocess.CompletedProcess[str]]:
-    attempts = int(
-        os.environ.get(
-            "LOOPS_INTEG_END2END_POLL_ATTEMPTS",
-            str(DEFAULT_POLL_ATTEMPTS),
-        )
+    attempts = read_int_env(
+        "LOOPS_INTEG_END2END_POLL_ATTEMPTS",
+        default=DEFAULT_POLL_ATTEMPTS,
+        min_value=1,
     )
-    delay_seconds = float(
-        os.environ.get(
-            "LOOPS_INTEG_END2END_POLL_DELAY_SECONDS",
-            str(DEFAULT_POLL_DELAY_SECONDS),
-        )
+    delay_seconds = read_float_env(
+        "LOOPS_INTEG_END2END_POLL_DELAY_SECONDS",
+        default=DEFAULT_POLL_DELAY_SECONDS,
+        min_value=0.0,
     )
-    if attempts <= 0:
-        raise ValueError("LOOPS_INTEG_END2END_POLL_ATTEMPTS must be positive")
 
     last_result: subprocess.CompletedProcess[str] | None = None
     runs_root = loops_root / "jobs"
@@ -243,7 +248,7 @@ def run_until_single_run_dir(
             run_dirs = sorted(
                 path
                 for path in runs_root.iterdir()
-                if path.is_dir() and run_label in path.name
+                if path.is_dir() and _matches_run_label(path.name, run_label)
             )
             if len(run_dirs) == 1:
                 return run_dirs[0], result
@@ -396,3 +401,34 @@ def build_run_env(*, token: str) -> dict[str, str]:
     env["GH_TOKEN"] = token
     env["PYTHONPATH"] = build_pythonpath(REPO_ROOT, env.get("PYTHONPATH"))
     return env
+
+
+def _matches_run_label(path_name: str, run_label: str) -> bool:
+    pattern = rf"(?:^|-){re.escape(run_label)}(?:-|$)"
+    return re.search(pattern, path_name) is not None
+
+
+def read_int_env(name: str, *, default: int, min_value: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
+    if value < min_value:
+        raise ValueError(f"{name} must be >= {min_value}, got {value}")
+    return value
+
+
+def read_float_env(name: str, *, default: float, min_value: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number, got {raw!r}") from exc
+    if value < min_value:
+        raise ValueError(f"{name} must be >= {min_value}, got {value}")
+    return value

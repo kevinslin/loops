@@ -261,7 +261,7 @@ External boundaries:
 - `loops` subprocesses for `init`, `run`, and `clean`.
 - `gh` API calls for setup, status assertions, and cleanup.
 
-#### Sudocode (Phase 5: Full end-to-end lifecycle harness)
+#### Sudocode (Pseudocode, Phase 5: Full end-to-end lifecycle harness)
 
 Source: `tests/integ/test_end2end_live.py`, `tests/integ/github_setup.py`
 

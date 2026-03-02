@@ -304,7 +304,7 @@ def create_end2end_issue_bundle(
         ensure_repo_label(repo=repo, label=run_label, token=token)
         task = create_issue(
             repo=repo,
-            title=f"[loops integ] make animal ({run_label})",
+            title=f"Create {normalized_animal}.md file",
             body=build_end2end_task_body(normalized_animal),
             label=run_label,
             token=token,
