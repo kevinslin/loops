@@ -219,7 +219,7 @@ Manual validation:
 
 ## Notes
 
-- Simplification: keep user-facing configuration in provider config; inner-loop reads run-scoped approval config materialized by outer loop.
+- Simplification: keep user-facing configuration in provider config; inner-loop reads approval settings from run-scoped `inner_loop_runtime_config.json` materialized by outer loop.
 - Simplification: keep `RunPR` schema unchanged; only review-status computation is extended.
 
 ## Manual Notes 
@@ -227,6 +227,7 @@ Manual validation:
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+- 2026-03-02: Removed legacy `inner_loop_approval_config.json` fallback; comment approval now loads only from `inner_loop_runtime_config.json`. (019cabe9-52d6-73a2-b856-da28851da5b5)
 - 2026-03-02: Moved approval comment settings from `loop_config` to GitHub provider config and updated doctor/config docs accordingly. (019cabd8-6116-7542-aead-8d1fd6d6b985)
 - 2026-03-01: Added deterministic best-effort 👍 reactions when an allowlisted plain PR comment is the winning approval signal in review polling. (019cab4c-0485-7542-b9eb-ff1c83ca0942)
 - 2026-02-17: Created initial feature spec for allowlisted comment-based PR approval override. (019c68ed-a6c5-78e0-891a-6b70a1a1450c)

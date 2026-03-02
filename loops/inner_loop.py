@@ -14,11 +14,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, cast
 
-from loops.approval_config import (
-    DEFAULT_APPROVAL_COMMENT_PATTERN,
-    InnerLoopApprovalConfig,
-    read_inner_loop_approval_config,
-)
+from loops.approval_config import DEFAULT_APPROVAL_COMMENT_PATTERN
 from loops.handoff_handlers import (
     DEFAULT_HANDOFF_HANDLER,
     HANDOFF_HANDLER_STDIN,
@@ -141,7 +137,6 @@ class CommentApprovalSettings:
     approval_regex: re.Pattern[str]
     review_actor_usernames: tuple[str, ...] = ()
     used_default_pattern: bool = False
-    config_load_error: str | None = None
 
     @property
     def enabled(self) -> bool:
@@ -306,22 +301,13 @@ def run_inner_loop(
             environ=runtime_environ,
         )
         comment_approval = _load_comment_approval_settings(
-            run_dir,
             runtime_config=runtime_config,
         )
-        if comment_approval.config_load_error is not None:
-            append_log(
-                run_log,
-                (
-                    "[loops] failed to load run approval config; using defaults: "
-                    f"{comment_approval.config_load_error}"
-                ),
-            )
         if comment_approval.used_default_pattern:
             append_log(
                 run_log,
                 (
-                    "[loops] invalid approval comment pattern in run approval config; "
+                    "[loops] invalid approval comment pattern in run runtime config; "
                     "falling back to default"
                 ),
             )
@@ -1972,25 +1958,18 @@ def _ci_status_from_rollup(payload: dict[str, Any]) -> str:
 
 
 def _load_comment_approval_settings(
-    run_dir: Path,
     *,
     runtime_config: InnerLoopRuntimeConfig | None = None,
 ) -> CommentApprovalSettings:
-    config_load_error: str | None = None
+    allowed_usernames = ()
+    review_actor_usernames = ()
+    pattern_text = DEFAULT_APPROVAL_COMMENT_PATTERN
     if runtime_config is not None:
-        config = InnerLoopApprovalConfig(
-            approval_comment_usernames=runtime_config.approval_comment_usernames,
-            approval_comment_pattern=runtime_config.approval_comment_pattern,
-            review_actor_usernames=runtime_config.review_actor_usernames,
+        allowed_usernames = runtime_config.approval_comment_usernames
+        review_actor_usernames = runtime_config.review_actor_usernames
+        pattern_text = (
+            runtime_config.approval_comment_pattern or DEFAULT_APPROVAL_COMMENT_PATTERN
         )
-    else:
-        try:
-            config = read_inner_loop_approval_config(run_dir)
-        except Exception as exc:
-            config_load_error = str(exc)
-            config = InnerLoopApprovalConfig()
-    allowed_usernames = config.approval_comment_usernames
-    pattern_text = config.approval_comment_pattern or DEFAULT_APPROVAL_COMMENT_PATTERN
     used_default_pattern = False
     try:
         approval_regex = re.compile(pattern_text, re.IGNORECASE)
@@ -2000,11 +1979,10 @@ def _load_comment_approval_settings(
         used_default_pattern = True
     return CommentApprovalSettings(
         allowed_usernames=allowed_usernames,
-        review_actor_usernames=config.review_actor_usernames,
+        review_actor_usernames=review_actor_usernames,
         pattern_text=pattern_text,
         approval_regex=approval_regex,
         used_default_pattern=used_default_pattern,
-        config_load_error=config_load_error,
     )
 
 
