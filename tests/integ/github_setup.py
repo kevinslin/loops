@@ -14,6 +14,19 @@ LOOPS_INTEG_REPO = "kevinslin/loops-integ"
 STATUS_FIELD_NAME = "Status"
 READY_STATUS_NAME = "Todo"
 NON_READY_STATUS_CANDIDATES = ("Backlog", "Todo", "To Do", "In Progress")
+COMPLETED_STATUS_CANDIDATES = ("Done", "Completed")
+END2END_ANIMAL_CANDIDATES = (
+    "otter",
+    "beaver",
+    "capybara",
+    "lemur",
+    "penguin",
+    "walrus",
+    "raccoon",
+    "platypus",
+    "hedgehog",
+    "narwhal",
+)
 LABEL_COLOR = "1d76db"
 DEFAULT_GH_TIMEOUT_SECONDS = 60.0
 
@@ -135,6 +148,7 @@ class ProjectMetadata:
     status_field_id: str
     ready_option_id: str
     non_ready_option_id: str
+    completed_option_id: str
 
 
 @dataclass(frozen=True)
@@ -151,6 +165,13 @@ class LiveIssueBundle:
     run_label: str
     task1: IssueHandle
     task2: IssueHandle
+    project: ProjectMetadata
+
+
+@dataclass(frozen=True)
+class End2EndIssueBundle:
+    run_label: str
+    task: IssueHandle
     project: ProjectMetadata
 
 
@@ -273,6 +294,82 @@ def create_live_issue_bundle(
         raise
 
 
+def create_end2end_issue_bundle(
+    *,
+    token: str,
+    project_url: str = LOOPS_INTEG_PROJECT_URL,
+    repo: str = LOOPS_INTEG_REPO,
+    animal: str | None = None,
+) -> End2EndIssueBundle:
+    locator = parse_project_url(project_url)
+    project = fetch_project_metadata(locator, token=token)
+    run_label = build_run_label()
+    created_issues: list[IssueHandle] = []
+    created_item_ids: list[str] = []
+
+    selected_animal = choose_end2end_default_animal() if animal is None else animal
+    normalized_animal = selected_animal.strip().lower()
+    if not normalized_animal:
+        raise ValueError("animal must be a non-empty string")
+
+    try:
+        ensure_repo_label(repo=repo, label=run_label, token=token)
+        task = create_issue(
+            repo=repo,
+            title=f"Create {normalized_animal}.md file",
+            body=build_end2end_task_body(normalized_animal),
+            label=run_label,
+            token=token,
+        )
+        created_issues.append(task)
+        task_item_id = add_issue_to_project(
+            project_id=project.project_id,
+            issue_node_id=task.node_id,
+            token=token,
+        )
+        created_item_ids.append(task_item_id)
+        set_project_item_status(
+            project_id=project.project_id,
+            item_id=task_item_id,
+            status_field_id=project.status_field_id,
+            option_id=project.ready_option_id,
+            token=token,
+        )
+        return End2EndIssueBundle(
+            run_label=run_label,
+            task=replace(task, item_id=task_item_id),
+            project=project,
+        )
+    except Exception as exc:
+        rollback_errors = _cleanup_partial_setup(
+            project_id=project.project_id,
+            repo=repo,
+            issues=created_issues,
+            item_ids=created_item_ids,
+            token=token,
+        )
+        if rollback_errors:
+            raise RuntimeError(
+                "failed creating end2end issue bundle and partial cleanup failed: "
+                f"setup_error={exc}; cleanup_errors={'; '.join(rollback_errors)}"
+            ) from exc
+        raise
+
+
+def choose_end2end_default_animal() -> str:
+    return secrets.choice(END2END_ANIMAL_CANDIDATES)
+
+
+def build_end2end_task_body(animal: str) -> str:
+    normalized_animal = animal.strip().lower()
+    if not normalized_animal:
+        raise ValueError("animal must be a non-empty string")
+    return (
+        f"Create `{normalized_animal}.md` file.\n"
+        f"Contents of file is ASCII art of a {normalized_animal} saying a bad pun.\n"
+    )
+
+
 def _cleanup_partial_setup(
     *,
     project_id: str,
@@ -323,6 +420,33 @@ def cleanup_live_issue_bundle(
             close_issue(repo=repo, issue_number=issue.number, token=token)
         except Exception as exc:  # pragma: no cover - defensive cleanup logging
             errors.append(f"failed closing issue {issue.number}: {exc}")
+
+    if errors:
+        raise RuntimeError("; ".join(errors))
+
+
+def cleanup_end2end_issue_bundle(
+    bundle: End2EndIssueBundle,
+    *,
+    token: str,
+    repo: str = LOOPS_INTEG_REPO,
+) -> None:
+    errors: list[str] = []
+    issue = bundle.task
+    if issue.item_id is not None:
+        try:
+            delete_project_item(
+                project_id=bundle.project.project_id,
+                item_id=issue.item_id,
+                token=token,
+            )
+        except Exception as exc:  # pragma: no cover - defensive cleanup logging
+            errors.append(f"failed deleting project item for issue {issue.number}: {exc}")
+
+    try:
+        close_issue(repo=repo, issue_number=issue.number, token=token)
+    except Exception as exc:  # pragma: no cover - defensive cleanup logging
+        errors.append(f"failed closing issue {issue.number}: {exc}")
 
     if errors:
         raise RuntimeError("; ".join(errors))
@@ -380,12 +504,14 @@ def fetch_project_metadata(locator: ProjectLocator, *, token: str) -> ProjectMet
         option_by_name=option_by_name,
         ready_option_id=ready_option_id,
     )
+    completed_option_id = select_completed_option_id(option_by_name=option_by_name)
 
     return ProjectMetadata(
         project_id=project_id,
         status_field_id=status_field_id,
         ready_option_id=ready_option_id,
         non_ready_option_id=non_ready_option_id,
+        completed_option_id=completed_option_id,
     )
 
 
@@ -398,6 +524,14 @@ def select_non_ready_option_id(*, option_by_name: dict[str, str], ready_option_i
         if option_id != ready_option_id:
             return option_id
     raise RuntimeError("unable to find a non-ready status option")
+
+
+def select_completed_option_id(*, option_by_name: dict[str, str]) -> str:
+    for candidate in COMPLETED_STATUS_CANDIDATES:
+        option_id = option_by_name.get(candidate.casefold())
+        if option_id:
+            return option_id
+    raise RuntimeError("unable to find a completed status option (expected Done/Completed)")
 
 
 def build_run_label() -> str:
@@ -492,6 +626,37 @@ def add_issue_to_project(*, project_id: str, issue_node_id: str, token: str) -> 
     return item_id
 
 
+def fetch_project_item_status_option_id(
+    *,
+    item_id: str,
+    token: str,
+    field_name: str = STATUS_FIELD_NAME,
+) -> str:
+    payload = graphql(
+        query="""
+        query($itemId: ID!, $fieldName: String!) {
+          node(id: $itemId) {
+            ... on ProjectV2Item {
+              fieldValueByName(name: $fieldName) {
+                ... on ProjectV2ItemFieldSingleSelectValue {
+                  optionId
+                }
+              }
+            }
+          }
+        }
+        """,
+        variables={"itemId": item_id, "fieldName": field_name},
+        token=token,
+    )
+    node = (payload.get("data") or {}).get("node") or {}
+    field_value = node.get("fieldValueByName") or {}
+    option_id = field_value.get("optionId")
+    if not isinstance(option_id, str) or not option_id:
+        raise RuntimeError("project item status option id is missing")
+    return option_id
+
+
 def set_project_item_status(
     *,
     project_id: str,
@@ -518,6 +683,17 @@ def delete_project_item(*, project_id: str, item_id: str, token: str) -> None:
         variables={"projectId": project_id, "itemId": item_id},
         token=token,
     )
+
+
+def fetch_pull_request(*, repo: str, pull_number: int, token: str) -> dict[str, Any]:
+    payload = run_gh_json(
+        [
+            "api",
+            f"repos/{repo}/pulls/{pull_number}",
+        ],
+        token=token,
+    )
+    return payload
 
 
 def graphql(*, query: str, variables: dict[str, Any], token: str) -> dict[str, Any]:

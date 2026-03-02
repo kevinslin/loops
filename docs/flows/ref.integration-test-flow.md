@@ -1,17 +1,22 @@
 # Integration Test Harness Flow
 
-Last updated: 2026-03-01
+Last updated: 2026-03-02
 
 ## Purpose / Question Answered
 
-This document describes how the live integration harness provisions GitHub project tasks, runs Loops once with real Codex execution, and validates that the outer loop picks the expected ready task.  
-It answers: how does `tests/integ/test_outer_loop_pickup_live.py` create deterministic live test data, exercise Loops end to end, and clean up safely?
+This document describes how live integration harness tests provision GitHub project tasks, run Loops with real Codex execution, and validate either pickup-only behavior or full lifecycle behavior.  
+It answers:
+- how `tests/integ/test_outer_loop_pickup_live.py` creates deterministic live test data, validates ready-task pickup, and cleans up safely.
+- how `tests/integ/test_end2end_live.py` bootstraps `.integ/loops-integ`, validates approval-to-merge lifecycle completion, and performs teardown hygiene.
 
 ## Entry points
 
 - `tests/integ/test_outer_loop_pickup_live.py:test_outer_loop_pickup_live`
+- `tests/integ/test_end2end_live.py:test_end2end_live`
 - `tests/integ/github_setup.py:create_live_issue_bundle`
+- `tests/integ/github_setup.py:create_end2end_issue_bundle`
 - `tests/integ/github_setup.py:cleanup_live_issue_bundle`
+- `tests/integ/github_setup.py:cleanup_end2end_issue_bundle`
 
 ## Call path
 
@@ -214,6 +219,77 @@ if cleanup_error is not None:
   raise cleanup_error
 ```
 
+### Phase 5: Full end-to-end lifecycle harness (`test_end2end_live`)
+
+Trigger / entry condition:
+- Pytest evaluates `test_end2end_live` while `LOOPS_INTEG_END2END=1`.
+
+Entrypoints:
+- `tests/integ/test_end2end_live.py:test_end2end_live`
+- `tests/integ/test_end2end_live.py:bootstrap_integ_repo`
+- `tests/integ/github_setup.py:create_end2end_issue_bundle`
+- `tests/integ/test_end2end_live.py:write_end2end_config`
+- `tests/integ/test_end2end_live.py:revert_merged_change`
+
+Ordered call path:
+- Skip unless `LOOPS_INTEG_END2END=1`; require `gh`, `git`, and `codex`.
+- Clone-or-sync `.integ/loops-integ`, then run `loops init --force` under that repo.
+- Create one ready "make animal" issue tagged with a unique run label and add it to the integration board.
+- Write `.integ/loops-integ/.loops/config.json` with repository/run-label filters, `sync_mode=true`, and `auto_approve_enabled=true`.
+- Run `python -m loops run --run-once --limit 1 --config ...` with a hard timeout (`LOOPS_INTEG_END2END_TIMEOUT_SECONDS`, default 900).
+- Assert run artifacts and lifecycle outcomes from `run.json` plus GitHub APIs:
+  - one run dir exists,
+  - `last_state == DONE`,
+  - PR exists and merged metadata is present,
+  - `auto_approve.verdict == "APPROVE"`,
+  - project item status equals resolved completed status option id (`Done` or `Completed`).
+- Teardown:
+  - revert merged commit in `.integ/loops-integ` and push,
+  - run `loops clean --loops-root .integ/loops-integ/.loops`,
+  - delete project item and close issue for created test artifacts.
+
+State transitions / outputs:
+- Input: live GitHub project + mutable target repo + local `.integ/loops-integ` checkout.
+- Output: verified merged lifecycle evidence and clean post-run local/remote state.
+
+Branch points:
+- If merge evidence is missing, revert step is skipped but issue/project cleanup still runs.
+- Cleanup errors are aggregated and surfaced after primary assertion handling.
+
+External boundaries:
+- `git` subprocesses for clone/sync/revert/push in `.integ/loops-integ`.
+- `loops` subprocesses for `init`, `run`, and `clean`.
+- `gh` API calls for setup, status assertions, and cleanup.
+
+#### Pseudocode (Phase 5: Full end-to-end lifecycle harness)
+
+#### Sudocode (Phase 5: Full end-to-end lifecycle harness, validator compatibility)
+
+Source: `tests/integ/test_end2end_live.py`, `tests/integ/github_setup.py`
+
+```ts
+if LOOPS_INTEG_END2END != "1":
+  skip_test()
+
+bootstrap_integ_repo(".integ/loops-integ")
+bundle = create_end2end_issue_bundle(token, animal)
+write_end2end_config(repo=".integ/loops-integ", filters=[repository, run_label])
+
+run_dir = run_until_single_run_dir(
+  "python -m loops run --run-once --limit 1 --config ...",
+  timeout=900s,
+)
+run_record = read_json(run_dir / "run.json")
+assert run_record.last_state == "DONE"
+assert run_record.auto_approve.verdict == "APPROVE"
+assert run_record.pr.merged_at != null
+assert project_item_status(bundle.task.item_id) == bundle.project.completed_option_id
+
+revert_merged_change(merge_commit_sha)
+loops_clean(".integ/loops-integ/.loops")
+cleanup_end2end_issue_bundle(bundle)
+```
+
 ## State, config, and gates
 
 ### Core state values (source of truth and usage)
@@ -252,11 +328,18 @@ None identified.
 | Name | Where Read | Default | Effect on Flow |
 |---|---|---|---|
 | `LOOPS_INTEG_LIVE` | `tests/integ/test_outer_loop_pickup_live.py` (`pytestmark`) | unset | Enables/disables live integration test execution. |
+| `LOOPS_INTEG_END2END` | `tests/integ/test_end2end_live.py` (`pytestmark`) | unset | Enables/disables full lifecycle live integration test execution. |
 | `GITHUB_TOKEN` / `GH_TOKEN` | `tests/integ/github_setup.py:require_github_token`, `run_gh` env setup | none | Auth for GitHub issue/project mutations and provider polling. |
 | `LOOPS_INTEG_CODEX_CMD` | `tests/integ/test_outer_loop_pickup_live.py` (`FAST_CODEX_CMD`) | deterministic default Codex prompt command | Controls inner-loop Codex command used during test run. |
+| `LOOPS_INTEG_END2END_CODEX_CMD` | `tests/integ/test_end2end_live.py` (`END2END_CODEX_CMD`) | `codex exec --dangerously-bypass-approvals-and-sandbox` | Controls Codex command used during full lifecycle run. |
 | `LOOPS_INTEG_TIMEOUT_SECONDS` | `tests/integ/test_outer_loop_pickup_live.py` | `300` | Per-attempt timeout for `loops run` subprocess. |
+| `LOOPS_INTEG_END2END_TIMEOUT_SECONDS` | `tests/integ/test_end2end_live.py` | `900` | Hard timeout for end-to-end `loops run --run-once` execution. |
 | `LOOPS_INTEG_POLL_ATTEMPTS` | `tests/integ/test_outer_loop_pickup_live.py:run_until_single_run_dir` | `3` | Number of retries when run dir is not yet materialized. |
 | `LOOPS_INTEG_POLL_DELAY_SECONDS` | `tests/integ/test_outer_loop_pickup_live.py:run_until_single_run_dir` | `2.0` | Delay between `loops run` retries. |
+| `LOOPS_INTEG_END2END_POLL_ATTEMPTS` | `tests/integ/test_end2end_live.py:run_until_single_run_dir` | `2` | Number of retries when end-to-end run dir is not yet materialized. |
+| `LOOPS_INTEG_END2END_POLL_DELAY_SECONDS` | `tests/integ/test_end2end_live.py:run_until_single_run_dir` | `5.0` | Delay between end-to-end retries. |
+| `LOOPS_INTEG_END2END_PROJECT_URL` | `tests/integ/test_end2end_live.py:resolve_end2end_project_url` | `https://github.com/users/kevinslin/projects/6/views/1` | Selects the GitHub Project used for both issue setup and provider polling config in the end-to-end harness. |
+| `LOOPS_INTEG_END2END_ANIMAL` | `tests/integ/test_end2end_live.py` | random choice from `END2END_ANIMAL_CANDIDATES` | Overrides the animal payload in the "make animal" issue body. |
 | `LOOPS_INTEG_GH_TIMEOUT_SECONDS` | `tests/integ/github_setup.py:_resolve_gh_timeout_seconds` | `60.0` | Timeout for each `gh` command during setup/cleanup. |
 | `PYTHONPATH` | `tests/integ/test_outer_loop_pickup_live.py:build_pythonpath` | inherited env | Ensures repository package importability in subprocess run. |
 
@@ -266,7 +349,9 @@ None identified.
 |---|---|---|---|
 | `project_url` argument to `create_live_issue_bundle` | function arg | `tests/integ/github_setup.py` | Chooses target GitHub Projects board used by live test setup. |
 | `repo` argument to `create_live_issue_bundle` | function arg | `tests/integ/github_setup.py` | Chooses repo where test issues are created and later closed. |
+| `animal` argument to `create_end2end_issue_bundle` | function arg | `tests/integ/github_setup.py` | Controls payload for the full lifecycle "make animal" issue; defaults to one random animal from a 10-item list when omitted. |
 | `.loops/config.json` payload from `write_live_config` | generated test config | `loops run --config ...` subprocess | Controls provider filters, ready status, sync mode, and inner loop command/env. |
+| `.integ/loops-integ/.loops/config.json` payload from `write_end2end_config` | generated test config | `loops run --config ...` subprocess | Controls full lifecycle run settings including auto-approve and repository checkout root. |
 | CLI flags `--run-once --limit 1 --config` | subprocess args | `python -m loops run` | Forces one-cycle pickup and deterministic single-task selection in the harness run. |
 
 ### Important gates / branch controls
@@ -323,6 +408,7 @@ Useful debug checkpoints:
 ## Related docs
 
 - `docs/specs/active/2026-02-09-create-integration-testing-harness-for-loops.md`
+- `docs/specs/active/2026-03-01-end2end-integration-test-target.md`
 - `docs/flows/ref.outer-loop.md`
 - `docs/flows/ref.inner-loop.md`
 - `README.md` (Development -> live integration harness section)
@@ -333,3 +419,5 @@ Useful debug checkpoints:
 
 ## Changelog
 - 2026-03-01: Created integration test harness flow doc for live setup, run, assertion, and cleanup behavior. (019cabf3-d850-7bb0-ba2c-53d1a13dfc6e)
+- 2026-03-01: Documented shared `LOOPS_INTEG_END2END_PROJECT_URL` usage and randomized default animal selection for end-to-end harness setup. (019cacf8-0a3d-7601-b17c-9302a9f6fb4c)
+- 2026-03-02: Added full lifecycle end-to-end live harness flow (`test_end2end_live`) including bootstrap, merge assertions, and teardown sequence. (019cacf8-0a3d-7601-b17c-9302a9f6fb4c)
