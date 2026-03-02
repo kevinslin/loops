@@ -454,6 +454,10 @@ Precedence rule: `NEEDS_INPUT` has priority over `DONE`; if `needs_user_input=tr
 
 **Loop** (read `run.json`, derive state, dispatch):
 
+- **If `RUNNING`**: execute one Codex turn with `<state>RUNNING</state>`.
+  - On successful turn without trailing `NEEDS_INPUT`, inner loop reads `${LOOPS_RUN_DIR}/push-pr.url` as the deterministic initial PR artifact only when `run.json.pr` is still missing.
+  - If `run.json.pr` already exists, inner loop skips artifact consumption to avoid reusing stale artifact data.
+  - If `${LOOPS_RUN_DIR}/push-pr.url` is missing or invalid while `run.json.pr` is missing, inner loop forces `NEEDS_INPUT` with payload context containing `artifact_path`.
 - **If `NEEDS_INPUT`**: block for user handoff using `needs_user_input_payload`, then clear `needs_user_input` and `needs_user_input_payload`, persist, and resume LLM. Retry: still wait for input.
 - **If PR submitted → `WAITING_ON_REVIEW`**: run review poll script. If changes requested AND `latest_review_submitted_at > review_addressed_at` (new review event), exec trigger:fix-pr and record `review_addressed_at`. Also, if status is open but a new feedback event is observed (`latest_review_submitted_at > review_addressed_at`) from the newest timestamp between `COMMENTED` PR review events and plain PR discussion comments, resume trigger:fix-pr and record `review_addressed_at` so the same feedback is not reprocessed.
   - Always poll CI and persist `pr.ci_status`.
@@ -545,6 +549,7 @@ The inner loop relies on a small explicit skill surface. These skills are part o
 |---|---|---|
 | `dev.do` | Base prompt for Codex turns (`RUNNING` and follow-up turns) | Keeps task execution in a single end-to-end implementation workflow (implement -> open/update PR -> continue until terminal state). |
 | `a-review` | Base prompt contract (`RUNNING` only; exactly once per conversation) | Provides an in-turn quality gate before review polling; Loops requires posting the result to PR comments so reviewers and later turns share context. |
+| initial PR push command sequence | `RUNNING` initial PR creation | Executes `invoke:commit-code` (if needed), direct `scripts/push-pr.py` invocation, then `invoke:check-ci`/`invoke:fix-pr`; `push-pr.py` writes `${LOOPS_RUN_DIR}/push-pr.url` for deterministic discovery. |
 | `trigger:fix-pr` | `WAITING_ON_REVIEW` when new review/comment feedback is detected | Re-enters Codex to apply concrete reviewer feedback and updates `review_addressed_at` to prevent duplicate processing. |
 | `$ag-judge` (direct, no trigger) | `WAITING_ON_REVIEW` when review is not approved, CI is green, and auto-approve is enabled | Produces one structured approval verdict (`APPROVE|REJECT|ESCALATE`) with impact/risk/size scores that Loops persists on `RunRecord.auto_approve` to decide whether `PR_APPROVED` is reachable without manual approval. |
 | `trigger:merge-pr` | `PR_APPROVED` path and cleanup prompt | Performs merge/cleanup in an idempotent way; Loops keeps polling until `pr.merged_at` confirms transition to `DONE`. |
@@ -569,13 +574,20 @@ The inner loop builds prompts in `loops/inner_loop.py` from a shared base templa
 Base template (always present in Codex turns):
 
 ```text
-Use dev.do to implement the task, open a PR, wait only for review from the a-review subagent, address feedback, and trigger:merge-pr when the state is exactly <state>PR_APPROVED</state>.
+Use dev.do to implement the task and open a PR.
 You are running inside the loops test harness. NEVER wait for human PR review/comments inside the agent; the harness monitors review activity and will re-invoke you when feedback arrives.
 When you run a-review, always post its response to the PR comments. If there are no findings, explicitly post that no issues were found.
 NEVER use the gen-notifier skill while running inside loops.
+Spawn the a-review subagent exactly once per conversation, only while state is <state>RUNNING</state>. Do not spawn a-review again in <state>WAITING_ON_REVIEW</state> or any later turn.
 The current inner-loop state is passed via a trailing <state>...</state> tag; initial state is <state>RUNNING</state>.
 If you need input from user, print what you need help with and end current conversation with <state>NEEDS_INPUT</>
-When review is not already approved and CI is green, if auto-approve is enabled and no verdict exists yet, run $ag-judge once (judge book: references/jb.coding.md) and return one verdict: APPROVE, REJECT, or ESCALATE.
+For the initial PR while state is <state>RUNNING</state>: if there are unstaged changes invoke:commit-code; then resolve REPO_ROOT from LOOPS_RUN_DIR and run python3 "$REPO_ROOT/scripts/push-pr.py" "<pr-title>" "<pr-body-file>"; then invoke:check-ci and if CI fails invoke:fix-pr.
+trigger:merge-pr when the state is exactly <state>PR_APPROVED</state>.
+In the initial PR description, do not repeat the PR title in the body.
+Include session context in the initial PR body using: sessionid: [session]
+When posting PR progress comments, avoid duplicate messages by checking your latest PR comment before posting a new one.
+Do not reuse stock opener text (for example: 'Addressed the new discussion feedback'); write a specific update for the current change or skip commenting when nothing changed.
+When posting markdown comments with backticks via gh, use --body-file or a single-quoted heredoc to avoid shell interpolation issues.
 Do not merge until the state is exactly <state>PR_APPROVED</state>.
 Task: [task_url]
 ```
@@ -634,10 +646,11 @@ Prompt-related configuration and runtime inputs:
 - `loop_config.handoff_handler` (`stdin_handler` or `gh_comment_handler`): changes where NEEDS_INPUT prompt messages are delivered.
 - `task.url` in `run.json`: inserted into `Task: [task_url]`.
 - Handoff response text: appended as `User input:` in the next Codex prompt.
+- `${LOOPS_RUN_DIR}/push-pr.url`: deterministic initial PR URL artifact written by `scripts/push-pr.py` and consumed by inner loop only on successful `RUNNING` turns where `run.json.pr` is still missing.
 
 ## 7. PR review and merge gate handling
 
-- When a PR is opened, the inner loop records it in `run.json`.
+- For initial PR creation, `scripts/push-pr.py` writes `${LOOPS_RUN_DIR}/push-pr.url`; after a successful `RUNNING` turn, inner loop reads that artifact only when `run.json.pr` is missing, then records the PR in `run.json`.
 - The inner loop polls PR status and updates `pr.review_status`.
 - When a review requests changes, the inner loop records `latest_review_submitted_at` (the review's `submittedAt` timestamp from GitHub) and invokes Codex to address the feedback. After Codex runs, `review_addressed_at` is set to `latest_review_submitted_at`. On subsequent polls, the loop only re-invokes Codex if `latest_review_submitted_at > review_addressed_at`, indicating a genuinely new review event. This prevents duplicate fix attempts when the reviewer has not yet re-reviewed.
 - When status is still open (no formal review decision), the inner loop uses the newest timestamp between `COMMENTED` PR review and plain PR discussion comment events as its feedback signal. It uses the same `latest_review_submitted_at > review_addressed_at` guard to decide whether to resume Codex.

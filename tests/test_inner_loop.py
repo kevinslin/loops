@@ -115,6 +115,12 @@ def _write_codex_stub(path: Path) -> None:
                 "else:",
                 "    print(json.dumps({'session_id': f'session-{count}'}))",
                 "if count == 1:",
+                "    run_dir = os.environ.get('LOOPS_RUN_DIR')",
+                "    if run_dir:",
+                "        (Path(run_dir) / 'push-pr.url').write_text(",
+                "            'https://github.com/acme/api/pull/42\\n',",
+                "            encoding='utf-8',",
+                "        )",
                 "    print('Opened PR https://github.com/acme/api/pull/42')",
                 "else:",
                 "    print('cleanup complete')",
@@ -1028,6 +1034,16 @@ def test_inner_loop_uses_existing_needs_input_payload_and_user_response_in_promp
         in prompts
     )
     assert "NEVER use the gen-notifier skill while running inside loops." in prompts
+    assert (
+        "Spawn the a-review subagent exactly once per conversation, only while state is "
+        "<state>RUNNING</state>. Do not spawn a-review again in "
+        "<state>WAITING_ON_REVIEW</state> or any later turn."
+        in prompts
+    )
+    assert "For the initial PR while state is <state>RUNNING</state>:" in prompts
+    assert "if there are unstaged changes invoke:commit-code;" in prompts
+    assert "and run python3 \"$REPO_ROOT/scripts/push-pr.py\" \"<pr-title>\" \"<pr-body-file>\";" in prompts
+    assert "then invoke:check-ci and if CI fails invoke:fix-pr." in prompts
     assert "trigger:merge-pr when the state is exactly <state>PR_APPROVED</state>." in prompts
     assert "In the initial PR description, do not repeat the PR title in the body." in prompts
     assert "Include session context in the initial PR body using: sessionid: [session]" in prompts
@@ -1858,6 +1874,66 @@ def test_inner_loop_runtime_config_codex_cmd_overrides_process_env(
     assert args == ["exec", "exec resume session-1"]
 
 
+def test_inner_loop_overrides_stale_loops_run_dir_env_for_codex_turn(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "active-run"
+    run_dir.mkdir()
+    stale_run_dir = tmp_path / "stale-run"
+    stale_run_dir.mkdir()
+    _write_run_record(run_dir)
+
+    stub = tmp_path / "codex"
+    _write_codex_cli_stub(stub)
+    counter_path = tmp_path / "counter.txt"
+    prompt_log_path = tmp_path / "prompts.log"
+    args_log_path = tmp_path / "args.log"
+    monkeypatch.setenv("STUB_COUNTER_PATH", str(counter_path))
+    monkeypatch.setenv("STUB_PROMPT_LOG", str(prompt_log_path))
+    monkeypatch.setenv("STUB_ARGS_LOG", str(args_log_path))
+    monkeypatch.setenv(
+        "CODEX_CMD",
+        f"{shlex.quote(str(stub))} exec",
+    )
+    monkeypatch.setenv("LOOPS_RUN_DIR", str(stale_run_dir))
+
+    poll_calls = {"count": 0}
+
+    def pr_status_fetcher(pr: RunPR) -> RunPR:
+        poll_calls["count"] += 1
+        if poll_calls["count"] == 1:
+            return RunPR(
+                url=pr.url,
+                number=pr.number,
+                repo=pr.repo,
+                review_status="approved",
+                ci_status="success",
+                merged_at=None,
+                last_checked_at="2026-02-09T00:00:01Z",
+            )
+        return RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="approved",
+            ci_status="success",
+            merged_at="2026-02-09T00:00:02Z",
+            last_checked_at="2026-02-09T00:00:02Z",
+        )
+
+    result = run_inner_loop(
+        run_dir,
+        pr_status_fetcher=pr_status_fetcher,
+        sleep_fn=lambda _seconds: None,
+        max_iterations=20,
+    )
+
+    assert result.last_state == "DONE"
+    assert (run_dir / inner_loop_module.PUSH_PR_URL_FILE).exists()
+    assert not (stale_run_dir / inner_loop_module.PUSH_PR_URL_FILE).exists()
+
+
 def test_inner_loop_raises_on_malformed_runtime_config(
     tmp_path: Path,
 ) -> None:
@@ -2205,6 +2281,157 @@ def test_run_codex_turn_sets_needs_input_from_trailing_state_marker(
     assert updated.codex_session is not None
     assert updated.codex_session.id == "session-2"
     assert "codex requested state via marker: NEEDS_INPUT" in (run_dir / "run.log").read_text()
+
+
+def test_run_codex_turn_discovers_initial_pr_from_push_pr_artifact(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(run_dir)
+    (run_dir / inner_loop_module.PUSH_PR_URL_FILE).write_text(
+        "https://github.com/acme/api/pull/84\n",
+        encoding="utf-8",
+    )
+
+    def fake_invoke_codex(
+        *,
+        base_command: list[str],
+        prompt: str,
+        agent_log: Path,
+        run_log: Path,
+        codex_session: inner_loop_module.CodexSession | None,
+        turn_label: str,
+        environ: dict[str, str],
+    ) -> tuple[str, int, bool]:
+        del base_command, prompt, agent_log, run_log, codex_session, turn_label, environ
+        return (json.dumps({"session_id": "session-2"}) + "\nrun complete\n", 0, False)
+
+    monkeypatch.setattr(inner_loop_module, "_invoke_codex", fake_invoke_codex)
+    run_json_path = run_dir / "run.json"
+    updated = inner_loop_module._run_codex_turn(
+        run_json_path=run_json_path,
+        run_log=run_dir / "run.log",
+        agent_log=run_dir / "agent.log",
+        run_record=read_run_record(run_json_path),
+        command=["codex", "exec"],
+        environ=os.environ.copy(),
+        base_prompt=None,
+        review_feedback=False,
+    )
+
+    assert updated.pr is not None
+    assert updated.pr.url == "https://github.com/acme/api/pull/84"
+    assert updated.needs_user_input is False
+    assert updated.needs_user_input_payload is None
+
+
+def test_run_codex_turn_does_not_fallback_to_stdout_for_initial_pr_discovery(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(run_dir)
+
+    def fake_invoke_codex(
+        *,
+        base_command: list[str],
+        prompt: str,
+        agent_log: Path,
+        run_log: Path,
+        codex_session: inner_loop_module.CodexSession | None,
+        turn_label: str,
+        environ: dict[str, str],
+    ) -> tuple[str, int, bool]:
+        del base_command, prompt, agent_log, run_log, codex_session, turn_label, environ
+        return (
+            json.dumps({"session_id": "session-2"})
+            + "\nOpened PR https://github.com/acme/api/pull/42\n",
+            0,
+            False,
+        )
+
+    monkeypatch.setattr(inner_loop_module, "_invoke_codex", fake_invoke_codex)
+    run_json_path = run_dir / "run.json"
+    updated = inner_loop_module._run_codex_turn(
+        run_json_path=run_json_path,
+        run_log=run_dir / "run.log",
+        agent_log=run_dir / "agent.log",
+        run_record=read_run_record(run_json_path),
+        command=["codex", "exec"],
+        environ=os.environ.copy(),
+        base_prompt=None,
+        review_feedback=False,
+    )
+
+    assert updated.pr is None
+    assert updated.needs_user_input is True
+    assert updated.needs_user_input_payload == {
+        "message": (
+            "Loops could not determine a PR URL from push-pr.py artifact output. "
+            "Provide the PR URL or rerun push-pr.py."
+        ),
+        "context": {"artifact_path": str(run_dir / inner_loop_module.PUSH_PR_URL_FILE)},
+    }
+    run_log = (run_dir / "run.log").read_text()
+    assert "deterministic PR discovery failed" in run_log
+
+
+def test_run_codex_turn_recovers_initial_pr_from_user_input_when_artifact_missing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(run_dir)
+
+    def fake_invoke_codex(
+        *,
+        base_command: list[str],
+        prompt: str,
+        agent_log: Path,
+        run_log: Path,
+        codex_session: inner_loop_module.CodexSession | None,
+        turn_label: str,
+        environ: dict[str, str],
+    ) -> tuple[str, int, bool]:
+        del base_command, prompt, agent_log, run_log, codex_session, turn_label, environ
+        return (json.dumps({"session_id": "session-2"}) + "\nrun complete\n", 0, False)
+
+    monkeypatch.setattr(inner_loop_module, "_invoke_codex", fake_invoke_codex)
+    run_json_path = run_dir / "run.json"
+    updated = inner_loop_module._run_codex_turn(
+        run_json_path=run_json_path,
+        run_log=run_dir / "run.log",
+        agent_log=run_dir / "agent.log",
+        run_record=read_run_record(run_json_path),
+        command=["codex", "exec"],
+        environ=os.environ.copy(),
+        base_prompt=None,
+        user_response="Here is the PR: https://github.com/acme/api/pull/93",
+        review_feedback=False,
+    )
+
+    assert updated.pr is not None
+    assert updated.pr.url == "https://github.com/acme/api/pull/93"
+    assert updated.needs_user_input is False
+    assert updated.needs_user_input_payload is None
+    assert (
+        "deterministic PR discovery recovered from user input PR URL"
+        in (run_dir / "run.log").read_text()
+    )
+
+
+def test_extract_pr_from_push_pr_artifact_returns_none_when_unreadable(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / inner_loop_module.PUSH_PR_URL_FILE).mkdir()
+
+    assert inner_loop_module._extract_pr_from_push_pr_artifact(run_dir) is None
 
 
 def test_run_codex_turn_clears_stale_session_after_failed_resume_fallback(

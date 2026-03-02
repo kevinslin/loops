@@ -60,12 +60,16 @@ PROMPT_TEMPLATE = (
     "If there are no findings, explicitly post that no issues were found.\n"
     "NEVER use the gen-notifier skill while running inside loops.\n"
     "Spawn the a-review subagent exactly once per conversation, only while state is "
-    "<state>RUNNING</state>.Do not spawn a-review again in "
+    "<state>RUNNING</state>. Do not spawn a-review again in "
     "<state>WAITING_ON_REVIEW</state> or any later turn.\n"
     "The current inner-loop state is passed via a trailing <state>...</state> tag; "
     "initial state is <state>RUNNING</state>.\n"
     "If you need input from user, print what you need help with and end current conversation "
     "with <state>NEEDS_INPUT</>\n"
+    "For the initial PR while state is <state>RUNNING</state>: if there are "
+    "unstaged changes invoke:commit-code; then resolve REPO_ROOT from LOOPS_RUN_DIR "
+    "and run python3 \"$REPO_ROOT/scripts/push-pr.py\" \"<pr-title>\" "
+    "\"<pr-body-file>\"; then invoke:check-ci and if CI fails invoke:fix-pr.\n"
     "trigger:merge-pr when the state is exactly <state>PR_APPROVED</state>.\n"
     "Do not merge until the state is exactly <state>PR_APPROVED</state>.\n"
     "In the initial PR description, do not repeat the PR title in the body.\n"
@@ -82,6 +86,8 @@ PROMPT_STATE_RUNNING = "RUNNING"
 PROMPT_STATE_WAITING_ON_REVIEW = "WAITING_ON_REVIEW"
 PROMPT_STATE_PR_APPROVED = "PR_APPROVED"
 CHECKOUT_MODE_WORKTREE = "worktree"
+SIGNAL_OFFSET_FILE = "state_signals.offset"
+PUSH_PR_URL_FILE = "push-pr.url"
 DEFAULT_MAX_ITERATIONS = 200
 DEFAULT_REVIEW_POLL_SECONDS = 5.0
 DEFAULT_MAX_REVIEW_POLL_SECONDS = 60.0
@@ -281,6 +287,9 @@ def run_inner_loop(
         runtime_config=runtime_config,
         environ=runtime_environ,
     )
+    # Ensure Codex turns always receive the current run directory even when the
+    # inner loop is invoked directly (not via outer-loop launcher).
+    runtime_environ["LOOPS_RUN_DIR"] = str(run_dir)
     effective_stream_logs_stdout = should_stream_logs_to_stdout(environ=runtime_environ)
     stream_logs_token = set_stream_logs_stdout_override(effective_stream_logs_stdout)
 
@@ -1433,8 +1442,7 @@ def _run_codex_turn(
     elif exit_code == 0 and codex_session is None:
         append_log(run_log, "[loops] warning: no session id detected in codex output")
 
-    discovered_pr = _extract_pr_from_output(output)
-    pr = _merge_pr_records(run_record.pr, discovered_pr)
+    pr = run_record.pr
     requested_state = _extract_trailing_state_marker(output)
     if requested_state is not None:
         append_log(run_log, f"[loops] codex requested state via marker: {requested_state}")
@@ -1454,6 +1462,34 @@ def _run_codex_turn(
                 "Provide guidance."
             )
         }
+    elif not review_feedback and run_record.pr is None:
+        pr = _extract_pr_from_push_pr_artifact(run_json_path.parent)
+        if pr is None:
+            pr = _extract_pr_from_user_response(user_response)
+            if pr is not None:
+                append_log(
+                    run_log,
+                    "[loops] deterministic PR discovery recovered from user input PR URL",
+                )
+        if pr is None:
+            needs_user_input = True
+            needs_user_input_payload = {
+                "message": (
+                    "Loops could not determine a PR URL from push-pr.py artifact output. "
+                    "Provide the PR URL or rerun push-pr.py."
+                ),
+                "context": {
+                    "artifact_path": str(run_json_path.parent / PUSH_PR_URL_FILE),
+                },
+            }
+            append_log(
+                run_log,
+                (
+                    "[loops] deterministic PR discovery failed "
+                    f"(artifact={run_json_path.parent / PUSH_PR_URL_FILE}); "
+                    "requesting user input"
+                ),
+            )
     elif pr is None:
         needs_user_input = True
         needs_user_input_payload = {
@@ -1614,23 +1650,34 @@ def _run_auto_approve_eval(
     )
 
 
-def _extract_pr_from_output(output: str) -> Optional[RunPR]:
-    for line in output.splitlines():
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
-            for key in ("pr_url", "pull_request_url", "url"):
-                value = payload.get(key)
-                if isinstance(value, str):
-                    pr = _run_pr_from_url(value)
-                    if pr is not None:
-                        return pr
-    match = GITHUB_PR_PATTERN.search(output)
-    if not match:
+def _extract_pr_from_push_pr_artifact(run_dir: Path) -> Optional[RunPR]:
+    artifact_path = run_dir / PUSH_PR_URL_FILE
+    if not artifact_path.exists():
         return None
-    return _run_pr_from_url(match.group(0))
+    try:
+        raw = artifact_path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not raw:
+        return None
+    for line in raw.splitlines():
+        candidate = line.strip()
+        if not candidate:
+            continue
+        pr = _run_pr_from_url(candidate)
+        if pr is not None:
+            return pr
+    return None
+
+
+def _extract_pr_from_user_response(user_response: Optional[str]) -> Optional[RunPR]:
+    if user_response is None:
+        return None
+    for match in GITHUB_PR_PATTERN.finditer(user_response):
+        pr = _run_pr_from_url(match.group(0))
+        if pr is not None:
+            return pr
+    return None
 
 
 def _extract_trailing_state_marker(output: str) -> Optional[RunState]:

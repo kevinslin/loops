@@ -149,6 +149,7 @@ None identified.
 | `run_record.stream_logs_stdout` | Written to `run.json` on run creation/reset and at inner-loop startup when effective value changes | Reloaded each iteration with `run.json` | Provides a durable snapshot of effective `run.log` stdout mirroring for diagnostics | Yes |
 | `needs_user_input` | Written in `_run_codex_turn` and `_force_needs_input` (`loops/inner_loop.py`) | Reloaded at top of each iteration (`loops/inner_loop.py`) | Used by `derive_run_state` (`loops/run_record.py`) | Yes |
 | `pr.review_status` | Updated from Codex output or PR poll (`loops/inner_loop.py:635`, `loops/inner_loop.py:259`, `loops/inner_loop.py:392`) | Reloaded each iteration (`loops/inner_loop.py:87`) | Branches into `WAITING_ON_REVIEW`/`PR_APPROVED` (`loops/inner_loop.py:208`, `loops/inner_loop.py:325`) | Yes |
+| `pr` (initial `url/number/repo` plus review fields) | Initial PR link is read from `${LOOPS_RUN_DIR}/push-pr.url` after successful `RUNNING` codex turn only when `run.json.pr` is missing; review fields are updated by PR polling | Reloaded each iteration (`loops/inner_loop.py:87`) | Branches into `WAITING_ON_REVIEW`/`PR_APPROVED` and drives merge polling | Yes |
 | `pr.merged_at` | Written by PR status poll (`loops/inner_loop.py:767`, persisted at `loops/inner_loop.py:392`) | Reloaded each iteration (`loops/inner_loop.py:87`) | Triggers `DONE` via `derive_run_state` (`loops/run_record.py:142`) | Yes |
 | `pr.latest_review_submitted_at` and `pr.review_addressed_at` | Written in gh fetch + review-feedback codex completion (`loops/inner_loop.py:767`, `loops/inner_loop.py:659`) | Reloaded each iteration (`loops/inner_loop.py:87`) | Checked by `_is_new_review` gate (`loops/inner_loop.py:727`) | Yes |
 | `codex_session.id` | Extracted and persisted after Codex turn (`loops/inner_loop.py`) | Reloaded each iteration (`loops/inner_loop.py:87`) | Drives `codex exec resume <session_id>` for follow-up turns and remains durable session metadata | Yes |
@@ -206,10 +207,13 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
   - Base prompt contract says Codex may wait for the `a-review` subagent but must not wait for human PR comments/reviews because the outer harness performs comment monitoring and re-invokes Codex when needed.
   - Base prompt contract requires posting `a-review` output to PR comments whenever `a-review` runs, including explicit no-findings comments.
   - Base prompt contract explicitly forbids using the `gen-notifier` skill while running inside loops.
+  - Base prompt contract requires explicit initial PR sequence while state is `RUNNING`: invoke:commit-code (if needed), run `scripts/push-pr.py`, then invoke:check-ci and invoke:fix-pr on failures.
   - Selects invocation strategy (new session vs `resume <session_id>`) from `run_record.codex_session`.
   - Streams stdout/stderr into `agent.log` and appends the same output to `run.log`.
-  - Extracts session id, PR URL, and a trailing `<state>...</state>` marker from output when the final line is marker-only (legacy `</>` close tag is also accepted for compatibility).
-  - Sets `needs_user_input=true` on non-zero exits, on trailing `NEEDS_INPUT` state markers, or on successful turns with no PR detected.
+  - Extracts session id and trailing `<state>...</state>` marker from output when the final line is marker-only (legacy `</>` close tag is also accepted for compatibility).
+  - For initial `RUNNING` turns (no PR yet), reads deterministic PR artifact `${LOOPS_RUN_DIR}/push-pr.url` instead of parsing PR URLs from Codex stdout.
+  - If artifact discovery fails on initial `RUNNING` turns, can recover from a PR URL present in handoff `user_response`; otherwise sets `needs_user_input=true` with artifact-path context.
+  - Sets `needs_user_input=true` on non-zero exits or on trailing `NEEDS_INPUT` state markers.
 
 - Review polling behavior (`loops/inner_loop.py:767`):
   - Loads comment-approval settings once per run from `inner_loop_runtime_config.json` and compiles approval pattern with safe fallback.
@@ -305,7 +309,7 @@ Key logs and emit sites:
 ## FAQ
 
 Q: Why can a successful Codex turn still transition to `NEEDS_INPUT`?
-A: If exit code is zero but no PR is detected in output, the loop requests manual guidance (`loops/inner_loop.py:647`).
+A: In initial `RUNNING` turns where `run.json.pr` is still missing, if `${LOOPS_RUN_DIR}/push-pr.url` is missing/invalid and user input does not include a usable PR URL, the loop requests manual guidance.
 
 Q: Why does review feedback not always re-trigger Codex?
 A: The loop resumes Codex only for new feedback events (`latest_review_submitted_at > review_addressed_at`): new `changes_requested` reviews, or new open-state feedback where the newest timestamp between `COMMENTED` PR review events and plain PR discussion comments has advanced. Duplicate events with unchanged timestamps are skipped.
@@ -337,6 +341,7 @@ A: Inner loop only.
 - 2026-03-01: Removed state-signal queue references after deleting `loops signal`/`loops.state_signal`; NEEDS_INPUT now documents direct `run.json` handoff behavior. (019cabbd-8be2-7f00-ba1e-0856ed6096dc)
 - 2026-03-01: Added deterministic best-effort 👍 reactions for allowlisted plain-comment approval signals during `WAITING_ON_REVIEW` polling. (019cab4c-0485-7542-b9eb-ff1c83ca0942)
 - 2026-03-01: Documented `run.json.stream_logs_stdout` persistence as the effective log-streaming snapshot loaded from runtime config/env fallbacks. (019cab67-3061-7ce1-81c1-e30f80798fb0)
+- 2026-03-01: Switched initial PR discovery to deterministic `${LOOPS_RUN_DIR}/push-pr.url` artifact consumption and removed stdout PR URL parsing in `RUNNING` turns. (019cab67-3061-7ce1-81c1-e30f80798fb0)
 - 2026-03-01: Switched runtime config transport to run-scoped `inner_loop_runtime_config.json`; env variables remain fallback inputs when runtime config omits keys or is unavailable. (019caae6-1189-7d83-a9cd-1665818fba36)
 - 2026-03-01: Updated prompt contract notes to require posting `a-review` output and `ag-judge` verdict/scores to PR comments. (019caaa4-f4d8-7822-a0d0-03315986d5ef)
 - 2026-03-01: Updated review-allowlist config references to `task_provider_config.allowlist` for config schema v2 alignment. (019caa8b-0807-7603-a519-4a6be2b8e53c)
