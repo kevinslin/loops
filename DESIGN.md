@@ -625,6 +625,7 @@ Practical invariant: if this skill contract changes, update `loops/core/inner_lo
 - `python -m loops run` starts the outer loop runner.
 - `python -m loops inner-loop` runs one inner-loop execution for a run directory.
 - `python -m loops clean` deletes empty runs and archives completed runs.
+- `python -m loops.cli` is intentionally unsupported; use `loops ...` or `python -m loops ...`.
 - Direct module callers still work (`python -m loops.inner_loop`).
 
 ### Live integration harness targets

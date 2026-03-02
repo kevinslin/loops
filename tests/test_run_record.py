@@ -114,6 +114,62 @@ def test_read_run_record_rejects_non_bool_needs_user_input(tmp_path) -> None:
         read_run_record(path)
 
 
+def test_read_run_record_rejects_non_object_payload(tmp_path) -> None:
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps(["not", "an", "object"]))
+
+    with pytest.raises(TypeError, match="JSON object"):
+        read_run_record(path)
+
+
+def test_read_run_record_rejects_non_object_task(tmp_path) -> None:
+    payload = {
+        "task": "invalid",
+        "pr": None,
+        "codex_session": None,
+        "needs_user_input": False,
+        "last_state": "RUNNING",
+        "updated_at": "2026-02-03T00:00:00Z",
+    }
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps(payload))
+
+    with pytest.raises(TypeError, match='payload\\["task"\\]'):
+        read_run_record(path)
+
+
+def test_read_run_record_rejects_invalid_last_state(tmp_path) -> None:
+    payload = {
+        "task": _task().to_dict(),
+        "pr": None,
+        "codex_session": None,
+        "needs_user_input": False,
+        "last_state": "INVALID",
+        "updated_at": "2026-02-03T00:00:00Z",
+    }
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match='payload\\["last_state"\\]'):
+        read_run_record(path)
+
+
+def test_read_run_record_rejects_blank_updated_at(tmp_path) -> None:
+    payload = {
+        "task": _task().to_dict(),
+        "pr": None,
+        "codex_session": None,
+        "needs_user_input": False,
+        "last_state": "RUNNING",
+        "updated_at": "   ",
+    }
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps(payload))
+
+    with pytest.raises(TypeError, match='payload\\["updated_at"\\]'):
+        read_run_record(path)
+
+
 def test_read_run_record_rejects_non_bool_stream_logs_stdout(tmp_path) -> None:
     payload = {
         "task": _task().to_dict(),

@@ -27,6 +27,7 @@ LOOPS_REPLY_PREFIX = "/loops-reply"
 PROMPT_MARKER_PREFIX = "<!-- loops-handoff"
 ISSUE_PATH_PATTERN = re.compile(r"^/([^/]+)/([^/]+)/issues/([1-9][0-9]*)/?$")
 REPLY_LINE_PATTERN = re.compile(r"^\s*/loops-reply\b(.*)$", re.IGNORECASE)
+GH_COMMAND_TIMEOUT_SECONDS = 30
 
 
 @dataclass(frozen=True)
@@ -429,14 +430,27 @@ class GHCommentHandoffHandler:
         return f"{PROMPT_MARKER_PREFIX} run={self._run_key} hash={payload_hash} -->"
 
     def _run_gh(self, args: Sequence[str]) -> str:
-        result = subprocess.run(
-            list(args),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            env=self._environ,
-        )
+        try:
+            result = subprocess.run(
+                list(args),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                env=self._environ,
+                timeout=GH_COMMAND_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            details = ""
+            stdout = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+            stderr = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+            combined = "\n".join(part for part in (stdout.strip(), stderr.strip()) if part)
+            if combined:
+                details = f": {combined}"
+            raise RuntimeError(
+                "gh_comment_handler command timed out after "
+                f"{GH_COMMAND_TIMEOUT_SECONDS}s{details}"
+            ) from exc
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or result.stdout.strip())
         return result.stdout

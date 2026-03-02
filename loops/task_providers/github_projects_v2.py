@@ -87,8 +87,12 @@ class ProjectFilters:
 
 def parse_project_url(url: str) -> ProjectLocator:
     parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.netloc not in {"github.com", "www.github.com"}:
+        raise ValueError(
+            "Project URL must look like https://github.com/orgs/<org>/projects/<number>"
+        )
     parts = [part for part in parsed.path.split("/") if part]
-    if len(parts) < 4:
+    if len(parts) != 4:
         raise ValueError(
             "Project URL must look like https://github.com/orgs/<org>/projects/<number>"
         )

@@ -44,5 +44,8 @@ def get_provider_definition(provider_id: str) -> ProviderDefinition:
 
     provider = _PROVIDERS.get(provider_id)
     if provider is None:
-        raise ValueError(f"Unsupported provider_id: {provider_id}")
+        supported = ", ".join(sorted(_PROVIDERS))
+        raise ValueError(
+            f"Unsupported provider_id: {provider_id}. Supported provider_ids: {supported}"
+        )
     return provider

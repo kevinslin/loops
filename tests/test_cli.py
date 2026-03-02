@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -281,6 +282,44 @@ def test_clean_does_not_delete_active_runs_with_empty_logs(tmp_path: Path) -> No
     assert active_empty_run.exists()
 
 
+def test_clean_archives_done_runs_even_when_logs_are_empty(tmp_path: Path) -> None:
+    runner = CliRunner()
+    loops_root = tmp_path / ".loops"
+    jobs_root = loops_root / "jobs"
+    jobs_root.mkdir(parents=True)
+
+    done_empty_run = jobs_root / "done-empty-run"
+    done_empty_run.mkdir()
+    (done_empty_run / "run.log").write_text("")
+    (done_empty_run / "agent.log").write_text("")
+    (done_empty_run / "run.json").write_text(
+        json.dumps(
+            {
+                "task": {
+                    "provider_id": "github_projects_v2",
+                    "id": "done-empty",
+                    "title": "Done empty run",
+                    "status": "Done",
+                    "url": "https://github.com/acme/api/issues/4",
+                    "created_at": "2026-03-01T00:00:00Z",
+                    "updated_at": "2026-03-01T00:00:00Z",
+                },
+                "needs_user_input": False,
+                "last_state": "DONE",
+                "updated_at": "2026-03-01T00:00:01Z",
+            }
+        )
+    )
+
+    result = runner.invoke(main, ["clean", "--loops-root", str(loops_root)])
+
+    assert result.exit_code == 0, result.output
+    assert "Deleted 0 empty run dir(s)." in result.output
+    assert "Archived 1 completed run dir(s)." in result.output
+    assert not done_empty_run.exists()
+    assert (loops_root / ".archive" / "done-empty-run").exists()
+
+
 def test_clean_uses_suffix_when_archive_target_exists(tmp_path: Path) -> None:
     runner = CliRunner()
     loops_root = tmp_path / ".loops"
@@ -444,6 +483,18 @@ def test_removed_signal_command_errors_explicitly() -> None:
 
     assert result.exit_code != 0
     assert "No such command 'signal'" in result.output
+
+
+def test_python_module_loops_cli_is_explicitly_unsupported() -> None:
+    completed = subprocess.run(
+        [sys.executable, "-m", "loops.cli"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "python -m loops.cli" in completed.stderr
 
 
 def test_inner_loop_reset_creates_initial_run_record_when_missing(

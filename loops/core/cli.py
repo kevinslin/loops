@@ -227,7 +227,8 @@ def _resolve_loops_root(config_path: Path) -> Path:
         return resolved.parent
     return resolved.parent / ".loops"
 
-
+# Import subcommands at the end to avoid circular imports: command modules
+# call helpers from this module.
 from loops.commands.clean import clean_command as clean_command
 from loops.commands.doctor import doctor_command as doctor_command
 from loops.commands.init import init_command as init_command

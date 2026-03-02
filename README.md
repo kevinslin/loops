@@ -268,6 +268,7 @@ Direct module equivalents still exist:
 
 - `python -m loops`
 - `python -m loops.inner_loop`
+- `python -m loops.cli` is unsupported (use `loops` or `python -m loops`).
 
 ## Environment variables
 

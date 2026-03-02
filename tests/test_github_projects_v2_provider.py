@@ -81,6 +81,11 @@ def test_parse_project_url_invalid() -> None:
         parse_project_url("https://github.com/acme/projects")
 
 
+def test_parse_project_url_rejects_non_github_host() -> None:
+    with pytest.raises(ValueError):
+        parse_project_url("https://example.com/orgs/acme/projects/42")
+
+
 def test_parse_project_url_non_positive() -> None:
     with pytest.raises(ValueError):
         parse_project_url("https://github.com/orgs/acme/projects/0")
