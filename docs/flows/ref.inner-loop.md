@@ -1,6 +1,6 @@
 # Inner Loop Flow
 
-Last updated: 2026-03-01
+Last updated: 2026-03-02
 
 ## Overview
 
@@ -125,7 +125,7 @@ None identified.
 |---|---|---|---|
 | `--run-dir` | CLI option | `loops/cli.py:77`, `loops/inner_loop.py:982` | Overrides `LOOPS_RUN_DIR` for the target run. |
 | `--prompt-file` | CLI option | `loops/cli.py:84`, `loops/inner_loop.py:489` | Overrides prompt-file env fallbacks and changes all Codex prompts for the run. |
-| `loop_config.approval_comment_usernames` / `loop_config.approval_comment_pattern` | Config file fields (outer loop) | `loops/outer_loop.py` -> written to `inner_loop_runtime_config.json` | Controls comment-based approval override behavior in review polling. |
+| `task_provider_config.approval_comment_usernames` / `task_provider_config.approval_comment_pattern` | Config file fields (provider) | validated in provider model, then resolved by `loops/outer_loop.py` and written to `inner_loop_runtime_config.json` | Controls comment-based approval override behavior in review polling. |
 | `task_provider_config.allowlist` (GitHub provider) | Config file field (outer loop/provider) | `loops/cli.py` + `loops/outer_loop.py` -> resolved and written to `inner_loop_runtime_config.json` as `review_actor_usernames` | Filters review-phase PR comments/reviews to allowlisted actors during polling. |
 | `loop_config.handoff_handler`, `loop_config.auto_approve_enabled`, `loop_config.sync_mode`, `inner_loop.env` | Config file fields (outer loop) | `loops/outer_loop.py` -> written to `inner_loop_runtime_config.json` | Controls runtime handoff strategy, auto-approve gate, log mirroring, and optional run-scoped env payload for inner-loop subprocess behavior. |
 | `run.json` content (`pr`, `needs_user_input`, `needs_user_input_payload`, `stream_logs_stdout`) | Persisted state | `loops/run_record.py` | Determines state-machine branch selection and exposes effective log-streaming mode for observability. |

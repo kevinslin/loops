@@ -1,5 +1,6 @@
 import pytest
 
+from loops.approval_config import DEFAULT_APPROVAL_COMMENT_PATTERN
 from loops.providers.github_projects_v2 import (
     GithubProjectsV2TaskProvider,
     GithubProjectsV2TaskProviderConfig,
@@ -9,6 +10,26 @@ from loops.providers.github_projects_v2 import (
     _run_gh_graphql,
     parse_project_url,
 )
+
+
+def test_provider_config_approval_comment_usernames_normalize_on_provider() -> None:
+    provider = GithubProjectsV2TaskProvider(
+        GithubProjectsV2TaskProviderConfig(
+            url="https://github.com/orgs/acme/projects/1",
+            approval_comment_usernames=["Maintainer", "review-bot", "maintainer"],
+        )
+    )
+    assert provider.approval_comment_usernames == ("maintainer", "review-bot")
+
+
+def test_provider_config_approval_comment_pattern_falls_back_when_empty() -> None:
+    provider = GithubProjectsV2TaskProvider(
+        GithubProjectsV2TaskProviderConfig(
+            url="https://github.com/orgs/acme/projects/1",
+            approval_comment_pattern="",
+        )
+    )
+    assert provider.approval_comment_pattern == DEFAULT_APPROVAL_COMMENT_PATTERN
 
 
 def test_provider_config_allowlist_normalizes_on_provider() -> None:

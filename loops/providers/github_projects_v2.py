@@ -9,7 +9,10 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from loops.approval_config import normalize_approval_usernames
+from loops.approval_config import (
+    DEFAULT_APPROVAL_COMMENT_PATTERN,
+    normalize_approval_usernames,
+)
 from loops.provider_types import LoopsProviderConfig, SecretRequirement
 from loops.run_record import Task
 
@@ -27,6 +30,8 @@ class GithubProjectsV2TaskProviderConfig(BaseModel):
     page_size: int = Field(default=50, gt=0)
     github_token: str | None = None
     filters: list[str] = Field(default_factory=list)
+    approval_comment_usernames: list[str] = Field(default_factory=list)
+    approval_comment_pattern: str = DEFAULT_APPROVAL_COMMENT_PATTERN
     allowlist: list[str] = Field(default_factory=list)
 
 
@@ -58,6 +63,8 @@ def build_default_provider_config_payload(
         "url": defaults.url,
         "status_field": defaults.status_field,
         "page_size": defaults.page_size,
+        "approval_comment_usernames": list(defaults.approval_comment_usernames),
+        "approval_comment_pattern": defaults.approval_comment_pattern,
         "allowlist": list(defaults.allowlist),
     }
 
@@ -230,6 +237,12 @@ class GithubProjectsV2TaskProvider:
         self.config = config
         self.gh_bin = gh_bin
         self.filters = _parse_filters(config.filters)
+        self.approval_comment_usernames = normalize_approval_usernames(
+            config.approval_comment_usernames
+        )
+        self.approval_comment_pattern = (
+            config.approval_comment_pattern or DEFAULT_APPROVAL_COMMENT_PATTERN
+        )
         self.review_actor_allowlist = normalize_approval_usernames(config.allowlist)
 
     def poll(self, limit: int | None = None) -> list[Task]:

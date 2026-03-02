@@ -1,6 +1,6 @@
 # PR Status Fetcher Flow
 
-Last updated: 2026-03-01
+Last updated: 2026-03-02
 
 ## Purpose / Question Answered
 
@@ -239,8 +239,8 @@ None identified.
 
 | Name | Type | Where Read | Effect on Flow |
 |---|---|---|---|
-| `loop_config.approval_comment_usernames` | config field | written by outer loop to `inner_loop_runtime_config.json`, read by `_load_comment_approval_settings` | Enables allowlisted approval signals from comments/reviews. |
-| `loop_config.approval_comment_pattern` | config field (regex text) | `inner_loop_runtime_config.json` -> `_load_comment_approval_settings` | Defines which comment/review bodies count as approval signals. |
+| `task_provider_config.approval_comment_usernames` | config field | validated by provider, then written by outer loop to `inner_loop_runtime_config.json`, read by `_load_comment_approval_settings` | Enables allowlisted approval signals from comments/reviews. |
+| `task_provider_config.approval_comment_pattern` | config field (regex text) | `inner_loop_runtime_config.json` -> `_load_comment_approval_settings` | Defines which comment/review bodies count as approval signals. |
 | `pr_status_fetcher` parameter | runtime dependency injection | `run_inner_loop(..., pr_status_fetcher=...)` | Replaces default GH-backed normalization logic (used mainly in tests). |
 | `run.json.pr.review_addressed_at` | persisted state field | read/write in `_is_new_review` and `_run_codex_turn` | Prevents reprocessing the same review/comment feedback event. |
 

@@ -25,6 +25,8 @@ from loops.outer_loop import (
     build_default_loop_config_payload,
     build_inner_loop_launcher,
     build_provider,
+    _resolve_provider_comment_approval_pattern,
+    _resolve_provider_comment_approval_usernames,
     load_config,
     _resolve_provider_review_actor_usernames,
     upgrade_config_payload,
@@ -254,6 +256,10 @@ def _run_outer_loop(
     provider = build_provider(config)
     launcher = build_inner_loop_launcher(
         config,
+        approval_comment_usernames=_resolve_provider_comment_approval_usernames(
+            provider
+        ),
+        approval_comment_pattern=_resolve_provider_comment_approval_pattern(provider),
         review_actor_usernames=_resolve_provider_review_actor_usernames(provider),
     )
     loops_root = _resolve_loops_root(config_path)
