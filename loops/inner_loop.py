@@ -60,7 +60,7 @@ PROMPT_TEMPLATE = (
     "If there are no findings, explicitly post that no issues were found.\n"
     "NEVER use the gen-notifier skill while running inside loops.\n"
     "Spawn the a-review subagent exactly once per conversation, only while state is "
-    "<state>RUNNING</state>.Do not spawn a-review again in "
+    "<state>RUNNING</state>. Do not spawn a-review again in "
     "<state>WAITING_ON_REVIEW</state> or any later turn.\n"
     "The current inner-loop state is passed via a trailing <state>...</state> tag; "
     "initial state is <state>RUNNING</state>.\n"
@@ -1465,6 +1465,13 @@ def _run_codex_turn(
     elif not review_feedback and run_record.pr is None:
         pr = _extract_pr_from_push_pr_artifact(run_json_path.parent)
         if pr is None:
+            pr = _extract_pr_from_user_response(user_response)
+            if pr is not None:
+                append_log(
+                    run_log,
+                    "[loops] deterministic PR discovery recovered from user input PR URL",
+                )
+        if pr is None:
             needs_user_input = True
             needs_user_input_payload = {
                 "message": (
@@ -1647,7 +1654,10 @@ def _extract_pr_from_push_pr_artifact(run_dir: Path) -> Optional[RunPR]:
     artifact_path = run_dir / PUSH_PR_URL_FILE
     if not artifact_path.exists():
         return None
-    raw = artifact_path.read_text().strip()
+    try:
+        raw = artifact_path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
     if not raw:
         return None
     for line in raw.splitlines():
@@ -1655,6 +1665,16 @@ def _extract_pr_from_push_pr_artifact(run_dir: Path) -> Optional[RunPR]:
         if not candidate:
             continue
         pr = _run_pr_from_url(candidate)
+        if pr is not None:
+            return pr
+    return None
+
+
+def _extract_pr_from_user_response(user_response: Optional[str]) -> Optional[RunPR]:
+    if user_response is None:
+        return None
+    for match in GITHUB_PR_PATTERN.finditer(user_response):
+        pr = _run_pr_from_url(match.group(0))
         if pr is not None:
             return pr
     return None

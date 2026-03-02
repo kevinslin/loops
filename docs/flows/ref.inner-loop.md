@@ -212,7 +212,8 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
   - Streams stdout/stderr into `agent.log` and appends the same output to `run.log`.
   - Extracts session id and trailing `<state>...</state>` marker from output when the final line is marker-only (legacy `</>` close tag is also accepted for compatibility).
   - For initial `RUNNING` turns (no PR yet), reads deterministic PR artifact `${LOOPS_RUN_DIR}/push-pr.url` instead of parsing PR URLs from Codex stdout.
-  - Sets `needs_user_input=true` on non-zero exits, on trailing `NEEDS_INPUT` state markers, or when deterministic PR artifact discovery fails on successful initial `RUNNING` turns.
+  - If artifact discovery fails on initial `RUNNING` turns, can recover from a PR URL present in handoff `user_response`; otherwise sets `needs_user_input=true` with artifact-path context.
+  - Sets `needs_user_input=true` on non-zero exits or on trailing `NEEDS_INPUT` state markers.
 
 - Review polling behavior (`loops/inner_loop.py:767`):
   - Loads comment-approval settings once per run from `inner_loop_runtime_config.json` and compiles approval pattern with safe fallback.
@@ -308,7 +309,7 @@ Key logs and emit sites:
 ## FAQ
 
 Q: Why can a successful Codex turn still transition to `NEEDS_INPUT`?
-A: If exit code is zero but no PR is detected in output, the loop requests manual guidance (`loops/inner_loop.py:647`).
+A: In initial `RUNNING` turns where `run.json.pr` is still missing, if `${LOOPS_RUN_DIR}/push-pr.url` is missing/invalid and user input does not include a usable PR URL, the loop requests manual guidance.
 
 Q: Why does review feedback not always re-trigger Codex?
 A: The loop resumes Codex only for new feedback events (`latest_review_submitted_at > review_addressed_at`): new `changes_requested` reviews, or new open-state feedback where the newest timestamp between `COMMENTED` PR review events and plain PR discussion comments has advanced. Duplicate events with unchanged timestamps are skipped.

@@ -75,8 +75,8 @@ Current PR discovery is partly heuristic. `_run_codex_turn(...)` currently calls
 ### Proposed Approach
 Introduce a deterministic PR artifact contract for initial PR creation:
 - `push-pr.py` handles PR body generation + PR creation and writes the resulting PR URL to `${LOOPS_RUN_DIR}/push-pr.url`.
-- `_run_codex_turn(...)` reads that artifact only for eligible `RUNNING` turns with clean exit and no `NEEDS_INPUT` request.
-- If artifact is absent/invalid, inner loop transitions to `NEEDS_INPUT` with explicit operator guidance.
+- `_run_codex_turn(...)` reads that artifact only for eligible `RUNNING` turns with clean exit, no `NEEDS_INPUT` request, and no existing `run.json.pr`.
+- If artifact is absent/invalid, inner loop transitions to `NEEDS_INPUT` with explicit operator guidance; a later turn can recover when handoff user input includes a valid PR URL.
 
 ### Integration Points / Touchpoints
 - `scripts/push-pr.py` (new)
@@ -102,13 +102,14 @@ Introduce a deterministic PR artifact contract for initial PR creation:
 ### Important Implementation Notes
 - Gating rule implementation should use the effective loop state entering `_run_codex_turn(...)` plus post-turn signals (`exit_code`, trailing state marker) to avoid false positives.
 - Run-scoped PR artifact file should be cleared/overwritten deterministically per initial push attempt to avoid stale URL reuse.
-- Inner-loop invocation contract for `push-pr.py` is via the `trigger:push-pr` shortcut during a `RUNNING` Codex turn. `loops/inner_loop.py` does not invoke the script directly.
-- `trigger:push-pr` must invoke the script with an absolute path derived from `LOOPS_RUN_DIR`:
+- Inner-loop prompt contract for initial PR creation requires direct invocation of `push-pr.py` during `RUNNING` turns (not a trigger indirection). `loops/inner_loop.py` does not invoke the script directly.
+- Initial PR command sequence must invoke the script with an absolute path derived from `LOOPS_RUN_DIR`:
   ```bash
   REPO_ROOT="$(git -C "${LOOPS_RUN_DIR:?LOOPS_RUN_DIR is required}" rev-parse --show-toplevel)"
   python3 "$REPO_ROOT/scripts/push-pr.py" "$PR_TITLE" "$PR_BODY_FILE"
   ```
 - `push-pr.py` must fail fast with a clear error when `LOOPS_RUN_DIR` is missing, because `${LOOPS_RUN_DIR}/push-pr.url` is part of the deterministic discovery contract.
+- `push-pr.py` should resolve repo root from `LOOPS_RUN_DIR` and run `git`/`gh` subprocesses with explicit repository `cwd`.
 
 ---
 
@@ -158,6 +159,7 @@ Introduce a deterministic PR artifact contract for initial PR creation:
 Integration tests:
 - `RUNNING` + clean exit + no user-input marker + artifact PR URL => `run.json.pr.url` populated deterministically.
 - `RUNNING` + clean exit + no user-input marker + missing artifact => `NEEDS_INPUT` with message/context indicating PR URL not found.
+- `RUNNING` + clean exit + missing artifact + user handoff response that includes PR URL => `run.json.pr.url` recovered from user input without additional artifact writes.
 - `RUNNING` + trailing `<state>NEEDS_INPUT</state>` => does not enforce PR discovery contract for that turn.
 - review-feedback turn does not attempt initial deterministic PR discovery.
 
@@ -203,8 +205,7 @@ Manual validation:
 
 ## Outputs
 
-- PR created from this spec: Not started.
-- PR created from this spec: Not started (implementation complete locally; no PR opened in this session).
+- PR created from this spec: https://github.com/kevinslin/loops/pull/70
 
 ## Manual Notes 
 
@@ -215,3 +216,4 @@ Manual validation:
 - 2026-03-01: Updated plan per review decisions: use `trigger:fix-pr`, remove fallback path, and pin artifact contract to `${LOOPS_RUN_DIR}/push-pr.url`. (019cab67-3061-7ce1-81c1-e30f80798fb0)
 - 2026-03-01: Added concrete inner-loop invocation detail for `push-pr.py` (absolute path resolution from `LOOPS_RUN_DIR` via `trigger:push-pr`). (019cab67-3061-7ce1-81c1-e30f80798fb0)
 - 2026-03-01: Implemented deterministic initial PR discovery (`push-pr.url`), added `scripts/push-pr.py`, updated shortcut instructions, and landed tests/docs updates. (019cab67-3061-7ce1-81c1-e30f80798fb0)
+- 2026-03-01: Addressed review follow-ups: force active `LOOPS_RUN_DIR`, harden artifact read failures, add handoff PR URL recovery path, and run git/gh subprocesses from resolved repo root cwd. (019cab67-3061-7ce1-81c1-e30f80798fb0)

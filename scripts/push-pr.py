@@ -38,28 +38,44 @@ def _require_loops_run_dir() -> Path:
     return run_dir
 
 
-def _resolve_head_branch() -> str:
-    branch_lookup = _run_command(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+def _resolve_repo_root(run_dir: Path) -> Path:
+    repo_lookup = _run_command(["git", "rev-parse", "--show-toplevel"], cwd=run_dir)
+    if repo_lookup.returncode != 0:
+        raise RuntimeError("Unable to determine repository root from LOOPS_RUN_DIR")
+    repo_root_raw = repo_lookup.stdout.strip()
+    if not repo_root_raw:
+        raise RuntimeError("Unable to determine repository root from LOOPS_RUN_DIR")
+    return Path(repo_root_raw).expanduser().resolve()
+
+
+def _resolve_head_branch(repo_root: Path) -> str:
+    branch_lookup = _run_command(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=repo_root,
+    )
     if branch_lookup.returncode != 0:
         return "unknown-branch"
     branch = branch_lookup.stdout.strip()
     return branch or "unknown-branch"
 
 
-def _collect_commit_summaries(base_branch: str) -> list[str]:
+def _collect_commit_summaries(base_branch: str, *, repo_root: Path) -> list[str]:
     primary_range = f"origin/{base_branch}..HEAD"
-    primary = _run_command(["git", "log", "--format=%s", "--reverse", primary_range])
+    primary = _run_command(
+        ["git", "log", "--format=%s", "--reverse", primary_range],
+        cwd=repo_root,
+    )
     lines = [line.strip() for line in primary.stdout.splitlines() if line.strip()]
     if primary.returncode == 0 and lines:
         return lines
-    fallback = _run_command(["git", "log", "--format=%s", "-n", "5"])
+    fallback = _run_command(["git", "log", "--format=%s", "-n", "5"], cwd=repo_root)
     fallback_lines = [line.strip() for line in fallback.stdout.splitlines() if line.strip()]
     return fallback_lines
 
 
-def _render_pr_body(*, pr_title: str, base_branch: str) -> str:
-    head_branch = _resolve_head_branch()
-    commit_summaries = _collect_commit_summaries(base_branch)
+def _render_pr_body(*, pr_title: str, base_branch: str, repo_root: Path) -> str:
+    head_branch = _resolve_head_branch(repo_root)
+    commit_summaries = _collect_commit_summaries(base_branch, repo_root=repo_root)
     lines: list[str] = [
         pr_title,
         "",
@@ -84,32 +100,51 @@ def _render_pr_body(*, pr_title: str, base_branch: str) -> str:
     return "\n".join(lines)
 
 
-def _write_body_template(path: Path, *, pr_title: str, base_branch: str) -> None:
+def _write_body_template(
+    path: Path,
+    *,
+    pr_title: str,
+    base_branch: str,
+    repo_root: Path,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    body = _render_pr_body(pr_title=pr_title, base_branch=base_branch)
+    body = _render_pr_body(
+        pr_title=pr_title,
+        base_branch=base_branch,
+        repo_root=repo_root,
+    )
     path.write_text(body, encoding="utf-8")
 
 
-def _run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
+def _run_command(
+    command: list[str],
+    *,
+    cwd: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
         check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        cwd=str(cwd) if cwd is not None else None,
     )
 
 
-def _resolve_base_branch() -> str:
+def _resolve_base_branch(repo_root: Path) -> str:
     base_branch = ""
     gh_lookup = _run_command(
-        ["gh", "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"]
+        ["gh", "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"],
+        cwd=repo_root,
     )
     if gh_lookup.returncode == 0:
         base_branch = gh_lookup.stdout.strip()
 
     if not base_branch:
-        symbolic_ref = _run_command(["git", "symbolic-ref", "refs/remotes/origin/HEAD"])
+        symbolic_ref = _run_command(
+            ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+            cwd=repo_root,
+        )
         if symbolic_ref.returncode == 0:
             base_branch = symbolic_ref.stdout.strip()
             prefix = "refs/remotes/origin/"
@@ -121,7 +156,7 @@ def _resolve_base_branch() -> str:
     return base_branch
 
 
-def _create_pr(*, title: str, body_file: Path, base_branch: str) -> str:
+def _create_pr(*, title: str, body_file: Path, base_branch: str, repo_root: Path) -> str:
     created = _run_command(
         [
             "gh",
@@ -133,7 +168,8 @@ def _create_pr(*, title: str, body_file: Path, base_branch: str) -> str:
             title,
             "--body-file",
             str(body_file),
-        ]
+        ],
+        cwd=repo_root,
     )
     if created.returncode != 0:
         raise RuntimeError(
@@ -160,18 +196,21 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args = _parse_args(sys.argv[1:] if argv is None else argv)
         run_dir = _require_loops_run_dir()
+        repo_root = _resolve_repo_root(run_dir)
         body_file = Path(args.pr_body_file).expanduser()
 
-        base_branch = _resolve_base_branch()
+        base_branch = _resolve_base_branch(repo_root)
         _write_body_template(
             body_file,
             pr_title=args.pr_title,
             base_branch=base_branch,
+            repo_root=repo_root,
         )
         pr_url = _create_pr(
             title=args.pr_title,
             body_file=body_file,
             base_branch=base_branch,
+            repo_root=repo_root,
         )
         artifact_path = _write_pr_url_artifact(run_dir, pr_url)
 
