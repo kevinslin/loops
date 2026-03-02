@@ -251,7 +251,10 @@ Behavior summary:
 - Streams Codex/agent output to `agent.log`.
 - If run-scoped runtime config has `stream_logs_stdout=true` (written by outer loop in `sync_mode=true`), also mirrors `run.log` lines to stdout.
 - Uses `CODEX_CMD` from run-scoped runtime config when present; if absent there, it falls back to process `CODEX_CMD`. Default command is `codex exec --yolo`.
+- Always sets `LOOPS_RUN_DIR` in the Codex subprocess env to the active run directory (even for direct/manual `loops inner-loop` runs).
 - Polls PR state with `gh pr view` when a PR is present.
+- For the initial PR, Loops expects the initial push sequence to run `scripts/push-pr.py` and write `${LOOPS_RUN_DIR}/push-pr.url`; after a successful `RUNNING` turn, inner loop reads that artifact only when `run.json.pr` is still missing, then populates `run.json.pr`.
+- If `${LOOPS_RUN_DIR}/push-pr.url` is missing or invalid when `run.json.pr` is missing after a successful initial `RUNNING` turn, inner loop forces `NEEDS_INPUT` and includes the artifact path in `needs_user_input_payload.context`.
 - In review polling, Loops treats a PR as approved if `reviewDecision=APPROVED` or if a matching approval comment from `task_provider_config.approval_comment_usernames` is newer than the latest `CHANGES_REQUESTED` review.
 - If `task_provider_config.allowlist` is configured, review polling filters PR comments/reviews to those actors before deriving feedback and review-status signals.
 - Selects handoff behavior from run-scoped runtime config (or `LOOPS_HANDOFF_HANDLER` for direct/manual runs):
@@ -271,6 +274,7 @@ Direct module equivalents still exist:
 - `GITHUB_TOKEN` or `GH_TOKEN`: required for GitHub Projects provider startup checks (`GH_TOKEN` is accepted as alias fallback).
 - `CODEX_CMD`: command used for Codex execution fallback when run-scoped runtime config does not set it. Default: `codex exec --yolo`.
 - `LOOPS_RUN_DIR`: run directory for `loops.inner_loop` when `--run-dir` is not passed.
+- `LOOPS_RUN_DIR` is also required by `scripts/push-pr.py`, which writes deterministic PR URL discovery artifact `${LOOPS_RUN_DIR}/push-pr.url`.
 - `LOOPS_PROMPT_FILE` / `CODEX_PROMPT_FILE`: optional base prompt file fallback when run-scoped runtime config does not set one.
 - `LOOPS_HANDOFF_HANDLER`: handoff strategy fallback for direct/manual inner-loop runs (`stdin_handler` or `gh_comment_handler`).
 - `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`: legacy fallback metadata used only when `run.json` is missing during `loops inner-loop --reset`.

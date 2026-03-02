@@ -1,5 +1,6 @@
 *-progress.md
 *-learnings.md
+.agents/
 __pycache__/
 *.pyc
 .env
