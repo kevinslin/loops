@@ -772,7 +772,13 @@ def test_run_outer_loop_task_url_implies_run_once_and_force(
         inner_loop=None,
     )
     captured: dict[str, object] = {}
-    provider = object()
+
+    class ProviderStub:
+        approval_comment_usernames = ("Maintainer", "review-bot", "maintainer")
+        approval_comment_pattern = r"^\s*/shipit\b"
+        review_actor_allowlist = ("Reviewer", "review-bot", "reviewer")
+
+    provider = ProviderStub()
     launcher = object()
 
     class FakeRunner:
@@ -848,9 +854,9 @@ def test_run_outer_loop_task_url_implies_run_once_and_force(
     assert captured["inner_loop_launcher"] is launcher
     assert captured["run_once_limit"] == 7
     assert captured["run_once_task_url"] == "https://github.com/acme/api/issues/9"
-    assert captured["approval_comment_usernames"] == ()
-    assert captured["approval_comment_pattern"] == r"^\s*/approve\b"
-    assert captured["review_actor_usernames"] == ()
+    assert captured["approval_comment_usernames"] == ("maintainer", "review-bot")
+    assert captured["approval_comment_pattern"] == r"^\s*/shipit\b"
+    assert captured["review_actor_usernames"] == ("reviewer", "review-bot")
     assert "run_forever_limit" not in captured
 
 
