@@ -299,6 +299,14 @@ Run live integration harness (opt-in):
 LOOPS_INTEG_LIVE=1 python -m pytest tests/integ -k outer_loop_pickup_live -s
 ```
 
+Run full live end-to-end lifecycle harness (opt-in, manual-only):
+
+```sh
+make test-integ-end2end
+# equivalent:
+LOOPS_INTEG_END2END=1 python -m pytest tests/integ -k end2end_live -s
+```
+
 Live integration prerequisites:
 - `gh` in `PATH` and authenticated with a token that can mutate the target project/repo.
 - `codex` in `PATH` and authenticated.
@@ -307,4 +315,7 @@ Live integration prerequisites:
 Notes:
 - The live harness currently targets `https://github.com/users/kevinslin/projects/6/views/1`.
 - Test issues are created in `kevinslin/loops-integ` and are cleaned up at test end.
+- The end-to-end harness also clones/syncs `.integ/loops-integ`, runs `loops run --run-once` with a 15-minute timeout, reverts merged changes in `kevinslin/loops-integ`, and runs `loops clean` for run-archive hygiene.
+- End-to-end runs require push access to `kevinslin/loops-integ`.
+- `make test-integ-end2end` is not part of the default `make test` suite.
 - Pytest startup enforces this repository root at `sys.path[0]` (`tests/conftest.py`) so imports resolve to the active worktree checkout.

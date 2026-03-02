@@ -567,6 +567,13 @@ Practical invariant: if this skill contract changes, update `loops/inner_loop.py
 - `python -m loops clean` deletes empty runs and archives completed runs.
 - Direct module callers still work (`python -m loops.inner_loop`).
 
+### Live integration harness targets
+
+- `make test-integ-live` (or `LOOPS_INTEG_LIVE=1 ... -k outer_loop_pickup_live`) validates deterministic ready-task pickup and Codex invocation.
+- `make test-integ-end2end` (or `LOOPS_INTEG_END2END=1 ... -k end2end_live`) validates full lifecycle on `kevinslin/loops-integ`:
+  setup (`.integ/loops-integ` clone/sync + `loops init`), one ready task dispatch, PR approval-to-merge progression, board completion status, teardown revert push, and `loops clean` archive hygiene.
+- Both live targets are explicit opt-in and are intentionally excluded from default unit-test execution.
+
 ### Prompt catalog
 
 The inner loop builds prompts in `loops/inner_loop.py` from a shared base template plus a state-specific suffix.
