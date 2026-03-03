@@ -336,17 +336,30 @@ def read_run_record(path: str | Path) -> RunRecord:
     updated_at = payload.get("updated_at")
     if not isinstance(updated_at, str) or not updated_at.strip():
         raise TypeError('payload["updated_at"] must be a non-empty string')
+    pr_payload = payload.get("pr")
+    if pr_payload is not None and not isinstance(pr_payload, Mapping):
+        raise TypeError('payload["pr"] must be an object or null')
+    codex_session_payload = payload.get("codex_session")
+    if codex_session_payload is not None and not isinstance(
+        codex_session_payload, Mapping
+    ):
+        raise TypeError('payload["codex_session"] must be an object or null')
+    auto_approve_payload = payload.get("auto_approve")
+    if auto_approve_payload is not None and not isinstance(
+        auto_approve_payload, Mapping
+    ):
+        raise TypeError('payload["auto_approve"] must be an object or null')
     return RunRecord(
         task=Task.from_dict(task_payload),
-        pr=RunPR.from_dict(payload["pr"]) if payload.get("pr") else None,
+        pr=RunPR.from_dict(pr_payload) if pr_payload is not None else None,
         codex_session=(
-            CodexSession.from_dict(payload["codex_session"])
-            if payload.get("codex_session")
+            CodexSession.from_dict(codex_session_payload)
+            if codex_session_payload is not None
             else None
         ),
         auto_approve=(
-            RunAutoApprove.from_dict(payload["auto_approve"])
-            if payload.get("auto_approve")
+            RunAutoApprove.from_dict(auto_approve_payload)
+            if auto_approve_payload is not None
             else None
         ),
         needs_user_input=needs_user_input,

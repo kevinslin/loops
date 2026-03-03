@@ -29,14 +29,13 @@ How does the inner loop execute a single run directory end-to-end, derive state 
 ## Entry points
 
 - CLI command `python -m loops inner-loop` resolves run directory and calls `run_inner_loop(...)` (`loops/core/cli.py`).
-- Module entry `python -m loops.inner_loop` resolves run directory from `LOOPS_RUN_DIR` and calls `run_inner_loop(...)`.
 - Outer-loop launched process invokes the same inner-loop command with `LOOPS_RUN_DIR`; run-scoped settings are loaded from `inner_loop_runtime_config.json` (`loops/core/outer_loop.py` + `loops/core/inner_loop.py`).
 
 ## Call path
 
 ### Runtime path
 
-#### Sudocode (inner-loop state machine)
+#### Pseudocode (inner-loop state machine)
 
 Source: `loops/core/inner_loop.py`, `loops/state/run_record.py`, `loops/utils/logging.py`
 

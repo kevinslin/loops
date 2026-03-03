@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from loops.logging_utils import STREAM_LOGS_STDOUT_ENV, append_log
+from loops.utils.logging import STREAM_LOGS_STDOUT_ENV, append_log
 
 
 def test_append_log_writes_timestamped_lines(tmp_path: Path) -> None:

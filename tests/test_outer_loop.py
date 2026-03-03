@@ -8,15 +8,15 @@ from pathlib import Path
 
 import pytest
 
-from loops.approval_config import (
+from loops.state.approval_config import (
     DEFAULT_APPROVAL_COMMENT_PATTERN,
 )
-from loops.handoff_handlers import HANDOFF_HANDLER_GH_COMMENT
-from loops.inner_loop_runtime_config import (
+from loops.core.handoff_handlers import HANDOFF_HANDLER_GH_COMMENT
+from loops.state.inner_loop_runtime_config import (
     INNER_LOOP_RUNTIME_CONFIG_FILE,
     read_inner_loop_runtime_config,
 )
-from loops.outer_loop import (
+from loops.core.outer_loop import (
     InnerLoopCommandConfig,
     LATEST_LOOPS_CONFIG_VERSION,
     LoopsConfig,
@@ -29,8 +29,8 @@ from loops.outer_loop import (
     load_config,
     read_outer_state,
 )
-from loops.providers.github_projects_v2 import GithubProjectsV2TaskProvider
-from loops.run_record import Task, read_run_record
+from loops.task_providers.github_projects_v2 import GithubProjectsV2TaskProvider
+from loops.state.run_record import Task, read_run_record
 
 
 class StubProvider:
@@ -77,8 +77,8 @@ def list_run_dirs(loops_root: Path) -> list[Path]:
     [
         (["loops", "inner-loop"], True),
         (["uv", "run", "loops", "inner-loop"], True),
-        ([sys.executable, "-m", "loops.inner_loop"], True),
-        (["uv", "run", sys.executable, "-X", "dev", "-m", "loops.inner_loop"], True),
+        ([sys.executable, "-m", "loops", "inner-loop"], True),
+        (["uv", "run", sys.executable, "-X", "dev", "-m", "loops", "inner-loop"], True),
         (["python", "-m", "loops.other"], False),
         (["echo", "hello"], False),
     ],
@@ -331,7 +331,7 @@ def test_run_once_logs_and_persists_checkout_mode_and_starting_commit(
         inner_loop_launcher=lambda _run_dir, _task: None,
     )
     monkeypatch.setattr(
-        "loops.outer_loop._resolve_starting_commit",
+        "loops.core.outer_loop._resolve_starting_commit",
         lambda _loops_root: "abc123",
     )
 
@@ -737,8 +737,8 @@ def test_build_inner_loop_launcher_sync_mode_uses_subprocess_run(
     def fail_popen(*_args, **_kwargs):
         raise AssertionError("subprocess.Popen should not be used in sync_mode")
 
-    monkeypatch.setattr("loops.outer_loop.subprocess.run", fake_run)
-    monkeypatch.setattr("loops.outer_loop.subprocess.Popen", fail_popen)
+    monkeypatch.setattr("loops.core.outer_loop.subprocess.run", fake_run)
+    monkeypatch.setattr("loops.core.outer_loop.subprocess.Popen", fail_popen)
     monkeypatch.delenv("LOOPS_TASK_ID", raising=False)
     monkeypatch.delenv("LOOPS_TASK_TITLE", raising=False)
     monkeypatch.delenv("LOOPS_TASK_URL", raising=False)
@@ -791,7 +791,7 @@ def test_build_inner_loop_launcher_sync_mode_interrupt_raises_typed_error(
     def fake_run(*_args, **_kwargs):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr("loops.outer_loop.subprocess.run", fake_run)
+    monkeypatch.setattr("loops.core.outer_loop.subprocess.run", fake_run)
 
     with pytest.raises(SyncModeInterruptedError) as exc_info:
         launcher(run_dir, task)
@@ -827,7 +827,7 @@ def test_build_inner_loop_launcher_writes_runtime_env_to_run_config(
         captured["env"] = env
         return subprocess.CompletedProcess(command, 0)
 
-    monkeypatch.setattr("loops.outer_loop.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("loops.core.outer_loop.subprocess.Popen", fake_popen)
     monkeypatch.delenv("CODEX_CMD", raising=False)
     monkeypatch.delenv("CUSTOM_VAR", raising=False)
 
@@ -859,7 +859,7 @@ def test_build_inner_loop_launcher_does_not_inject_runtime_env_for_loops_inner_l
         task_provider_config={"url": "https://github.com/orgs/acme/projects/1"},
         loop_config=OuterLoopConfig(sync_mode=False),
         inner_loop=InnerLoopCommandConfig(
-            command=[sys.executable, "-m", "loops.inner_loop"],
+            command=[sys.executable, "-m", "loops", "inner-loop"],
             env={"CODEX_CMD": "codex exec --json", "CUSTOM_VAR": "present"},
             append_task_url=False,
         ),
@@ -875,7 +875,7 @@ def test_build_inner_loop_launcher_does_not_inject_runtime_env_for_loops_inner_l
         captured["env"] = env
         return subprocess.CompletedProcess(command, 0)
 
-    monkeypatch.setattr("loops.outer_loop.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("loops.core.outer_loop.subprocess.Popen", fake_popen)
     monkeypatch.delenv("CODEX_CMD", raising=False)
     monkeypatch.delenv("CUSTOM_VAR", raising=False)
 
@@ -955,7 +955,7 @@ def test_build_inner_loop_launcher_writes_custom_comment_approval_settings(
         del cwd, stdout, stderr, env
         return subprocess.CompletedProcess(command, 0)
 
-    monkeypatch.setattr("loops.outer_loop.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("loops.core.outer_loop.subprocess.Popen", fake_popen)
     launcher(run_dir, task)
 
     runtime_config = read_inner_loop_runtime_config(run_dir)
@@ -988,7 +988,7 @@ def test_build_inner_loop_launcher_writes_default_comment_approval_settings(
         del cwd, stdout, stderr, env
         return subprocess.CompletedProcess(command, 0)
 
-    monkeypatch.setattr("loops.outer_loop.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("loops.core.outer_loop.subprocess.Popen", fake_popen)
     launcher(run_dir, task)
 
     runtime_config = read_inner_loop_runtime_config(run_dir)
@@ -1024,7 +1024,7 @@ def test_build_inner_loop_launcher_writes_review_actor_allowlist_to_runtime_conf
         del cwd, stdout, stderr, env
         return subprocess.CompletedProcess(command, 0)
 
-    monkeypatch.setattr("loops.outer_loop.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("loops.core.outer_loop.subprocess.Popen", fake_popen)
     launcher(run_dir, task)
 
     runtime_config = read_inner_loop_runtime_config(run_dir)

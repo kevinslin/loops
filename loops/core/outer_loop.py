@@ -666,12 +666,9 @@ def _is_loops_inner_loop_command(command: list[str]) -> bool:
             if command[index + 1].casefold() == "inner-loop":
                 return True
         if item == "-m" and index + 1 < len(command):
-            if command[index + 1] == "loops.inner_loop":
-                return True
-        if name == "loops.inner_loop":
-            return True
-    if " ".join(command).strip().casefold().endswith("loops.inner_loop"):
-        return True
+            if command[index + 1].casefold() == "loops" and index + 2 < len(command):
+                if command[index + 2].casefold() == "inner-loop":
+                    return True
     return False
 
 

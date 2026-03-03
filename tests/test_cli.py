@@ -9,15 +9,15 @@ from pathlib import Path
 import click
 from click.testing import CliRunner
 import pytest
-import loops.cli as cli_module
+import loops.core.cli as cli_module
 
 from loops.__main__ import _normalize_argv, entrypoint
-from loops.cli import main
-from loops.inner_loop_runtime_config import (
+from loops.core.cli import main
+from loops.state.inner_loop_runtime_config import (
     InnerLoopRuntimeConfig,
     write_inner_loop_runtime_config,
 )
-from loops.outer_loop import (
+from loops.core.outer_loop import (
     LATEST_LOOPS_CONFIG_VERSION,
     LoopsConfig,
     OuterLoopConfig,
@@ -25,8 +25,8 @@ from loops.outer_loop import (
     build_default_loop_config_payload,
     load_config,
 )
-from loops.providers.github_projects_v2 import build_default_provider_config_payload
-from loops.run_record import RunPR, RunRecord, Task, read_run_record, write_run_record
+from loops.task_providers.github_projects_v2 import build_default_provider_config_payload
+from loops.state.run_record import RunPR, RunRecord, Task, read_run_record, write_run_record
 
 
 def test_init_creates_default_loops_structure(tmp_path: Path) -> None:
@@ -60,7 +60,8 @@ def test_init_creates_default_loops_structure(tmp_path: Path) -> None:
     assert config_payload["inner_loop"]["command"] == [
         sys.executable,
         "-m",
-        "loops.inner_loop",
+        "loops",
+        "inner-loop",
     ]
 
 
@@ -485,7 +486,7 @@ def test_removed_signal_command_errors_explicitly() -> None:
     assert "No such command 'signal'" in result.output
 
 
-def test_python_module_loops_cli_is_explicitly_unsupported() -> None:
+def test_python_module_loops_cli_is_not_available() -> None:
     completed = subprocess.run(
         [sys.executable, "-m", "loops.cli"],
         capture_output=True,
@@ -494,7 +495,7 @@ def test_python_module_loops_cli_is_explicitly_unsupported() -> None:
     )
 
     assert completed.returncode != 0
-    assert "python -m loops.cli" in completed.stderr
+    assert "No module named loops.cli" in completed.stderr
 
 
 def test_inner_loop_reset_creates_initial_run_record_when_missing(
@@ -939,7 +940,7 @@ def test_run_outer_loop_task_url_implies_run_once_and_force(
         "url": "https://github.com/orgs/default/projects/1",
         "status_field": "Status",
     }
-    assert captured["inner_loop_command"] == [sys.executable, "-m", "loops.inner_loop"]
+    assert captured["inner_loop_command"] == [sys.executable, "-m", "loops", "inner-loop"]
     loop_config = captured["config_arg"]
     assert isinstance(loop_config, OuterLoopConfig)
     assert loop_config.force is True

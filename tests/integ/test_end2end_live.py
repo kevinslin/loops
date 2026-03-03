@@ -11,7 +11,7 @@ import time
 
 import pytest
 
-from loops.outer_loop import LATEST_LOOPS_CONFIG_VERSION
+from loops.core.outer_loop import LATEST_LOOPS_CONFIG_VERSION
 from tests.integ.github_setup import (
     LOOPS_INTEG_PROJECT_URL,
     LOOPS_INTEG_REPO,
@@ -209,7 +209,7 @@ def write_end2end_config(*, config_path: Path, run_label: str, project_url: str)
             "auto_approve_enabled": True,
         },
         "inner_loop": {
-            "command": [sys.executable, "-m", "loops.inner_loop"],
+            "command": [sys.executable, "-m", "loops", "inner-loop"],
             "working_dir": str(INTEG_REPO_DIR),
             "env": {
                 "PYTHONPATH": str(REPO_ROOT),
@@ -433,6 +433,8 @@ def _read_run_task_url(run_json_path: Path) -> str | None:
     try:
         payload = json.loads(run_json_path.read_text())
     except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
         return None
     task_payload = payload.get("task")
     if not isinstance(task_payload, dict):

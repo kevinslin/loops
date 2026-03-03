@@ -1,7 +1,7 @@
 import pytest
 
-from loops.approval_config import DEFAULT_APPROVAL_COMMENT_PATTERN
-from loops.providers.github_projects_v2 import (
+from loops.state.approval_config import DEFAULT_APPROVAL_COMMENT_PATTERN
+from loops.task_providers.github_projects_v2 import (
     GithubProjectsV2TaskProvider,
     GithubProjectsV2TaskProviderConfig,
     _extract_status_value,
@@ -226,7 +226,7 @@ def test_poll_maps_tasks(monkeypatch) -> None:
         assert github_token == "token"
         return response
 
-    from loops.providers import github_projects_v2
+    from loops.task_providers import github_projects_v2
 
     monkeypatch.setattr(github_projects_v2, "_run_gh_graphql", fake_run)
 
@@ -258,7 +258,7 @@ def test_poll_handles_empty_results(monkeypatch) -> None:
     def fake_run(*, query, variables, github_token, gh_bin):
         return response
 
-    from loops.providers import github_projects_v2
+    from loops.task_providers import github_projects_v2
 
     monkeypatch.setattr(github_projects_v2, "_run_gh_graphql", fake_run)
 
@@ -322,7 +322,7 @@ def test_poll_filters_by_repository(monkeypatch) -> None:
     def fake_run(*, query, variables, github_token, gh_bin):
         return response
 
-    from loops.providers import github_projects_v2
+    from loops.task_providers import github_projects_v2
 
     monkeypatch.setattr(github_projects_v2, "_run_gh_graphql", fake_run)
 
@@ -389,7 +389,7 @@ def test_poll_filters_by_tag(monkeypatch) -> None:
     def fake_run(*, query, variables, github_token, gh_bin):
         return response
 
-    from loops.providers import github_projects_v2
+    from loops.task_providers import github_projects_v2
 
     monkeypatch.setattr(github_projects_v2, "_run_gh_graphql", fake_run)
 
@@ -461,7 +461,7 @@ def test_poll_filters_require_all_tags(monkeypatch) -> None:
     def fake_run(*, query, variables, github_token, gh_bin):
         return response
 
-    from loops.providers import github_projects_v2
+    from loops.task_providers import github_projects_v2
 
     monkeypatch.setattr(github_projects_v2, "_run_gh_graphql", fake_run)
 
@@ -545,7 +545,7 @@ def test_poll_paginates(monkeypatch) -> None:
             return second_page
         raise AssertionError("Unexpected pagination cursor")
 
-    from loops.providers import github_projects_v2
+    from loops.task_providers import github_projects_v2
 
     monkeypatch.setattr(github_projects_v2, "_run_gh_graphql", fake_run)
 
@@ -631,7 +631,7 @@ def test_poll_filtered_limit_counts_only_matched_items(monkeypatch) -> None:
             return second_page
         raise AssertionError("Unexpected pagination cursor")
 
-    from loops.providers import github_projects_v2
+    from loops.task_providers import github_projects_v2
 
     monkeypatch.setattr(github_projects_v2, "_run_gh_graphql", fake_run)
 
@@ -716,7 +716,7 @@ def test_poll_orders_oldest_first_before_limit(monkeypatch) -> None:
             return second_page
         raise AssertionError("Unexpected pagination cursor")
 
-    from loops.providers import github_projects_v2
+    from loops.task_providers import github_projects_v2
 
     monkeypatch.setattr(github_projects_v2, "_run_gh_graphql", fake_run)
 
@@ -748,7 +748,7 @@ def test_poll_missing_cursor_raises(monkeypatch) -> None:
     def fake_run(*, query, variables, github_token, gh_bin):
         return response
 
-    from loops.providers import github_projects_v2
+    from loops.task_providers import github_projects_v2
 
     monkeypatch.setattr(github_projects_v2, "_run_gh_graphql", fake_run)
 
@@ -801,7 +801,7 @@ def test_run_gh_graphql_uses_typed_fields_for_numeric_variables(monkeypatch) -> 
         return Result()
 
     monkeypatch.setattr(
-        "loops.providers.github_projects_v2.subprocess.run",
+        "loops.task_providers.github_projects_v2.subprocess.run",
         fake_subprocess_run,
     )
 

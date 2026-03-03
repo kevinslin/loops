@@ -417,13 +417,29 @@ def _extract_items(
     payload: dict[str, Any],
     owner_type: OwnerType,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    data = payload.get("data") or {}
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return [], {"hasNextPage": False, "endCursor": None}
     owner_key = "organization" if owner_type == "organization" else "user"
-    owner = data.get(owner_key) or {}
-    project = owner.get("projectV2") or {}
-    items = project.get("items") or {}
-    nodes = items.get("nodes") or []
-    page_info = items.get("pageInfo") or {}
+    owner = data.get(owner_key)
+    if not isinstance(owner, dict):
+        return [], {"hasNextPage": False, "endCursor": None}
+    project = owner.get("projectV2")
+    if not isinstance(project, dict):
+        return [], {"hasNextPage": False, "endCursor": None}
+    items = project.get("items")
+    if not isinstance(items, dict):
+        return [], {"hasNextPage": False, "endCursor": None}
+    raw_nodes = items.get("nodes")
+    if isinstance(raw_nodes, list):
+        nodes = [node for node in raw_nodes if isinstance(node, dict)]
+    else:
+        nodes = []
+    raw_page_info = items.get("pageInfo")
+    if isinstance(raw_page_info, dict):
+        page_info = raw_page_info
+    else:
+        page_info = {"hasNextPage": False, "endCursor": None}
     return nodes, page_info
 
 

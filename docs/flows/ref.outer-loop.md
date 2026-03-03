@@ -128,7 +128,7 @@ None identified.
 | `--force` | CLI option | `loops/core/cli.py:57`, override at `loops/core/cli.py:198` | Reprocesses tasks even if previously seen in outer state. |
 | `task_provider_id` / `task_provider_config.*` | Config file fields | `loops/core/outer_loop.py:243`, `loops/core/outer_loop.py:274` | Chooses task provider and provider-specific polling behavior. |
 | `loop_config.*` | Config file fields | `loops/core/outer_loop.py:394` | Controls poll interval, ready filter, sync mode, emit-on-first-run, force, parallel launch behavior, checkout mode (`branch`/`worktree`), and run-scoped inner-loop runtime settings. |
-| `inner_loop.*` | Config file fields | `loops/core/outer_loop.py:44`, `loops/core/outer_loop.py:283` | Defines launch command, cwd, run-scoped runtime env payload, conditional env merge for non-`loops.inner_loop` commands, and URL appending for child processes. |
+| `inner_loop.*` | Config file fields | `loops/core/outer_loop.py:44`, `loops/core/outer_loop.py:283` | Defines launch command, cwd, run-scoped runtime env payload, conditional env merge for custom non-Loops inner-loop commands, and URL appending for child processes. |
 
 ## Flow
 
@@ -164,7 +164,7 @@ function _run_outer_loop(config_path, run_once, limit, force, task_url=None)
     config := replace(
       config,
       inner_loop=InnerLoopCommandConfig(
-        command=[sys.executable, "-m", "loops.inner_loop"],
+        command=[sys.executable, "-m", "loops", "inner-loop"],
         append_task_url=False,
       ),
     )
@@ -280,7 +280,7 @@ class OuterLoopRunner
 - `build_inner_loop_launcher` builds a closure that:
   - Persists run-scoped runtime settings to `inner_loop_runtime_config.json` (handoff handler, auto-approve flag, sync-mode log mirroring flag, and optional `inner_loop.env` payload).
   - Injects `LOOPS_RUN_DIR` into child env for run-dir resolution compatibility.
-  - For non-`loops.inner_loop` commands, merges `inner_loop.env` into child env for backward-compatible custom wrapper execution.
+  - For custom commands that are not `loops inner-loop` (or `python -m loops inner-loop`), merges `inner_loop.env` into child env for wrapper execution.
   - Appends task URL to command when configured (`loops/core/outer_loop.py:307`).
   - Uses `subprocess.run` in `sync_mode=true` (`loops/core/outer_loop.py:310`) or detached `subprocess.Popen` writing to `run.log` (`loops/core/outer_loop.py:319`).
 - Approval-comment settings and provider review-actor allowlist are persisted per run inside `inner_loop_runtime_config.json`, not injected via env.
@@ -404,7 +404,7 @@ A: Loops prints a resume command for the interrupted run directory so you can co
 ## Changelog
 - 2026-03-02: Added `checkout_mode`/`starting_commit` run-materialization semantics and documented schedule-log + `run.json` propagation into inner loop. (019cabf2-f02b-7521-b814-5b0fcafe3d34)
 - 2026-03-01: Documented `run.json.stream_logs_stdout` persistence from outer-loop `sync_mode` during run materialization. (019cab67-3061-7ce1-81c1-e30f80798fb0)
-- 2026-03-01: Replaced launcher env-based inner-loop config transport with run-scoped `inner_loop_runtime_config.json`; outer loop now injects only `LOOPS_RUN_DIR` for `loops.inner_loop` launches while preserving `inner_loop.env` merge for non-`loops.inner_loop` commands. (019caae6-1189-7d83-a9cd-1665818fba36)
+- 2026-03-01: Replaced launcher env-based inner-loop config transport with run-scoped `inner_loop_runtime_config.json`; outer loop now injects only `LOOPS_RUN_DIR` for Loops inner-loop launches while preserving `inner_loop.env` merge for custom non-Loops commands. (019caae6-1189-7d83-a9cd-1665818fba36)
 - 2026-03-01: Renamed outer config schema references to `task_provider_id`/`task_provider_config` (v2) and aligned provider/filter docs accordingly. (019caa8b-0807-7603-a519-4a6be2b8e53c)
 - 2026-03-01: Documented sync-mode `Ctrl+C` resume instructions for interrupted foreground launches. (019caa47-6d09-7cf1-a25a-83245c71f987)
 - 2026-02-28: Removed configurable log timestamp precision; log timestamps are local no-timezone format with fixed fractional precision. (019ca742-f800-78a3-a5f3-11d807a04164)

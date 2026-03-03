@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from loops.run_record import (
+from loops.state.run_record import (
     CodexSession,
     RunAutoApprove,
     RunPR,

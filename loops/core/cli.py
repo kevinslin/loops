@@ -204,7 +204,7 @@ def _build_default_inner_loop_config() -> InnerLoopCommandConfig:
     """Build the default runtime fallback InnerLoopCommandConfig."""
 
     return InnerLoopCommandConfig(
-        command=[sys.executable, "-m", "loops.inner_loop"],
+        command=[sys.executable, "-m", "loops", "inner-loop"],
         append_task_url=False,
     )
 
