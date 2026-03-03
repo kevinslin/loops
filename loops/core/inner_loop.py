@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, cast
 
+from loops.core.hooks import TransitionContext, build_default_hook_executor
+from loops.core.outer_loop import build_provider, load_config
 from loops.state.approval_config import DEFAULT_APPROVAL_COMMENT_PATTERN
 from loops.core.handoff_handlers import (
     DEFAULT_HANDOFF_HANDLER,
@@ -53,9 +55,10 @@ from loops.state.run_record import (
     read_run_record,
     write_run_record,
 )
+from loops.task_providers.base import TaskProvider
 
 PROMPT_TEMPLATE = (
-    "Use dev.do to implement the task and open a PR.\n" 
+    "Implement the task and open a PR.\n"
     "You are running inside the loops test harness. Wait only for review from the "
     "a-review subagent. NEVER wait for human PR "
     "review/comments inside the agent; the harness monitors review activity and "
@@ -68,6 +71,8 @@ PROMPT_TEMPLATE = (
     "<state>WAITING_ON_REVIEW</state> or any later turn.\n"
     "The current inner-loop state is passed via a trailing <state>...</state> tag; "
     "initial state is <state>RUNNING</state>.\n"
+    "Do not update issue/project task status directly; Loops applies deterministic "
+    "status transitions when states change.\n"
     "If you need input from user, print what you need help with and end current conversation "
     "with <state>NEEDS_INPUT</>\n"
     "For the initial PR while state is <state>RUNNING</state>: if there are "
@@ -160,6 +165,7 @@ class ApprovalSignal:
 @dataclass(frozen=True)
 class InnerLoopRuntimeContext:
     run_dir: Path
+    run_id: str
     run_json_path: Path
     run_log: Path
     agent_log: Path
@@ -174,6 +180,7 @@ class InnerLoopRuntimeContext:
     max_idle_polls: int
     non_interactive_default_handoff: bool
     auto_approve_enabled: bool = False
+    task_provider: TaskProvider | None = None
 
 
 @dataclass
@@ -351,6 +358,11 @@ def run_inner_loop(
             environ=runtime_environ,
         )
         initial_run_record = read_run_record(run_json_path)
+        task_provider = _resolve_task_provider_for_run(
+            run_dir=run_dir,
+            task=initial_run_record.task,
+            run_log=run_log,
+        )
         if initial_run_record.stream_logs_stdout != effective_stream_logs_stdout:
             initial_run_record = write_run_record(
                 run_json_path,
@@ -380,6 +392,7 @@ def run_inner_loop(
         )
         runtime = InnerLoopRuntimeContext(
             run_dir=run_dir,
+            run_id=_build_run_id(run_dir),
             run_json_path=run_json_path,
             run_log=run_log,
             agent_log=agent_log,
@@ -394,8 +407,14 @@ def run_inner_loop(
             max_idle_polls=max_idle_polls,
             non_interactive_default_handoff=non_interactive_default_handoff,
             auto_approve_enabled=auto_approve_enabled,
+            task_provider=task_provider,
         )
         control = LoopControlState(backoff_seconds=initial_poll_seconds)
+        hook_logger = lambda message: append_log(run_log, message)
+        hook_executor = build_default_hook_executor(
+            run_dir=run_dir,
+            logger=hook_logger,
+        )
 
         for iteration in range(1, max_iterations + 1):
             run_record = read_run_record(run_json_path)
@@ -411,26 +430,46 @@ def run_inner_loop(
                 backoff_seconds=control.backoff_seconds,
                 idle_polls=control.idle_polls,
             )
+            transition_context = TransitionContext(
+                run_id=runtime.run_id,
+                task_id=run_record.task.id,
+                task_provider=runtime.task_provider,
+                from_state=run_record.last_state,
+                to_state=state,
+                logger=hook_logger,
+            )
+            hook_executor.execute_on_enter(state=state, context=transition_context)
 
-            if state == "DONE":
-                append_log(run_log, "[loops] run state DONE; exiting inner loop")
+            transition: StateHandlerResult | None = None
+            done_record: RunRecord | None = None
+            try:
+                if state == "DONE":
+                    append_log(run_log, "[loops] run state DONE; exiting inner loop")
+                    done_record = run_record
+                else:
+                    transition = _handle_state(
+                        state=state,
+                        run_record=run_record,
+                        runtime=runtime,
+                        control=control,
+                    )
+            finally:
+                hook_executor.execute_on_exit(state=state, context=transition_context)
+
+            if done_record is not None:
                 _log_iteration_exit(
                     run_log,
                     iteration=iteration,
                     next_state=state,
-                    run_record=run_record,
+                    run_record=done_record,
                     action="done_exit",
                     backoff_seconds=control.backoff_seconds,
                     idle_polls=control.idle_polls,
                 )
-                return run_record
+                return done_record
 
-            transition = _handle_state(
-                state=state,
-                run_record=run_record,
-                runtime=runtime,
-                control=control,
-            )
+            if transition is None:
+                raise RuntimeError(f"state handler returned no result for state={state}")
             next_state = _derive_state(
                 transition.run_record,
                 auto_approve_enabled=runtime.auto_approve_enabled,
@@ -898,6 +937,72 @@ def _build_reset_pr(existing_pr: Optional[RunPR]) -> Optional[RunPR]:
         latest_review_submitted_at=None,
         review_addressed_at=None,
     )
+
+
+def _build_run_id(run_dir: Path) -> str:
+    return str(run_dir.resolve())
+
+
+def _resolve_task_provider_for_run(
+    *,
+    run_dir: Path,
+    task: Task,
+    run_log: Path,
+) -> TaskProvider | None:
+    loops_root = _resolve_loops_root_from_run_dir(run_dir)
+    if loops_root is None:
+        append_log(
+            run_log,
+            "[loops] state hooks: provider resolution skipped (missing .loops root)",
+        )
+        return None
+
+    config_path = loops_root / "config.json"
+    if not config_path.exists():
+        append_log(
+            run_log,
+            (
+                "[loops] state hooks: provider resolution skipped "
+                f"(missing config {config_path})"
+            ),
+        )
+        return None
+
+    try:
+        config = load_config(config_path)
+    except Exception as exc:
+        append_log(
+            run_log,
+            f"[loops] state hooks: failed to load config for provider resolution: {exc}",
+        )
+        return None
+
+    if config.task_provider_id != task.provider_id:
+        append_log(
+            run_log,
+            (
+                "[loops] state hooks: provider resolution skipped "
+                f"(task provider_id={task.provider_id!r} "
+                f"config provider_id={config.task_provider_id!r})"
+            ),
+        )
+        return None
+
+    try:
+        return build_provider(config)
+    except Exception as exc:
+        append_log(
+            run_log,
+            f"[loops] state hooks: failed to build provider for status hooks: {exc}",
+        )
+        return None
+
+
+def _resolve_loops_root_from_run_dir(run_dir: Path) -> Path | None:
+    for candidate in (run_dir, *run_dir.parents):
+        if candidate.name == ".loops":
+            return candidate
+    return None
 
 
 def _load_runtime_config(
