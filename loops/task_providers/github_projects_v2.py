@@ -92,7 +92,7 @@ def parse_project_url(url: str) -> ProjectLocator:
             "Project URL must look like https://github.com/orgs/<org>/projects/<number>"
         )
     parts = [part for part in parsed.path.split("/") if part]
-    if len(parts) != 4:
+    if len(parts) < 4:
         raise ValueError(
             "Project URL must look like https://github.com/orgs/<org>/projects/<number>"
         )

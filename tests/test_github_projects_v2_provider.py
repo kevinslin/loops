@@ -76,6 +76,13 @@ def test_parse_project_url_user() -> None:
     assert locator.number == 3
 
 
+def test_parse_project_url_user_with_views_suffix() -> None:
+    locator = parse_project_url("https://github.com/users/octo/projects/3/views/1")
+    assert locator.owner_type == "user"
+    assert locator.login == "octo"
+    assert locator.number == 3
+
+
 def test_parse_project_url_invalid() -> None:
     with pytest.raises(ValueError):
         parse_project_url("https://github.com/acme/projects")
