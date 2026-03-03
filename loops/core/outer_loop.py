@@ -17,34 +17,40 @@ from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import ValidationError
 
-from loops.approval_config import (
+from loops.state.approval_config import (
     DEFAULT_APPROVAL_COMMENT_PATTERN,
     normalize_approval_usernames,
 )
-from loops.handoff_handlers import (
+from loops.core.handoff_handlers import (
     DEFAULT_HANDOFF_HANDLER,
     validate_handoff_handler_name,
     validate_handoff_handler_provider_compatibility,
 )
-from loops.inner_loop_runtime_config import (
+from loops.state.inner_loop_runtime_config import (
     InnerLoopRuntimeConfig,
     write_inner_loop_runtime_config,
 )
-from loops.logging_utils import format_log_timestamp
-from loops.provider_types import LoopsProviderConfig, SecretRequirement
-from loops.providers.github_projects_v2 import (
+from loops.state.constants import (
+    AGENT_LOG_FILE_NAME,
+    CHECKOUT_MODE_BRANCH,
+    CHECKOUT_MODE_WORKTREE,
+    INNER_LOOP_RUNS_DIR_NAME,
+    LATEST_LOOPS_CONFIG_VERSION,
+    OUTER_LOG_FILE_NAME,
+    OUTER_STATE_FILE_NAME,
+    RUN_LOG_FILE_NAME,
+    RUN_RECORD_FILE_NAME,
+    VALID_CHECKOUT_MODES,
+)
+from loops.utils.logging import format_log_timestamp
+from loops.state.provider_types import LoopsProviderConfig, SecretRequirement
+from loops.task_providers.github_projects_v2 import (
     GITHUB_PROJECTS_V2_PROVIDER_ID,
     build_default_provider_config_payload,
 )
-from loops.providers.registry import get_provider_definition
-from loops.run_record import RunRecord, Task, write_run_record
-from loops.task_provider import TaskProvider
-
-INNER_LOOP_RUNS_DIR_NAME = "jobs"
-LATEST_LOOPS_CONFIG_VERSION = 4
-CHECKOUT_MODE_BRANCH = "branch"
-CHECKOUT_MODE_WORKTREE = "worktree"
-VALID_CHECKOUT_MODES = {CHECKOUT_MODE_BRANCH, CHECKOUT_MODE_WORKTREE}
+from loops.task_providers.registry import get_provider_definition
+from loops.state.run_record import RunRecord, Task, write_run_record
+from loops.task_providers.base import TaskProvider
 
 
 class SyncModeInterruptedError(KeyboardInterrupt):
@@ -183,8 +189,8 @@ class OuterLoopRunner:
         self.config = config
         self.loops_root = loops_root
         self.inner_loop_launcher = inner_loop_launcher
-        self.state_path = self.loops_root / "outer_state.json"
-        self.log_path = self.loops_root / "oloops.log"
+        self.state_path = self.loops_root / OUTER_STATE_FILE_NAME
+        self.log_path = self.loops_root / OUTER_LOG_FILE_NAME
 
     def run_once(
         self,
@@ -304,9 +310,9 @@ class OuterLoopRunner:
                 last_state="RUNNING",
                 updated_at=now_iso,
             )
-            write_run_record(run_dir / "run.json", record)
-            _touch(run_dir / "run.log")
-            _touch(run_dir / "agent.log")
+            write_run_record(run_dir / RUN_RECORD_FILE_NAME, record)
+            _touch(run_dir / RUN_LOG_FILE_NAME)
+            _touch(run_dir / AGENT_LOG_FILE_NAME)
             to_launch.append((run_dir, task))
 
         _log(
@@ -602,7 +608,7 @@ def build_inner_loop_launcher(
         """Launch a single inner loop invocation."""
 
         run_dir.mkdir(parents=True, exist_ok=True)
-        run_log = run_dir / "run.log"
+        run_log = run_dir / RUN_LOG_FILE_NAME
         write_inner_loop_runtime_config(
             run_dir,
             InnerLoopRuntimeConfig(
@@ -660,12 +666,9 @@ def _is_loops_inner_loop_command(command: list[str]) -> bool:
             if command[index + 1].casefold() == "inner-loop":
                 return True
         if item == "-m" and index + 1 < len(command):
-            if command[index + 1] == "loops.inner_loop":
-                return True
-        if name == "loops.inner_loop":
-            return True
-    if " ".join(command).strip().casefold().endswith("loops.inner_loop"):
-        return True
+            if command[index + 1].casefold() == "loops" and index + 2 < len(command):
+                if command[index + 2].casefold() == "inner-loop":
+                    return True
     return False
 
 

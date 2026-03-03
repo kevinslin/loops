@@ -114,7 +114,7 @@ def write_live_config(*, config_path: Path, run_label: str) -> None:
             "task_ready_status": "Todo",
         },
         "inner_loop": {
-            "command": [sys.executable, "-m", "loops.inner_loop"],
+            "command": [sys.executable, "-m", "loops", "inner-loop"],
             "working_dir": str(REPO_ROOT),
             "env": {
                 "PYTHONPATH": str(REPO_ROOT),

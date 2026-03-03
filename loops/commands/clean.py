@@ -7,12 +7,19 @@ import json
 import shutil
 from pathlib import Path
 
-from loops.outer_loop import INNER_LOOP_RUNS_DIR_NAME
+import click
 
-RUN_LOG_FILE = "run.log"
-AGENT_LOG_FILE = "agent.log"
-RUN_RECORD_FILE = "run.json"
-ARCHIVE_DIR_NAME = ".archive"
+from loops.state.constants import (
+    AGENT_LOG_FILE_NAME,
+    ARCHIVE_DIR_NAME,
+    INNER_LOOP_RUNS_DIR_NAME,
+    RUN_LOG_FILE_NAME,
+    RUN_RECORD_FILE_NAME,
+)
+
+RUN_LOG_FILE = RUN_LOG_FILE_NAME
+AGENT_LOG_FILE = AGENT_LOG_FILE_NAME
+RUN_RECORD_FILE = RUN_RECORD_FILE_NAME
 ACTIVE_RUN_STATES = {"RUNNING", "WAITING_ON_REVIEW", "NEEDS_INPUT", "PR_APPROVED"}
 
 
@@ -29,6 +36,31 @@ class CleanPlan:
     archive_root: Path
     delete_runs: tuple[Path, ...]
     archive_moves: tuple[ArchiveMove, ...]
+
+
+@click.command("clean")
+@click.option(
+    "--loops-root",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=Path(".loops"),
+    show_default=True,
+    help="Directory where Loops runtime state and runs are stored.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Report cleanup actions without deleting or archiving any run directories.",
+)
+def clean_command(loops_root: Path, dry_run: bool) -> None:
+    """Delete empty runs and archive completed runs under a Loops root."""
+
+    try:
+        plan = build_clean_plan(loops_root)
+        execute_clean_plan(plan, dry_run=dry_run)
+    except OSError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(format_clean_report(plan, dry_run=dry_run))
 
 
 def build_clean_plan(loops_root: Path) -> CleanPlan:
@@ -52,9 +84,6 @@ def build_clean_plan(loops_root: Path) -> CleanPlan:
     run_dirs = sorted(path for path in runs_root.iterdir() if path.is_dir())
     for run_dir in run_dirs:
         run_state = _read_run_state(run_dir)
-        if _is_empty_run_dir(run_dir) and _can_delete_empty_run(run_state):
-            delete_runs.append(run_dir)
-            continue
         if run_state == "DONE":
             destination = _reserve_archive_destination(
                 archive_root,
@@ -67,6 +96,10 @@ def build_clean_plan(loops_root: Path) -> CleanPlan:
                     destination=destination,
                 )
             )
+            continue
+        if _is_empty_run_dir(run_dir) and _can_delete_empty_run(run_state):
+            delete_runs.append(run_dir)
+            continue
 
     return CleanPlan(
         loops_root=resolved_loops_root,
@@ -167,10 +200,6 @@ def _reserve_archive_destination(
 
 
 def _can_delete_empty_run(run_state: str | None) -> bool:
-    if run_state is None:
-        return True
-    if run_state == "DONE":
-        return True
     if run_state in ACTIVE_RUN_STATES:
         return False
-    return False
+    return run_state is None

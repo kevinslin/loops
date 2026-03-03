@@ -6,13 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
-from loops.approval_config import (
+from loops.state.approval_config import (
     DEFAULT_APPROVAL_COMMENT_PATTERN,
     normalize_approval_usernames,
 )
-from loops.handoff_handlers import DEFAULT_HANDOFF_HANDLER, validate_handoff_handler_name
-
-INNER_LOOP_RUNTIME_CONFIG_FILE = "inner_loop_runtime_config.json"
+from loops.core.handoff_handlers import DEFAULT_HANDOFF_HANDLER, validate_handoff_handler_name
+from loops.state.constants import INNER_LOOP_RUNTIME_CONFIG_FILE
 
 
 @dataclass(frozen=True)

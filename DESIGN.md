@@ -282,20 +282,20 @@ Notes:
 - `loops doctor` upgrades `config.json` to the latest supported version and fills missing `loop_config` keys with defaults.
 - `task_provider_id` currently supports only `"github_projects_v2"`.
 - `task_provider_config` is validated by the provider's Pydantic model.
-- `task_provider_config` init defaults are emitted from provider-owned canonical builders (for `github_projects_v2`, from `loops.providers.github_projects_v2`).
+- `task_provider_config` init defaults are emitted from provider-owned canonical builders (for `github_projects_v2`, from `loops.task_providers.github_projects_v2`).
 - `loops doctor` also backfills missing GitHub `task_provider_config` defaults (`status_field`, `page_size`, `approval_comment_usernames`, `approval_comment_pattern`, `allowlist`) without overwriting existing values.
 - `task_provider_config.filters` supports provider-side `key=value` filters for GitHub Projects V2 (`repository`, `tag`).
 - `task_provider_config.approval_comment_usernames` and `task_provider_config.approval_comment_pattern` configure comment-based PR approval override matching.
 - `task_provider_config.allowlist` (GitHub provider) restricts review-phase PR comment/review signals to listed usernames; non-allowlisted actors are ignored during review polling.
 - Required provider secrets are validated from environment variables before provider construction.
 - `loop_config` is optional; omitted keys fall back to defaults.
-- `loop_config` defaults are sourced from one canonical implementation in `loops.outer_loop` and reused by `loops init`, `loops doctor`, and runtime config loading.
+- `loop_config` defaults are sourced from one canonical implementation in `loops.core.outer_loop` and reused by `loops init`, `loops doctor`, and runtime config loading.
 - `loop_config.auto_approve_enabled` enables the additional auto-approve path while the PR is still not approved.
 - Auto-approve defaults are fixed when enabled: CI green is required and `ag-judge` uses `references/jb.coding.md`.
 - `loop_config.handoff_handler` selects built-in NEEDS_INPUT handoff behavior (`stdin_handler` default, `gh_comment_handler` for issue-comment handoff).
 - `loop_config.checkout_mode` sets checkout guidance for agent execution (`branch` default, `worktree` alternate).
 - `inner_loop` is optional when running via the CLI; if omitted, the CLI uses
-  a canonical default builder for `python -m loops.inner_loop` with `append_task_url=false`.
+  a canonical default builder for `python -m loops inner-loop` with `append_task_url=false`.
 - `python -m loops run --task-url <task-url>` targets exactly one task from the provider poll, implies `run-once`, `force=true`, and `sync_mode=true`, and does not mutate `task_provider_config.url`.
 - Installed package entrypoint `loops` is equivalent to `python -m loops` and uses the same argv normalization.
 
@@ -307,7 +307,7 @@ Notes:
 - `LOOPS_HANDOFF_HANDLER`: direct/manual-run fallback built-in handoff handler name.
 - `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`: legacy fallback task metadata used only when resetting a run with missing `run.json`.
 - `LOOPS_STREAM_LOGS_STDOUT`: direct/manual-run fallback toggle for mirroring `run.log` lines to stdout.
-- Outer-loop-launched runs persist runtime settings in `inner_loop_runtime_config.json` under each run directory, instead of injecting config via child-process env vars. For non-`loops.inner_loop` custom launch commands, `inner_loop.env` remains merged into child env for backward compatibility.
+- Outer-loop-launched runs persist runtime settings in `inner_loop_runtime_config.json` under each run directory, instead of injecting config via child-process env vars. For custom launch commands that are not `loops inner-loop` (or `python -m loops inner-loop`), `inner_loop.env` remains merged into child env.
 - When `inner_loop_runtime_config.json` exists but is malformed, inner loop startup fails fast instead of silently falling back to process environment defaults.
 
 ## 4. Architecture
@@ -362,6 +362,66 @@ Task provider (GitHub Projects V2)
 #### User handoff handler
 - Called when the agent needs input.
 - Default implementation reads from stdin and returns the user response.
+
+## 4.5 Source layout (target)
+
+Refactor target for runtime source modules:
+
+```text
+loops/
+  __init__.py
+  __main__.py
+  commands/
+    clean.py
+    doctor.py
+    init.py
+    inner_loop.py
+    run.py
+  core/
+    cli.py
+    handoff_handlers.py
+    inner_loop.py
+    outer_loop.py
+  state/
+    approval_config.py
+    constants.py
+    inner_loop_runtime_config.py
+    provider_types.py
+    run_record.py
+  task_providers/
+    __init__.py
+    base.py
+    github_projects_v2.py
+    registry.py
+  utils/
+    logging.py
+```
+
+File organization plan for all existing `loops/` source files:
+
+| Existing path | Canonical path | Notes |
+|---|---|---|
+| `loops/__init__.py` | `loops/__init__.py` | Package marker; keep. |
+| `loops/__main__.py` | `loops/__main__.py` | Entry-point shim; keep. |
+| `loops/TODO.md` | `loops/TODO.md` | Local package TODO notes; keep in place. |
+| `loops/cli.py` | `loops/core/cli.py` | Removed legacy path; use canonical CLI module/entrypoint only. |
+| `loops/outer_loop.py` | `loops/core/outer_loop.py` | Removed legacy path; use canonical outer-loop module only. |
+| `loops/inner_loop.py` | `loops/core/inner_loop.py` | Removed legacy path; use `loops inner-loop` or `python -m loops inner-loop`. |
+| `loops/handoff_handlers.py` | `loops/core/handoff_handlers.py` | Removed legacy path; import from `loops.core.handoff_handlers`. |
+| `loops/cleanup.py` | `loops/commands/clean.py` | Removed legacy path; clean behavior lives in command module. |
+| `loops/approval_config.py` | `loops/state/approval_config.py` | Removed legacy path; state/config model moved under `state`. |
+| `loops/inner_loop_runtime_config.py` | `loops/state/inner_loop_runtime_config.py` | Removed legacy path; runtime config model/IO under `state`. |
+| `loops/provider_types.py` | `loops/state/provider_types.py` | Removed legacy path; provider metadata contracts under `state`. |
+| `loops/run_record.py` | `loops/state/run_record.py` | Removed legacy path; run schema/persistence under `state`. |
+| `loops/logging_utils.py` | `loops/utils/logging.py` | Removed legacy path; logging helpers under `utils`. |
+| `loops/task_provider.py` | `loops/task_providers/base.py` | Removed legacy path; provider protocol under task provider package. |
+| `loops/providers/github_projects_v2.py` | `loops/task_providers/github_projects_v2.py` | Removed legacy path; provider implementation under `task_providers`. |
+| `loops/providers/registry.py` | `loops/task_providers/registry.py` | Removed legacy path; registry under `task_providers`. |
+| `loops/providers/__init__.py` | `loops/task_providers/__init__.py` | Removed legacy package wrapper. |
+
+Constants policy:
+- Shared global constants (paths, file names, config version, checkout mode enums) move to `loops/state/constants.py`.
+- Module-private constants that only affect one runtime module may remain local.
 
 ## 5. Storage layout
 
@@ -510,7 +570,7 @@ From any non-DONE state:
 
 Implementation note: `run_inner_loop` is a loop kernel that reads state, derives the
 current state, dispatches to explicit per-state handlers, persists updates, and
-schedules next poll timing. Handler boundaries in `loops/inner_loop.py` are:
+schedules next poll timing. Handler boundaries in `loops/core/inner_loop.py` are:
 `_handle_running_state`, `_handle_needs_input_state`,
 `_handle_waiting_on_review_state`, and `_handle_pr_approved_state`.
 
@@ -555,7 +615,7 @@ The inner loop relies on a small explicit skill surface. These skills are part o
 | `trigger:merge-pr` | `PR_APPROVED` path and cleanup prompt | Performs merge/cleanup in an idempotent way; Loops keeps polling until `pr.merged_at` confirms transition to `DONE`. |
 | `gen-notifier` (forbidden) | Base prompt hard guardrail | Prevents out-of-band desktop notification side effects from inside harness-managed runs; keeps Loops control flow deterministic and contained to run artifacts/logs. |
 
-Practical invariant: if this skill contract changes, update `loops/inner_loop.py` prompt builders, `tests/test_inner_loop.py` prompt assertions, and related flow docs in `docs/flows/`.
+Practical invariant: if this skill contract changes, update `loops/core/inner_loop.py` prompt builders, `tests/test_inner_loop.py` prompt assertions, and related flow docs in `docs/flows/`.
 
 ### CLI callers
 
@@ -565,7 +625,7 @@ Practical invariant: if this skill contract changes, update `loops/inner_loop.py
 - `python -m loops run` starts the outer loop runner.
 - `python -m loops inner-loop` runs one inner-loop execution for a run directory.
 - `python -m loops clean` deletes empty runs and archives completed runs.
-- Direct module callers still work (`python -m loops.inner_loop`).
+- `python -m loops.cli` is intentionally unsupported; use `loops ...` or `python -m loops ...`.
 
 ### Live integration harness targets
 
@@ -576,7 +636,7 @@ Practical invariant: if this skill contract changes, update `loops/inner_loop.py
 
 ### Prompt catalog
 
-The inner loop builds prompts in `loops/inner_loop.py` from a shared base template plus a state-specific suffix.
+The inner loop builds prompts in `loops/core/inner_loop.py` from a shared base template plus a state-specific suffix.
 
 Base template (always present in Codex turns):
 

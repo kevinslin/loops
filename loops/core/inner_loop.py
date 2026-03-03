@@ -14,27 +14,35 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, cast
 
-from loops.approval_config import DEFAULT_APPROVAL_COMMENT_PATTERN
-from loops.handoff_handlers import (
+from loops.state.approval_config import DEFAULT_APPROVAL_COMMENT_PATTERN
+from loops.core.handoff_handlers import (
     DEFAULT_HANDOFF_HANDLER,
     HANDOFF_HANDLER_STDIN,
     HandoffResult,
     resolve_builtin_handoff_handler,
     validate_handoff_handler_name,
 )
-from loops.inner_loop_runtime_config import (
+from loops.state.inner_loop_runtime_config import (
     INNER_LOOP_RUNTIME_CONFIG_FILE,
     InnerLoopRuntimeConfig,
     read_inner_loop_runtime_config,
 )
-from loops.logging_utils import (
+from loops.state.constants import (
+    AGENT_LOG_FILE_NAME,
+    CHECKOUT_MODE_WORKTREE,
+    PUSH_PR_URL_FILE,
+    RUN_LOG_FILE_NAME,
+    RUN_RECORD_FILE_NAME,
+    SIGNAL_OFFSET_FILE,
+)
+from loops.utils.logging import (
     STREAM_LOGS_STDOUT_ENV,
     append_log,
     reset_stream_logs_stdout_override,
     set_stream_logs_stdout_override,
     should_stream_logs_to_stdout,
 )
-from loops.run_record import (
+from loops.state.run_record import (
     CodexSession,
     RunAutoApprove,
     RunPR,
@@ -81,9 +89,6 @@ PROMPT_TEMPLATE = (
 PROMPT_STATE_RUNNING = "RUNNING"
 PROMPT_STATE_WAITING_ON_REVIEW = "WAITING_ON_REVIEW"
 PROMPT_STATE_PR_APPROVED = "PR_APPROVED"
-CHECKOUT_MODE_WORKTREE = "worktree"
-SIGNAL_OFFSET_FILE = "state_signals.offset"
-PUSH_PR_URL_FILE = "push-pr.url"
 DEFAULT_MAX_ITERATIONS = 200
 DEFAULT_REVIEW_POLL_SECONDS = 5.0
 DEFAULT_MAX_REVIEW_POLL_SECONDS = 60.0
@@ -191,8 +196,8 @@ def reset_run_record(run_dir: Path) -> RunRecord:
     """Reset run.json orchestration state while preserving durable identifiers."""
 
     resolved_run_dir = run_dir.resolve()
-    run_json_path = resolved_run_dir / "run.json"
-    run_log = resolved_run_dir / "run.log"
+    run_json_path = resolved_run_dir / RUN_RECORD_FILE_NAME
+    run_log = resolved_run_dir / RUN_LOG_FILE_NAME
 
     existing_record: Optional[RunRecord] = None
     task: Optional[Task] = None
@@ -272,9 +277,9 @@ def run_inner_loop(
         raise ValueError("max_iterations must be positive")
 
     run_dir = run_dir.resolve()
-    run_json_path = run_dir / "run.json"
-    run_log = run_dir / "run.log"
-    agent_log = run_dir / "agent.log"
+    run_json_path = run_dir / RUN_RECORD_FILE_NAME
+    run_log = run_dir / RUN_LOG_FILE_NAME
+    agent_log = run_dir / AGENT_LOG_FILE_NAME
     runtime_config = _load_runtime_config(run_dir=run_dir, run_log=run_log)
     runtime_env = runtime_config.env if runtime_config is not None else None
     runtime_environ = _apply_runtime_env_overrides(runtime_env)
@@ -2639,7 +2644,7 @@ def _resolve_configured_handoff_handler_name(
 def _run_legacy_cli_entrypoint(argv: list[str] | None = None) -> None:
     """Run the canonical click-based inner-loop CLI from module entrypoint."""
 
-    from loops.cli import main as cli_main
+    from loops.core.cli import main as cli_main
 
     args = sys.argv[1:] if argv is None else argv
     cli_main.main(

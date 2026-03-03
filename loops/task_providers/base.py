@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from loops.run_record import Task
+from loops.state.run_record import Task
 
 
 class TaskProvider(Protocol):

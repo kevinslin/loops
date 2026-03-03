@@ -4,7 +4,6 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import sys
@@ -12,7 +11,7 @@ import time
 
 import pytest
 
-from loops.outer_loop import LATEST_LOOPS_CONFIG_VERSION
+from loops.core.outer_loop import LATEST_LOOPS_CONFIG_VERSION
 from tests.integ.github_setup import (
     LOOPS_INTEG_PROJECT_URL,
     LOOPS_INTEG_REPO,
@@ -100,7 +99,7 @@ def test_end2end_live() -> None:
             env=env,
             loops_root=loops_root,
             timeout_seconds=timeout_seconds,
-            run_label=bundle.run_label,
+            expected_task_url=bundle.task.url,
         )
         run_record = json.loads((run_dir / "run.json").read_text())
 
@@ -210,7 +209,7 @@ def write_end2end_config(*, config_path: Path, run_label: str, project_url: str)
             "auto_approve_enabled": True,
         },
         "inner_loop": {
-            "command": [sys.executable, "-m", "loops.inner_loop"],
+            "command": [sys.executable, "-m", "loops", "inner-loop"],
             "working_dir": str(INTEG_REPO_DIR),
             "env": {
                 "PYTHONPATH": str(REPO_ROOT),
@@ -229,7 +228,7 @@ def run_until_single_run_dir(
     env: dict[str, str],
     loops_root: Path,
     timeout_seconds: int,
-    run_label: str,
+    expected_task_url: str,
 ) -> tuple[Path, subprocess.CompletedProcess[str]]:
     attempts = read_int_env(
         "LOOPS_INTEG_END2END_POLL_ATTEMPTS",
@@ -263,14 +262,21 @@ def run_until_single_run_dir(
 
         if runs_root.exists():
             run_dirs = sorted(
-                path
+                (
+                    path,
+                    _read_run_task_url(path / "run.json"),
+                )
                 for path in runs_root.iterdir()
-                if path.is_dir() and _matches_run_label(path.name, run_label)
+                if path.is_dir()
             )
-            if len(run_dirs) == 1:
-                return run_dirs[0], result
-            assert len(run_dirs) == 0, (
-                f"expected at most 1 run dir for run_label={run_label!r}, got {run_dirs}"
+            matching_run_dirs = sorted(
+                path for path, task_url in run_dirs if task_url == expected_task_url
+            )
+            if len(matching_run_dirs) == 1:
+                return matching_run_dirs[0], result
+            assert len(matching_run_dirs) == 0, (
+                f"expected at most 1 run dir for task_url={expected_task_url!r}, "
+                f"got {matching_run_dirs}; observed={run_dirs}"
             )
 
         if attempt < attempts:
@@ -279,6 +285,7 @@ def run_until_single_run_dir(
     assert last_result is not None
     raise AssertionError(
         "expected exactly 1 run dir after retries, got none\n"
+        f"expected task url: {expected_task_url}\n"
         f"last stdout:\n{last_result.stdout}\n"
         f"last stderr:\n{last_result.stderr}"
     )
@@ -420,9 +427,20 @@ def build_run_env(*, token: str) -> dict[str, str]:
     return env
 
 
-def _matches_run_label(path_name: str, run_label: str) -> bool:
-    pattern = rf"(?:^|-){re.escape(run_label)}(?:-|$)"
-    return re.search(pattern, path_name) is not None
+def _read_run_task_url(run_json_path: Path) -> str | None:
+    if not run_json_path.exists():
+        return None
+    try:
+        payload = json.loads(run_json_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    task_payload = payload.get("task")
+    if not isinstance(task_payload, dict):
+        return None
+    task_url = task_payload.get("url")
+    return task_url if isinstance(task_url, str) and task_url else None
 
 
 def read_int_env(name: str, *, default: int, min_value: int) -> int:

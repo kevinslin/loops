@@ -1,10 +1,10 @@
 import pytest
 
-from loops.providers.github_projects_v2 import (
+from loops.task_providers.github_projects_v2 import (
     GITHUB_PROJECTS_V2_PROVIDER_ID,
     GithubProjectsV2TaskProviderConfig,
 )
-from loops.providers.registry import get_provider_definition
+from loops.task_providers.registry import get_provider_definition
 
 
 def test_get_provider_definition_returns_github_provider() -> None:

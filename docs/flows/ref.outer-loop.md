@@ -30,7 +30,7 @@ How does the outer loop convert provider tasks into inner-loop executions while 
 
 ## Entry points
 
-- CLI command `python -m loops run` (`loops/cli.py`) dispatches into `_run_outer_loop(...)`.
+- CLI command `python -m loops run` (`loops/core/cli.py`) dispatches into `_run_outer_loop(...)`.
 - `_run_outer_loop(...)` constructs `OuterLoopRunner` and calls `run_once(...)` or `run_forever(...)`.
 - `OuterLoopRunner.run_once(...)` performs polling, selection, run-dir creation, and launch dispatch.
 
@@ -38,7 +38,7 @@ How does the outer loop convert provider tasks into inner-loop executions while 
 
 #### Sudocode (outer-loop poll-and-dispatch)
 
-Source: `loops/cli.py`, `loops/outer_loop.py`
+Source: `loops/core/cli.py`, `loops/core/outer_loop.py`
 
 ```ts
 function run_outer_loop_cycle(config_path, limit, force, task_url)
@@ -114,46 +114,46 @@ None identified.
 
 | Name | Where Read | Default | Effect on Flow |
 |---|---|---|---|
-| `GITHUB_TOKEN` / `GH_TOKEN` | `loops/providers/github_projects_v2.py:220` | none | Required by GitHub provider polling when `task_provider_config.github_token` is not set. |
-| Process env passthrough (`os.environ.copy()`) | `loops/outer_loop.py`, `loops/providers/github_projects_v2.py:236` | N/A | Baseline environment passed to inner-loop child and `gh api graphql` subprocesses. |
-| `LOOPS_RUN_DIR` (child env) | set in `loops/outer_loop.py` launcher | required by inner-loop CLI/module fallback path | Selects the per-run directory to execute when child command does not pass `--run-dir`. |
+| `GITHUB_TOKEN` / `GH_TOKEN` | `loops/task_providers/github_projects_v2.py:220` | none | Required by GitHub provider polling when `task_provider_config.github_token` is not set. |
+| Process env passthrough (`os.environ.copy()`) | `loops/core/outer_loop.py`, `loops/task_providers/github_projects_v2.py:236` | N/A | Baseline environment passed to inner-loop child and `gh api graphql` subprocesses. |
+| `LOOPS_RUN_DIR` (child env) | set in `loops/core/outer_loop.py` launcher | required by inner-loop CLI/module fallback path | Selects the per-run directory to execute when child command does not pass `--run-dir`. |
 
 ### Other User-Settable Inputs
 
 | Name | Type | Where Read | Effect on Flow |
 |---|---|---|---|
-| `--config` | CLI option | `loops/cli.py:38`, consumed in `loops/cli.py:196` | Selects config file for provider/loop/inner-loop settings and loops root resolution. |
-| `--run-once/--run-forever` | CLI option | `loops/cli.py:46`, dispatched at `loops/cli.py:217` | Controls single-cycle execution vs continuous polling loop. |
-| `--limit` | CLI option | `loops/cli.py:51`, forwarded to provider poll | Caps tasks returned/considered in a cycle (for `github_projects_v2`, after oldest-first ordering). |
-| `--force` | CLI option | `loops/cli.py:57`, override at `loops/cli.py:198` | Reprocesses tasks even if previously seen in outer state. |
-| `task_provider_id` / `task_provider_config.*` | Config file fields | `loops/outer_loop.py:243`, `loops/outer_loop.py:274` | Chooses task provider and provider-specific polling behavior. |
-| `loop_config.*` | Config file fields | `loops/outer_loop.py:394` | Controls poll interval, ready filter, sync mode, emit-on-first-run, force, parallel launch behavior, checkout mode (`branch`/`worktree`), and run-scoped inner-loop runtime settings. |
-| `inner_loop.*` | Config file fields | `loops/outer_loop.py:44`, `loops/outer_loop.py:283` | Defines launch command, cwd, run-scoped runtime env payload, conditional env merge for non-`loops.inner_loop` commands, and URL appending for child processes. |
+| `--config` | CLI option | `loops/core/cli.py:38`, consumed in `loops/core/cli.py:196` | Selects config file for provider/loop/inner-loop settings and loops root resolution. |
+| `--run-once/--run-forever` | CLI option | `loops/core/cli.py:46`, dispatched at `loops/core/cli.py:217` | Controls single-cycle execution vs continuous polling loop. |
+| `--limit` | CLI option | `loops/core/cli.py:51`, forwarded to provider poll | Caps tasks returned/considered in a cycle (for `github_projects_v2`, after oldest-first ordering). |
+| `--force` | CLI option | `loops/core/cli.py:57`, override at `loops/core/cli.py:198` | Reprocesses tasks even if previously seen in outer state. |
+| `task_provider_id` / `task_provider_config.*` | Config file fields | `loops/core/outer_loop.py:243`, `loops/core/outer_loop.py:274` | Chooses task provider and provider-specific polling behavior. |
+| `loop_config.*` | Config file fields | `loops/core/outer_loop.py:394` | Controls poll interval, ready filter, sync mode, emit-on-first-run, force, parallel launch behavior, checkout mode (`branch`/`worktree`), and run-scoped inner-loop runtime settings. |
+| `inner_loop.*` | Config file fields | `loops/core/outer_loop.py:44`, `loops/core/outer_loop.py:283` | Defines launch command, cwd, run-scoped runtime env payload, conditional env merge for custom non-Loops inner-loop commands, and URL appending for child processes. |
 
 ## Flow
 
 ### Entry assumptions and boundaries
 
-- Operator enters via `python -m loops run ...`, handled by CLI (`loops/cli.py:36`).
-- `_run_outer_loop` assembles a runner from config + provider + launcher (`loops/cli.py:187`).
+- Operator enters via `python -m loops run ...`, handled by CLI (`loops/core/cli.py:36`).
+- `_run_outer_loop` assembles a runner from config + provider + launcher (`loops/core/cli.py:187`).
 - Outer loop creates and updates `.loops/outer_state.json`, `.loops/oloops.log`, and `.loops/jobs/<run>/...`.
-- Inner-loop execution boundary begins at launcher invocation (`loops/outer_loop.py:293`).
+- Inner-loop execution boundary begins at launcher invocation (`loops/core/outer_loop.py:293`).
 
 ### State Timeline Table
 
 | value | write step | snapshot step | read step | ordering valid? |
 |---|---|---|---|---|
-| `outer_state.initialized` | Set true in `run_once` finally block (`loops/outer_loop.py:203`) and persisted (`loops/outer_loop.py:205`) | Loaded at cycle start (`loops/outer_loop.py:163`) | Used to compute first-run emission policy (`loops/outer_loop.py:169`) | Yes |
-| `outer_state.tasks` ledger | Updated per ready task via `record_task` (`loops/outer_loop.py:174`) then persisted (`loops/outer_loop.py:205`) | Loaded at cycle start (`loops/outer_loop.py:163`) | Used by `has_task` dedupe gate (`loops/outer_loop.py:173`) | Yes |
-| `ready_tasks` | Created from provider poll filtered by `_is_ready` (`loops/outer_loop.py:164`) | Snapshot per cycle in memory | Used to build emit set and log counts (`loops/outer_loop.py:172`, `loops/outer_loop.py:206`) | Yes |
-| `emit_tasks` | Built in cycle loop (`loops/outer_loop.py:168`, `loops/outer_loop.py:179`) | Snapshot before launch (`loops/outer_loop.py:183`) | Drives run-dir creation + launcher dispatch (`loops/outer_loop.py:184`, `loops/outer_loop.py:199`) | Yes |
-| `run.json` initial state (including `stream_logs_stdout`, `checkout_mode`, `starting_commit`) | Written by `write_run_record` (`loops/outer_loop.py:194`) | Materialized before launcher call | Consumed by inner loop as authoritative starting state, checkout guidance source, and log-streaming snapshot | Yes |
+| `outer_state.initialized` | Set true in `run_once` finally block (`loops/core/outer_loop.py:203`) and persisted (`loops/core/outer_loop.py:205`) | Loaded at cycle start (`loops/core/outer_loop.py:163`) | Used to compute first-run emission policy (`loops/core/outer_loop.py:169`) | Yes |
+| `outer_state.tasks` ledger | Updated per ready task via `record_task` (`loops/core/outer_loop.py:174`) then persisted (`loops/core/outer_loop.py:205`) | Loaded at cycle start (`loops/core/outer_loop.py:163`) | Used by `has_task` dedupe gate (`loops/core/outer_loop.py:173`) | Yes |
+| `ready_tasks` | Created from provider poll filtered by `_is_ready` (`loops/core/outer_loop.py:164`) | Snapshot per cycle in memory | Used to build emit set and log counts (`loops/core/outer_loop.py:172`, `loops/core/outer_loop.py:206`) | Yes |
+| `emit_tasks` | Built in cycle loop (`loops/core/outer_loop.py:168`, `loops/core/outer_loop.py:179`) | Snapshot before launch (`loops/core/outer_loop.py:183`) | Drives run-dir creation + launcher dispatch (`loops/core/outer_loop.py:184`, `loops/core/outer_loop.py:199`) | Yes |
+| `run.json` initial state (including `stream_logs_stdout`, `checkout_mode`, `starting_commit`) | Written by `write_run_record` (`loops/core/outer_loop.py:194`) | Materialized before launcher call | Consumed by inner loop as authoritative starting state, checkout guidance source, and log-streaming snapshot | Yes |
 | `inner_loop_runtime_config.json` | Written in launcher from `loop_config` + `inner_loop.env` + provider review-actor allowlist | Materialized before child process execution | Consumed by inner loop for handoff handler, auto-approve flag, sync-mode log mirroring, comment-approval settings, review-actor allowlist, and runtime env map | Yes |
-| `oloops.log` cycle summary | Appended in finally block (`loops/outer_loop.py:206`, formatter at `loops/outer_loop.py:493`) | N/A | Used for operational summaries (`ready`/`processed`) | Yes |
+| `oloops.log` cycle summary | Appended in finally block (`loops/core/outer_loop.py:206`, formatter at `loops/core/outer_loop.py:493`) | N/A | Used for operational summaries (`ready`/`processed`) | Yes |
 
 ### Outer-loop runtime invocation
 
-- `loops/cli.py:187` + `loops/outer_loop.py:158`
+- `loops/core/cli.py:187` + `loops/core/outer_loop.py:158`
 ```ts
 function _run_outer_loop(config_path, run_once, limit, force, task_url=None)
   config := load_config(config_path)
@@ -164,7 +164,7 @@ function _run_outer_loop(config_path, run_once, limit, force, task_url=None)
     config := replace(
       config,
       inner_loop=InnerLoopCommandConfig(
-        command=[sys.executable, "-m", "loops.inner_loop"],
+        command=[sys.executable, "-m", "loops", "inner-loop"],
         append_task_url=False,
       ),
     )
@@ -280,21 +280,21 @@ class OuterLoopRunner
 - `build_inner_loop_launcher` builds a closure that:
   - Persists run-scoped runtime settings to `inner_loop_runtime_config.json` (handoff handler, auto-approve flag, sync-mode log mirroring flag, and optional `inner_loop.env` payload).
   - Injects `LOOPS_RUN_DIR` into child env for run-dir resolution compatibility.
-  - For non-`loops.inner_loop` commands, merges `inner_loop.env` into child env for backward-compatible custom wrapper execution.
-  - Appends task URL to command when configured (`loops/outer_loop.py:307`).
-  - Uses `subprocess.run` in `sync_mode=true` (`loops/outer_loop.py:310`) or detached `subprocess.Popen` writing to `run.log` (`loops/outer_loop.py:319`).
+  - For custom commands that are not `loops inner-loop` (or `python -m loops inner-loop`), merges `inner_loop.env` into child env for wrapper execution.
+  - Appends task URL to command when configured (`loops/core/outer_loop.py:307`).
+  - Uses `subprocess.run` in `sync_mode=true` (`loops/core/outer_loop.py:310`) or detached `subprocess.Popen` writing to `run.log` (`loops/core/outer_loop.py:319`).
 - Approval-comment settings and provider review-actor allowlist are persisted per run inside `inner_loop_runtime_config.json`, not injected via env.
 - Checkout guidance is passed to inner loop through `run.json` (`RunRecord.checkout_mode` and `RunRecord.starting_commit`), not runtime env.
 
 ### Provider polling behavior (GitHub Projects V2)
 
-- `build_provider` currently supports only `github_projects_v2` (`loops/outer_loop.py:274`).
-- Provider flow (`loops/providers/github_projects_v2.py:164`):
-  - Resolve token (config override, else env) (`loops/providers/github_projects_v2.py:220`).
-  - Parse project URL (`loops/providers/github_projects_v2.py:32`).
-  - Poll GraphQL pages via `gh api graphql`, map items to `Task`, stop at limit or pagination end (`loops/providers/github_projects_v2.py:172`).
+- `build_provider` currently supports only `github_projects_v2` (`loops/core/outer_loop.py:274`).
+- Provider flow (`loops/task_providers/github_projects_v2.py:164`):
+  - Resolve token (config override, else env) (`loops/task_providers/github_projects_v2.py:220`).
+  - Parse project URL (`loops/task_providers/github_projects_v2.py:32`).
+  - Poll GraphQL pages via `gh api graphql`, map items to `Task`, stop at limit or pagination end (`loops/task_providers/github_projects_v2.py:172`).
 
-**File(s)**: `loops/cli.py`, `loops/outer_loop.py`, `loops/providers/github_projects_v2.py`, `loops/run_record.py`
+**File(s)**: `loops/core/cli.py`, `loops/core/outer_loop.py`, `loops/task_providers/github_projects_v2.py`, `loops/state/run_record.py`
 
 ## Architecture Diagram
 
@@ -359,31 +359,31 @@ Useful derived metrics:
 
 Key outer-loop logs and emit sites:
 
-- Per-task schedule log after run-dir allocation: `run_once.schedule key=<provider:id> url=<task-url> run_dir=<path> checkout_mode=<mode> starting_commit=<sha>` (`loops/outer_loop.py`).
-- Per-cycle summary log: `_log(self.log_path, _format_log_line(...))` (`loops/outer_loop.py:206`).
-- Log format payload: `ready=<n> processed=<m>` (`loops/outer_loop.py:493`).
-- Log sink file: `.loops/oloops.log` (`loops/outer_loop.py:156`).
+- Per-task schedule log after run-dir allocation: `run_once.schedule key=<provider:id> url=<task-url> run_dir=<path> checkout_mode=<mode> starting_commit=<sha>` (`loops/core/outer_loop.py`).
+- Per-cycle summary log: `_log(self.log_path, _format_log_line(...))` (`loops/core/outer_loop.py:206`).
+- Log format payload: `ready=<n> processed=<m>` (`loops/core/outer_loop.py:493`).
+- Log sink file: `.loops/oloops.log` (`loops/core/outer_loop.py:156`).
 - In `sync_mode=true`, outer-loop log writes are mirrored to stdout while still appended to `.loops/oloops.log`.
 
 Related launch output behavior:
 
-- Detached mode routes child stdout/stderr to per-run `run.log` (`loops/outer_loop.py:319`).
-- Sync mode uses foreground `subprocess.run`, does not detach, and enables inner-loop `run.log` stdout mirroring (`loops/outer_loop.py:310`).
+- Detached mode routes child stdout/stderr to per-run `run.log` (`loops/core/outer_loop.py:319`).
+- Sync mode uses foreground `subprocess.run`, does not detach, and enables inner-loop `run.log` stdout mirroring (`loops/core/outer_loop.py:310`).
 - In sync mode, `Ctrl+C` during foreground launch prints resume guidance for `loops inner-loop --run-dir ...` before CLI abort.
 
 ## FAQ
 
 Q: Why can `run_once` find ready tasks but launch none?
-A: On first run with `emit_on_first_run=false`, tasks are recorded in outer state but intentionally not emitted (`loops/outer_loop.py:170`, `loops/outer_loop.py:175`).
+A: On first run with `emit_on_first_run=false`, tasks are recorded in outer state but intentionally not emitted (`loops/core/outer_loop.py:170`, `loops/core/outer_loop.py:175`).
 
 Q: What is the difference between dedupe and force?
-A: Dedupe skips already-seen tasks (`has_task`), while `force=true` bypasses that check and re-launches (`loops/outer_loop.py:173`, `loops/outer_loop.py:177`).
+A: Dedupe skips already-seen tasks (`has_task`), while `force=true` bypasses that check and re-launches (`loops/core/outer_loop.py:173`, `loops/core/outer_loop.py:177`).
 
 Q: When does outer state persist if launch fails?
-A: State write happens in `finally`, so initialization and task ledger updates persist even when launcher raises (`loops/outer_loop.py:199`, `loops/outer_loop.py:205`).
+A: State write happens in `finally`, so initialization and task ledger updates persist even when launcher raises (`loops/core/outer_loop.py:199`, `loops/core/outer_loop.py:205`).
 
 Q: How is `loops_root` chosen?
-A: If config is inside `.loops/`, that directory is used; otherwise `.loops/` is created adjacent to config (`loops/cli.py:275`).
+A: If config is inside `.loops/`, that directory is used; otherwise `.loops/` is created adjacent to config (`loops/core/cli.py:275`).
 
 Q: How do review polling allowlists reach inner loop?
 A: `loop_config` approval settings and GitHub provider review-actor allowlist (`task_provider_config.allowlist`) are written into each run directory as fields in `inner_loop_runtime_config.json`, which inner loop reads at startup.
@@ -404,7 +404,7 @@ A: Loops prints a resume command for the interrupted run directory so you can co
 ## Changelog
 - 2026-03-02: Added `checkout_mode`/`starting_commit` run-materialization semantics and documented schedule-log + `run.json` propagation into inner loop. (019cabf2-f02b-7521-b814-5b0fcafe3d34)
 - 2026-03-01: Documented `run.json.stream_logs_stdout` persistence from outer-loop `sync_mode` during run materialization. (019cab67-3061-7ce1-81c1-e30f80798fb0)
-- 2026-03-01: Replaced launcher env-based inner-loop config transport with run-scoped `inner_loop_runtime_config.json`; outer loop now injects only `LOOPS_RUN_DIR` for `loops.inner_loop` launches while preserving `inner_loop.env` merge for non-`loops.inner_loop` commands. (019caae6-1189-7d83-a9cd-1665818fba36)
+- 2026-03-01: Replaced launcher env-based inner-loop config transport with run-scoped `inner_loop_runtime_config.json`; outer loop now injects only `LOOPS_RUN_DIR` for Loops inner-loop launches while preserving `inner_loop.env` merge for custom non-Loops commands. (019caae6-1189-7d83-a9cd-1665818fba36)
 - 2026-03-01: Renamed outer config schema references to `task_provider_id`/`task_provider_config` (v2) and aligned provider/filter docs accordingly. (019caa8b-0807-7603-a519-4a6be2b8e53c)
 - 2026-03-01: Documented sync-mode `Ctrl+C` resume instructions for interrupted foreground launches. (019caa47-6d09-7cf1-a25a-83245c71f987)
 - 2026-02-28: Removed configurable log timestamp precision; log timestamps are local no-timezone format with fixed fractional precision. (019ca742-f800-78a3-a5f3-11d807a04164)

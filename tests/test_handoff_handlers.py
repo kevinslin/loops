@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from loops.handoff_handlers import (
+from loops.core.handoff_handlers import (
     GH_COMMENT_STATE_FILE,
     GHCommentHandoffHandler,
     HANDOFF_HANDLER_GH_COMMENT,
@@ -16,7 +16,7 @@ from loops.handoff_handlers import (
     resolve_builtin_handoff_handler,
     validate_handoff_handler_name,
 )
-from loops.run_record import Task
+from loops.state.run_record import Task
 
 
 def _task(
@@ -98,7 +98,7 @@ def test_gh_comment_handler_posts_once_and_consumes_reply(
             )
         raise AssertionError(f"unexpected gh command: {command}")
 
-    monkeypatch.setattr("loops.handoff_handlers.subprocess.run", fake_subprocess_run)
+    monkeypatch.setattr("loops.core.handoff_handlers.subprocess.run", fake_subprocess_run)
 
     handler = GHCommentHandoffHandler(run_dir=run_dir, task=task, environ={})
 
@@ -144,3 +144,25 @@ def test_resolve_builtin_stdin_handler_wraps_string_response(tmp_path: Path) -> 
     result = handler({"message": "hello"})
     assert result.status == "response"
     assert result.response == "  ship it  "
+
+
+def test_gh_comment_handler_surfaces_timeout_errors(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    handler = GHCommentHandoffHandler(run_dir=run_dir, task=_task(), environ={})
+
+    def fake_subprocess_run(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(
+            cmd=["gh", "issue", "view"],
+            timeout=30,
+            output="partial output",
+            stderr="partial error",
+        )
+
+    monkeypatch.setattr("loops.core.handoff_handlers.subprocess.run", fake_subprocess_run)
+
+    with pytest.raises(RuntimeError, match="timed out"):
+        handler._run_gh(["gh", "issue", "view", "https://github.com/acme/api/issues/42"])

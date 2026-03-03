@@ -13,20 +13,20 @@ from pathlib import Path
 
 import pytest
 
-from loops.approval_config import (
+from loops.state.approval_config import (
     DEFAULT_APPROVAL_COMMENT_PATTERN,
 )
-from loops.handoff_handlers import HandoffResult
-from loops.inner_loop_runtime_config import (
+from loops.core.handoff_handlers import HandoffResult
+from loops.state.inner_loop_runtime_config import (
     INNER_LOOP_RUNTIME_CONFIG_FILE,
     InnerLoopRuntimeConfig,
     read_inner_loop_runtime_config,
     write_inner_loop_runtime_config,
 )
-from loops import inner_loop as inner_loop_module
-from loops.inner_loop import run_inner_loop
-from loops import cli as cli_module
-from loops.run_record import (
+import loops.core.inner_loop as inner_loop_module
+from loops.core.inner_loop import run_inner_loop
+import loops.core.cli as cli_module
+from loops.state.run_record import (
     RunAutoApprove,
     RunPR,
     RunRecord,
@@ -3817,7 +3817,7 @@ def test_inner_loop_module_main_delegates_to_click_command(tmp_path, monkeypatch
     inner_loop_command = cli_module.main.commands["inner-loop"]
     monkeypatch.setattr(inner_loop_command, "callback", fake_inner_loop_command)
     monkeypatch.setattr(inner_loop_module.sys, "argv", [
-        "loops.inner_loop",
+        "loops.core.inner_loop",
         "--run-dir",
         str(run_dir),
         "--reset",

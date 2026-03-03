@@ -5,14 +5,14 @@ from typing import Callable
 
 from pydantic import BaseModel
 
-from loops.provider_types import LoopsProviderConfig
-from loops.providers.github_projects_v2 import (
+from loops.state.provider_types import LoopsProviderConfig
+from loops.task_providers.github_projects_v2 import (
     GITHUB_PROJECTS_V2_PROVIDER_CONFIG,
     GITHUB_PROJECTS_V2_PROVIDER_ID,
     GithubProjectsV2TaskProvider,
     GithubProjectsV2TaskProviderConfig,
 )
-from loops.task_provider import TaskProvider
+from loops.task_providers.base import TaskProvider
 
 
 @dataclass(frozen=True)
@@ -44,5 +44,8 @@ def get_provider_definition(provider_id: str) -> ProviderDefinition:
 
     provider = _PROVIDERS.get(provider_id)
     if provider is None:
-        raise ValueError(f"Unsupported provider_id: {provider_id}")
+        supported = ", ".join(sorted(_PROVIDERS))
+        raise ValueError(
+            f"Unsupported provider_id: {provider_id}. Supported provider_ids: {supported}"
+        )
     return provider

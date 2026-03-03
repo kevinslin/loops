@@ -9,11 +9,11 @@ It also documents how those signals are surfaced to the agent: when Loops resume
 
 ## Entry points
 
-- `loops/inner_loop.py:run_inner_loop`: wires `runtime.pr_status_fetcher` (default closure or injected override).
-- `loops/inner_loop.py:_handle_waiting_on_review_state`: polls `runtime.pr_status_fetcher` and decides whether to re-run Codex for review feedback.
-- `loops/inner_loop.py:_handle_pr_approved_state`: reuses `runtime.pr_status_fetcher` for merge-state polling.
-- `loops/inner_loop.py:_fetch_pr_status_with_gh_with_context`: default fetcher implementation and signal normalization.
-- `loops/inner_loop.py:_run_codex_turn`: selects review-feedback vs comment-feedback prompt and updates `review_addressed_at`.
+- `loops/core/inner_loop.py:run_inner_loop`: wires `runtime.pr_status_fetcher` (default closure or injected override).
+- `loops/core/inner_loop.py:_handle_waiting_on_review_state`: polls `runtime.pr_status_fetcher` and decides whether to re-run Codex for review feedback.
+- `loops/core/inner_loop.py:_handle_pr_approved_state`: reuses `runtime.pr_status_fetcher` for merge-state polling.
+- `loops/core/inner_loop.py:_fetch_pr_status_with_gh_with_context`: default fetcher implementation and signal normalization.
+- `loops/core/inner_loop.py:_run_codex_turn`: selects review-feedback vs comment-feedback prompt and updates `review_addressed_at`.
 
 ## Call path
 
@@ -23,8 +23,8 @@ Trigger / entry condition:
 - `run_inner_loop(...)` starts and `InnerLoopRuntimeContext` is initialized.
 
 Entrypoints:
-- `loops/inner_loop.py:run_inner_loop`
-- `loops/inner_loop.py:_load_comment_approval_settings`
+- `loops/core/inner_loop.py:run_inner_loop`
+- `loops/core/inner_loop.py:_load_comment_approval_settings`
 
 Ordered call path:
 - Load run-scoped comment-approval settings from `inner_loop_runtime_config.json` (legacy approval-file fallback supported for older runs).
@@ -46,7 +46,7 @@ External boundaries:
 #### Sudocode (Phase 1: Fetcher wiring and runtime snapshot)
 
 ```ts
-// Source: loops/inner_loop.py (run_inner_loop, _load_comment_approval_settings)
+// Source: loops/core/inner_loop.py (run_inner_loop, _load_comment_approval_settings)
 function run_inner_loop(..., pr_status_fetcher=None):
   comment_approval = load_comment_approval_settings(run_dir)
 
@@ -68,9 +68,9 @@ Trigger / entry condition:
 - Inner loop enters `WAITING_ON_REVIEW` or `PR_APPROVED` and calls `runtime.pr_status_fetcher(run_record.pr)`.
 
 Entrypoints:
-- `loops/inner_loop.py:_handle_waiting_on_review_state`
-- `loops/inner_loop.py:_handle_pr_approved_state`
-- `loops/inner_loop.py:_fetch_pr_status_with_gh_with_context`
+- `loops/core/inner_loop.py:_handle_waiting_on_review_state`
+- `loops/core/inner_loop.py:_handle_pr_approved_state`
+- `loops/core/inner_loop.py:_fetch_pr_status_with_gh_with_context`
 
 Ordered call path:
 - Call `gh pr view <pr-url> --json reviewDecision,mergedAt,url,number,latestReviews,reviews,comments,statusCheckRollup`.
@@ -101,7 +101,7 @@ External boundaries:
 #### Sudocode (Phase 2: GitHub fetch and signal normalization)
 
 ```ts
-// Source: loops/inner_loop.py (_fetch_pr_status_with_gh_with_context and helpers)
+// Source: loops/core/inner_loop.py (_fetch_pr_status_with_gh_with_context and helpers)
 function fetch_pr_status_with_gh_with_context(pr, comment_approval):
   payload = gh_pr_view(pr.url, fields=GH_PR_VIEW_JSON_FIELDS)
 
@@ -144,11 +144,11 @@ Trigger / entry condition:
 - `_handle_waiting_on_review_state` has persisted refreshed PR data and evaluates whether feedback is new.
 
 Entrypoints:
-- `loops/inner_loop.py:_handle_waiting_on_review_state`
-- `loops/inner_loop.py:_should_resume_review_feedback`
-- `loops/inner_loop.py:_run_codex_turn`
-- `loops/inner_loop.py:_build_review_feedback_prompt`
-- `loops/inner_loop.py:_build_comment_feedback_prompt`
+- `loops/core/inner_loop.py:_handle_waiting_on_review_state`
+- `loops/core/inner_loop.py:_should_resume_review_feedback`
+- `loops/core/inner_loop.py:_run_codex_turn`
+- `loops/core/inner_loop.py:_build_review_feedback_prompt`
+- `loops/core/inner_loop.py:_build_comment_feedback_prompt`
 
 Ordered call path:
 - Persist refreshed `RunPR` to `run.json`.
@@ -177,7 +177,7 @@ External boundaries:
 #### Sudocode (Phase 3: Agent-facing presentation and Codex resume)
 
 ```ts
-// Source: loops/inner_loop.py (_handle_waiting_on_review_state, _run_codex_turn)
+// Source: loops/core/inner_loop.py (_handle_waiting_on_review_state, _run_codex_turn)
 function handle_waiting_on_review_state(run_record, runtime):
   updated_pr = runtime.pr_status_fetcher(run_record.pr)
   run_record = write_run_record(pr=updated_pr)

@@ -2,21 +2,22 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import json
+import subprocess
 import sys
 from pathlib import Path
 
 import click
 from click.testing import CliRunner
 import pytest
-import loops.cli as cli_module
+import loops.core.cli as cli_module
 
 from loops.__main__ import _normalize_argv, entrypoint
-from loops.cli import main
-from loops.inner_loop_runtime_config import (
+from loops.core.cli import main
+from loops.state.inner_loop_runtime_config import (
     InnerLoopRuntimeConfig,
     write_inner_loop_runtime_config,
 )
-from loops.outer_loop import (
+from loops.core.outer_loop import (
     LATEST_LOOPS_CONFIG_VERSION,
     LoopsConfig,
     OuterLoopConfig,
@@ -24,8 +25,8 @@ from loops.outer_loop import (
     build_default_loop_config_payload,
     load_config,
 )
-from loops.providers.github_projects_v2 import build_default_provider_config_payload
-from loops.run_record import RunPR, RunRecord, Task, read_run_record, write_run_record
+from loops.task_providers.github_projects_v2 import build_default_provider_config_payload
+from loops.state.run_record import RunPR, RunRecord, Task, read_run_record, write_run_record
 
 
 def test_init_creates_default_loops_structure(tmp_path: Path) -> None:
@@ -59,7 +60,8 @@ def test_init_creates_default_loops_structure(tmp_path: Path) -> None:
     assert config_payload["inner_loop"]["command"] == [
         sys.executable,
         "-m",
-        "loops.inner_loop",
+        "loops",
+        "inner-loop",
     ]
 
 
@@ -281,6 +283,44 @@ def test_clean_does_not_delete_active_runs_with_empty_logs(tmp_path: Path) -> No
     assert active_empty_run.exists()
 
 
+def test_clean_archives_done_runs_even_when_logs_are_empty(tmp_path: Path) -> None:
+    runner = CliRunner()
+    loops_root = tmp_path / ".loops"
+    jobs_root = loops_root / "jobs"
+    jobs_root.mkdir(parents=True)
+
+    done_empty_run = jobs_root / "done-empty-run"
+    done_empty_run.mkdir()
+    (done_empty_run / "run.log").write_text("")
+    (done_empty_run / "agent.log").write_text("")
+    (done_empty_run / "run.json").write_text(
+        json.dumps(
+            {
+                "task": {
+                    "provider_id": "github_projects_v2",
+                    "id": "done-empty",
+                    "title": "Done empty run",
+                    "status": "Done",
+                    "url": "https://github.com/acme/api/issues/4",
+                    "created_at": "2026-03-01T00:00:00Z",
+                    "updated_at": "2026-03-01T00:00:00Z",
+                },
+                "needs_user_input": False,
+                "last_state": "DONE",
+                "updated_at": "2026-03-01T00:00:01Z",
+            }
+        )
+    )
+
+    result = runner.invoke(main, ["clean", "--loops-root", str(loops_root)])
+
+    assert result.exit_code == 0, result.output
+    assert "Deleted 0 empty run dir(s)." in result.output
+    assert "Archived 1 completed run dir(s)." in result.output
+    assert not done_empty_run.exists()
+    assert (loops_root / ".archive" / "done-empty-run").exists()
+
+
 def test_clean_uses_suffix_when_archive_target_exists(tmp_path: Path) -> None:
     runner = CliRunner()
     loops_root = tmp_path / ".loops"
@@ -444,6 +484,18 @@ def test_removed_signal_command_errors_explicitly() -> None:
 
     assert result.exit_code != 0
     assert "No such command 'signal'" in result.output
+
+
+def test_python_module_loops_cli_is_not_available() -> None:
+    completed = subprocess.run(
+        [sys.executable, "-m", "loops.cli"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "No module named loops.cli" in completed.stderr
 
 
 def test_inner_loop_reset_creates_initial_run_record_when_missing(
@@ -888,7 +940,7 @@ def test_run_outer_loop_task_url_implies_run_once_and_force(
         "url": "https://github.com/orgs/default/projects/1",
         "status_field": "Status",
     }
-    assert captured["inner_loop_command"] == [sys.executable, "-m", "loops.inner_loop"]
+    assert captured["inner_loop_command"] == [sys.executable, "-m", "loops", "inner-loop"]
     loop_config = captured["config_arg"]
     assert isinstance(loop_config, OuterLoopConfig)
     assert loop_config.force is True

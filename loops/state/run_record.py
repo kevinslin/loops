@@ -6,13 +6,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Literal, Mapping, Optional, cast
 
+from loops.state.constants import VALID_CHECKOUT_MODES
+
 RunState = Literal["RUNNING", "WAITING_ON_REVIEW", "NEEDS_INPUT", "PR_APPROVED", "DONE"]
 ReviewStatus = Literal["open", "changes_requested", "approved"]
 CIStatus = Literal["pending", "success", "failure"]
 AutoApproveVerdict = Literal["none", "APPROVE", "REJECT", "ESCALATE"]
 CheckoutMode = Literal["branch", "worktree"]
 MAX_NEEDS_USER_INPUT_PAYLOAD_BYTES = 16 * 1024
-VALID_CHECKOUT_MODES = {"branch", "worktree"}
+VALID_RUN_STATES: set[str] = {
+    "RUNNING",
+    "WAITING_ON_REVIEW",
+    "NEEDS_INPUT",
+    "PR_APPROVED",
+    "DONE",
+}
 
 
 @dataclass(frozen=True)
@@ -301,6 +309,11 @@ def _validate_checkout_mode(value: Any, *, key: str) -> CheckoutMode:
 
 def read_run_record(path: str | Path) -> RunRecord:
     payload = json.loads(Path(path).read_text())
+    if not isinstance(payload, Mapping):
+        raise TypeError('payload must be a JSON object')
+    task_payload = payload.get("task")
+    if not isinstance(task_payload, Mapping):
+        raise TypeError('payload["task"] must be an object')
     needs_user_input = payload.get("needs_user_input")
     if not isinstance(needs_user_input, bool):
         raise TypeError('payload["needs_user_input"] must be a boolean')
@@ -317,17 +330,36 @@ def read_run_record(path: str | Path) -> RunRecord:
     starting_commit = payload.get("starting_commit", "unknown")
     if not isinstance(starting_commit, str):
         raise TypeError('payload["starting_commit"] must be a string')
+    last_state = payload.get("last_state")
+    if not isinstance(last_state, str) or last_state not in VALID_RUN_STATES:
+        raise ValueError('payload["last_state"] must be a valid run state')
+    updated_at = payload.get("updated_at")
+    if not isinstance(updated_at, str) or not updated_at.strip():
+        raise TypeError('payload["updated_at"] must be a non-empty string')
+    pr_payload = payload.get("pr")
+    if pr_payload is not None and not isinstance(pr_payload, Mapping):
+        raise TypeError('payload["pr"] must be an object or null')
+    codex_session_payload = payload.get("codex_session")
+    if codex_session_payload is not None and not isinstance(
+        codex_session_payload, Mapping
+    ):
+        raise TypeError('payload["codex_session"] must be an object or null')
+    auto_approve_payload = payload.get("auto_approve")
+    if auto_approve_payload is not None and not isinstance(
+        auto_approve_payload, Mapping
+    ):
+        raise TypeError('payload["auto_approve"] must be an object or null')
     return RunRecord(
-        task=Task.from_dict(payload["task"]),
-        pr=RunPR.from_dict(payload["pr"]) if payload.get("pr") else None,
+        task=Task.from_dict(task_payload),
+        pr=RunPR.from_dict(pr_payload) if pr_payload is not None else None,
         codex_session=(
-            CodexSession.from_dict(payload["codex_session"])
-            if payload.get("codex_session")
+            CodexSession.from_dict(codex_session_payload)
+            if codex_session_payload is not None
             else None
         ),
         auto_approve=(
-            RunAutoApprove.from_dict(payload["auto_approve"])
-            if payload.get("auto_approve")
+            RunAutoApprove.from_dict(auto_approve_payload)
+            if auto_approve_payload is not None
             else None
         ),
         needs_user_input=needs_user_input,
@@ -335,8 +367,8 @@ def read_run_record(path: str | Path) -> RunRecord:
         stream_logs_stdout=stream_logs_stdout,
         checkout_mode=checkout_mode,
         starting_commit=starting_commit.strip() or "unknown",
-        last_state=payload["last_state"],
-        updated_at=payload["updated_at"],
+        last_state=cast(RunState, last_state),
+        updated_at=updated_at,
     )
 
 

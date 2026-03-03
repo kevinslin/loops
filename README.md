@@ -108,7 +108,7 @@ Top-level config file: `.loops/config.json`
 - `inner_loop.append_task_url` (boolean, default `true`)
 
 If `inner_loop` is omitted and you run via `python -m loops`, the CLI injects:
-- `command = [sys.executable, "-m", "loops.inner_loop"]`
+- `command = [sys.executable, "-m", "loops", "inner-loop"]`
 - `append_task_url = false`
 
 ## CLI reference
@@ -178,7 +178,7 @@ Notes:
 - URL matching for `--task-url` compares normalized URLs (scheme/host case-insensitive, query/fragment removed, trailing slash ignored).
 - `--task-url` bypasses ready-status filtering for the selected task and raises an error when the URL is missing or ambiguous in poll results.
 - Provider filters (`task_provider_config.filters`) are applied during provider polling before outer-loop status filtering.
-- Outer loop always injects `LOOPS_RUN_DIR` into launched inner-loop processes. For non-`loops.inner_loop` custom launch commands, `inner_loop.env` is also merged into child env; for `loops.inner_loop` commands, runtime settings are read from run-scoped `inner_loop_runtime_config.json`.
+- Outer loop always injects `LOOPS_RUN_DIR` into launched inner-loop processes. For custom commands that are not `loops inner-loop` (or `python -m loops inner-loop`), `inner_loop.env` is also merged into child env; for Loops inner-loop commands, runtime settings are read from run-scoped `inner_loop_runtime_config.json`.
 - PR approval is detected from GitHub review decision or from allowlisted approval comments configured in `task_provider_config`, after optional review-actor filtering from `task_provider_config.allowlist`.
 
 ### `loops clean`
@@ -203,7 +203,7 @@ Behavior summary:
 
 - A run is deleted when both `run.log` and `agent.log` exist and are byte-empty, and the run is not in an active state.
 - A run is archived when `run.json` exists and `last_state == "DONE"`.
-- Empty-run deletion takes precedence over archiving when both conditions match.
+- `DONE` runs are always archived (never deleted as empty runs).
 - Completed runs are moved to `.loops/.archive/`, and name collisions are resolved by appending `-1`, `-2`, etc.
 
 ### `loops doctor`
@@ -264,16 +264,15 @@ Behavior summary:
 - If `run.json` is missing, task fields fall back to `LOOPS_TASK_*` env vars (or defaults).
 - Exact state-mapped prompt strings are documented in `DESIGN.md` under `### Prompt catalog`.
 
-Direct module equivalents still exist:
+Direct module entrypoint:
 
 - `python -m loops`
-- `python -m loops.inner_loop`
 
 ## Environment variables
 
 - `GITHUB_TOKEN` or `GH_TOKEN`: required for GitHub Projects provider startup checks (`GH_TOKEN` is accepted as alias fallback).
 - `CODEX_CMD`: command used for Codex execution fallback when run-scoped runtime config does not set it. Default: `codex exec --yolo`.
-- `LOOPS_RUN_DIR`: run directory for `loops.inner_loop` when `--run-dir` is not passed.
+- `LOOPS_RUN_DIR`: run directory for `loops inner-loop` when `--run-dir` is not passed.
 - `LOOPS_RUN_DIR` is also required by `scripts/push-pr.py`, which writes deterministic PR URL discovery artifact `${LOOPS_RUN_DIR}/push-pr.url`.
 - `LOOPS_PROMPT_FILE` / `CODEX_PROMPT_FILE`: optional base prompt file fallback when run-scoped runtime config does not set one.
 - `LOOPS_HANDOFF_HANDLER`: handoff strategy fallback for direct/manual inner-loop runs (`stdin_handler` or `gh_comment_handler`).

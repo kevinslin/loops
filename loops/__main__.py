@@ -2,7 +2,7 @@
 
 import sys
 
-from loops.cli import main
+from loops.core.cli import main
 
 
 _CLI_SUBCOMMANDS = {"init", "run", "inner-loop", "signal", "doctor", "clean"}
