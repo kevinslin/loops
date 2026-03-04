@@ -1003,6 +1003,134 @@ def test_update_status_mutates_when_target_status_differs(monkeypatch) -> None:
     ]
 
 
+def test_update_status_paginates_status_field_lookup(monkeypatch) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_run(*, query, variables, github_token, gh_bin):
+        calls.append((query, dict(variables)))
+        if "updateProjectV2ItemFieldValue" in query:
+            return {"data": {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": "ITEM_1"}}}}
+        if "fields(first:" in query:
+            fields_after = variables.get("fieldsAfter")
+            if fields_after is None:
+                return {
+                    "data": {
+                        "organization": {
+                            "projectV2": {
+                                "id": "PROJ_1",
+                                "fields": {
+                                    "pageInfo": {"hasNextPage": True, "endCursor": "CURSOR_1"},
+                                    "nodes": [
+                                        {
+                                            "__typename": "ProjectV2SingleSelectField",
+                                            "id": "FIELD_PRIORITY",
+                                            "name": "Priority",
+                                            "options": [
+                                                {"id": "OPT_HIGH", "name": "High"},
+                                            ],
+                                        }
+                                    ],
+                                },
+                            }
+                        }
+                    }
+                }
+            if fields_after == "CURSOR_1":
+                return {
+                    "data": {
+                        "organization": {
+                            "projectV2": {
+                                "id": "PROJ_1",
+                                "fields": {
+                                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                    "nodes": [
+                                        {
+                                            "__typename": "ProjectV2SingleSelectField",
+                                            "id": "FIELD_STATUS",
+                                            "name": "Status",
+                                            "options": [
+                                                {"id": "OPT_TODO", "name": "Todo"},
+                                                {"id": "OPT_PROGRESS", "name": "In Progress"},
+                                                {"id": "OPT_DONE", "name": "Done"},
+                                            ],
+                                        }
+                                    ],
+                                },
+                            }
+                        }
+                    }
+                }
+            raise AssertionError(f"unexpected fieldsAfter value: {fields_after}")
+        return {
+            "data": {
+                "organization": {
+                    "projectV2": {
+                        "items": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [
+                                {
+                                    "id": "ITEM_1",
+                                    "fieldValueByName": {
+                                        "__typename": "ProjectV2ItemFieldSingleSelectValue",
+                                        "name": "Todo",
+                                    },
+                                    "content": {
+                                        "__typename": "Issue",
+                                        "id": "ISSUE_1",
+                                        "title": "task",
+                                        "url": "https://github.com/acme/repo/issues/1",
+                                        "createdAt": "2026-02-03T00:00:00Z",
+                                        "updatedAt": "2026-02-03T01:00:00Z",
+                                        "repository": {"nameWithOwner": "acme/repo"},
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                }
+            }
+        }
+
+    monkeypatch.setattr("loops.task_providers.github_projects_v2._run_gh_graphql", fake_run)
+    provider = GithubProjectsV2TaskProvider(
+        GithubProjectsV2TaskProviderConfig(
+            url="https://github.com/orgs/acme/projects/1",
+            github_token="token",
+        )
+    )
+
+    provider.update_status("ISSUE_1", "IN_PROGRESS")
+
+    field_calls = [variables for query, variables in calls if "fields(first:" in query]
+    assert field_calls == [
+        {
+            "login": "acme",
+            "number": 1,
+            "fieldsFirst": 100,
+            "fieldsAfter": None,
+        },
+        {
+            "login": "acme",
+            "number": 1,
+            "fieldsFirst": 100,
+            "fieldsAfter": "CURSOR_1",
+        },
+    ]
+    mutation_calls = [
+        variables
+        for query, variables in calls
+        if "updateProjectV2ItemFieldValue" in query
+    ]
+    assert mutation_calls == [
+        {
+            "projectId": "PROJ_1",
+            "itemId": "ITEM_1",
+            "fieldId": "FIELD_STATUS",
+            "optionId": "OPT_PROGRESS",
+        }
+    ]
+
+
 def test_update_status_raises_when_status_mapping_missing(monkeypatch) -> None:
     def fake_run(*, query, variables, github_token, gh_bin):
         if "fields(first:" in query:

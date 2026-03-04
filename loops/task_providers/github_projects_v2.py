@@ -245,11 +245,15 @@ query($login: String!, $number: Int!, $after: String, $first: Int!, $statusField
 """
 
 _ORG_STATUS_FIELD_QUERY = """
-query($login: String!, $number: Int!, $fieldsFirst: Int!) {
+query($login: String!, $number: Int!, $fieldsFirst: Int!, $fieldsAfter: String) {
   organization(login: $login) {
     projectV2(number: $number) {
       id
-      fields(first: $fieldsFirst) {
+      fields(first: $fieldsFirst, after: $fieldsAfter) {
+        pageInfo {
+          endCursor
+          hasNextPage
+        }
         nodes {
           __typename
           ... on ProjectV2SingleSelectField {
@@ -268,11 +272,15 @@ query($login: String!, $number: Int!, $fieldsFirst: Int!) {
 """
 
 _USER_STATUS_FIELD_QUERY = """
-query($login: String!, $number: Int!, $fieldsFirst: Int!) {
+query($login: String!, $number: Int!, $fieldsFirst: Int!, $fieldsAfter: String) {
   user(login: $login) {
     projectV2(number: $number) {
       id
-      fields(first: $fieldsFirst) {
+      fields(first: $fieldsFirst, after: $fieldsAfter) {
+        pageInfo {
+          endCursor
+          hasNextPage
+        }
         nodes {
           __typename
           ... on ProjectV2SingleSelectField {
@@ -437,23 +445,40 @@ class GithubProjectsV2TaskProvider:
     def _load_status_field(self, *, github_token: str) -> ProjectStatusField:
         if self._status_field_cache is not None:
             return self._status_field_cache
-        response = _run_gh_graphql(
-            query=_select_status_field_query(self.locator.owner_type),
-            variables={
-                "login": self.locator.login,
-                "number": self.locator.number,
-                "fieldsFirst": STATUS_FIELD_QUERY_PAGE_SIZE,
-            },
-            github_token=github_token,
-            gh_bin=self.gh_bin,
-        )
-        status_field = _extract_project_status_field(
-            payload=response,
-            owner_type=self.locator.owner_type,
-            status_field_name=self.config.status_field,
-        )
-        self._status_field_cache = status_field
-        return status_field
+        fields_after: str | None = None
+        while True:
+            response = _run_gh_graphql(
+                query=_select_status_field_query(self.locator.owner_type),
+                variables={
+                    "login": self.locator.login,
+                    "number": self.locator.number,
+                    "fieldsFirst": STATUS_FIELD_QUERY_PAGE_SIZE,
+                    "fieldsAfter": fields_after,
+                },
+                github_token=github_token,
+                gh_bin=self.gh_bin,
+            )
+            project_id, fields, page_info = _extract_project_field_page(
+                payload=response,
+                owner_type=self.locator.owner_type,
+            )
+            target_field = _find_status_field(fields, status_field_name=self.config.status_field)
+            if target_field is not None:
+                status_field = _build_project_status_field(
+                    project_id=project_id,
+                    target_field=target_field,
+                )
+                self._status_field_cache = status_field
+                return status_field
+
+            has_next_page = bool(page_info.get("hasNextPage"))
+            if not has_next_page:
+                break
+            fields_after = page_info.get("endCursor")
+            if not fields_after:
+                raise RuntimeError("Pagination missing endCursor while hasNextPage=true")
+
+        raise RuntimeError(f"project field {self.config.status_field!r} was not found")
 
 
 def _select_query(owner_type: OwnerType) -> str:
@@ -643,6 +668,21 @@ def _extract_project_status_field(
     owner_type: OwnerType,
     status_field_name: str,
 ) -> ProjectStatusField:
+    project_id, fields, _page_info = _extract_project_field_page(
+        payload=payload,
+        owner_type=owner_type,
+    )
+    target_field = _find_status_field(fields, status_field_name=status_field_name)
+    if target_field is None:
+        raise RuntimeError(f"project field {status_field_name!r} was not found")
+    return _build_project_status_field(project_id=project_id, target_field=target_field)
+
+
+def _extract_project_field_page(
+    *,
+    payload: dict[str, Any],
+    owner_type: OwnerType,
+) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     data = payload.get("data")
     if not isinstance(data, dict):
         raise RuntimeError("missing data payload while resolving project status field")
@@ -656,21 +696,42 @@ def _extract_project_status_field(
     project_id = project.get("id")
     if not isinstance(project_id, str) or not project_id:
         raise RuntimeError("project id missing while resolving status field")
-    fields = ((project.get("fields") or {}).get("nodes") or [])
+    fields_payload = project.get("fields")
+    if not isinstance(fields_payload, dict):
+        raise RuntimeError("project fields payload missing while resolving status field")
+    fields = fields_payload.get("nodes") or []
     if not isinstance(fields, list):
         raise RuntimeError("project fields payload missing while resolving status field")
+    raw_page_info = fields_payload.get("pageInfo")
+    if isinstance(raw_page_info, dict):
+        page_info = raw_page_info
+    else:
+        page_info = {"hasNextPage": False, "endCursor": None}
+    typed_fields = [field for field in fields if isinstance(field, dict)]
+    return project_id, typed_fields, page_info
+
+
+def _find_status_field(
+    fields: list[dict[str, Any]],
+    *,
+    status_field_name: str,
+) -> dict[str, Any] | None:
     target_field: dict[str, Any] | None = None
     for field in fields:
-        if not isinstance(field, dict):
-            continue
         raw_name = field.get("name")
         if not isinstance(raw_name, str):
             continue
         if raw_name.strip().casefold() == status_field_name.strip().casefold():
             target_field = field
             break
-    if target_field is None:
-        raise RuntimeError(f"project field {status_field_name!r} was not found")
+    return target_field
+
+
+def _build_project_status_field(
+    *,
+    project_id: str,
+    target_field: dict[str, Any],
+) -> ProjectStatusField:
     field_id = target_field.get("id")
     if not isinstance(field_id, str) or not field_id:
         raise RuntimeError("status field id missing while resolving status field")

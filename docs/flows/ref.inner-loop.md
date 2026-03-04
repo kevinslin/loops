@@ -75,6 +75,7 @@ function run_inner_loop(run_dir):
 - Default state hooks apply deterministic provider status transitions: enter `RUNNING` -> `IN_PROGRESS`, enter `DONE` -> `DONE`.
 - Additional inline review gate: when review is not already approved and `ci_status == success`, if `auto_approve_enabled` is true and `RunRecord.auto_approve` is unset/`none`, run one-time `$ag-judge` and persist judgement on `RunRecord`.
 - Runtime config comes from CLI options plus run-scoped `inner_loop_runtime_config.json`; env fallbacks are limited to designated runtime keys (`CODEX_CMD`, `LOOPS_PROMPT_FILE`/`CODEX_PROMPT_FILE`, `LOOPS_HANDOFF_HANDLER`, `LOOPS_AUTO_APPROVE_ENABLED`, `LOOPS_STREAM_LOGS_STDOUT`) when runtime config is absent or omits them. `stream_logs_stdout` in `inner_loop_runtime_config.json` controls `run.log` stdout mirroring, and malformed runtime config is treated as a startup error.
+- `loops inner-loop --reset` removes run-local `state_hooks.json` so hook dedupe state does not suppress deterministic state transitions on a fresh retry in the same run directory.
 - In sync-mode launches, outer loop writes `stream_logs_stdout=true` in `inner_loop_runtime_config.json`, which causes inner-loop `run.log` appends to be mirrored to stdout.
 - Initial Codex prompt setup now reads `RunRecord.checkout_mode`; when mode is `worktree`, the first RUNNING turn adds explicit instructions to create/switch to a task worktree before edits.
 
@@ -206,6 +207,7 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
 ### Supporting control paths
 
 - Codex turn behavior (`loops/core/inner_loop.py:601`):
+  - Base prompt contract requires using `$dev.loop` to implement the task and open/update the PR.
   - Builds prompt (standard vs review-feedback path).
   - On the first RUNNING turn, if `run_record.checkout_mode == worktree`, prepends worktree setup instructions to the prompt.
   - Base prompt contract says Codex may wait for the `a-review` subagent but must not wait for human PR comments/reviews because the outer harness performs comment monitoring and re-invokes Codex when needed.

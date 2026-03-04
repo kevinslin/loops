@@ -349,7 +349,7 @@ Task provider (GitHub Projects V2)
 - Writes inner-loop orchestration logs to `[INNER_LOOP_ROOT]/run.log` and appends Codex output there.
 - Streams Codex/agent output to `[INNER_LOOP_ROOT]/agent.log`.
 - In `sync_mode=true`, also mirrors inner-loop `run.log` lines to stdout.
-- Supports a manual `--reset` operation to clear orchestration/session/input fields in `run.json` while preserving task metadata and existing PR link identity.
+- Supports a manual `--reset` operation to clear orchestration/session/input fields in `run.json`, preserve task metadata and existing PR link identity, and remove `state_hooks.json` so state hooks run again on the next attempt.
 
 #### Task provider
 - Implements `TaskProvider.poll(limit)`.
@@ -617,7 +617,7 @@ The inner loop relies on a small explicit skill surface. These skills are part o
 
 | Skill / contract | Where Loops invokes or enforces it | How it makes Loops work |
 |---|---|---|
-| implementation workflow prompt contract | Base prompt for Codex turns (`RUNNING` and follow-up turns) | Keeps task execution in a single end-to-end implementation workflow (implement -> open/update PR -> continue until terminal state). |
+| implementation workflow prompt contract | Base prompt for Codex turns (`RUNNING` and follow-up turns) | Requires using `$dev.loop` for end-to-end implementation workflow (implement -> open/update PR -> continue until terminal state). |
 | deterministic state hooks | Inner-loop state dispatcher (`on_enter` / `on_exit`) | Applies provider task-status transitions deterministically (`RUNNING` -> `IN_PROGRESS`, `DONE` -> `DONE`) with persisted dedupe and registration-order execution. |
 | `a-review` | Base prompt contract (`RUNNING` only; exactly once per conversation) | Provides an in-turn quality gate before review polling; Loops requires posting the result to PR comments so reviewers and later turns share context. |
 | initial PR push command sequence | `RUNNING` initial PR creation | Executes `invoke:commit-code` (if needed), direct `scripts/push-pr.py` invocation, then `invoke:check-ci`/`invoke:fix-pr`; `push-pr.py` writes `${LOOPS_RUN_DIR}/push-pr.url` for deterministic discovery. |
@@ -652,7 +652,7 @@ The inner loop builds prompts in `loops/core/inner_loop.py` from a shared base t
 Base template (always present in Codex turns):
 
 ```text
-Implement the task and open a PR.
+Use the $dev.loop skill to implement the task and open a PR.
 You are running inside the loops test harness. NEVER wait for human PR review/comments inside the agent; the harness monitors review activity and will re-invoke you when feedback arrives.
 When you run a-review, always post its response to the PR comments. If there are no findings, explicitly post that no issues were found.
 NEVER use the gen-notifier skill while running inside loops.

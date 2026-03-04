@@ -36,6 +36,7 @@ from loops.state.constants import (
     RUN_LOG_FILE_NAME,
     RUN_RECORD_FILE_NAME,
     SIGNAL_OFFSET_FILE,
+    STATE_HOOKS_LEDGER_FILE,
 )
 from loops.utils.logging import (
     STREAM_LOGS_STDOUT_ENV,
@@ -58,7 +59,7 @@ from loops.state.run_record import (
 from loops.task_providers.base import TaskProvider
 
 PROMPT_TEMPLATE = (
-    "Implement the task and open a PR.\n"
+    "Use the $dev.loop skill to implement the task and open a PR.\n"
     "You are running inside the loops test harness. Wait only for review from the "
     "a-review subagent. NEVER wait for human PR "
     "review/comments inside the agent; the harness monitors review activity and "
@@ -220,6 +221,23 @@ def reset_run_record(run_dir: Path) -> RunRecord:
 
     if task is None:
         task = _build_reset_task_from_env(resolved_run_dir)
+
+    state_hook_ledger_path = resolved_run_dir / STATE_HOOKS_LEDGER_FILE
+    if state_hook_ledger_path.exists():
+        try:
+            state_hook_ledger_path.unlink()
+            append_log(
+                run_log,
+                f"[loops] removed state hook ledger during reset ({state_hook_ledger_path})",
+            )
+        except Exception as exc:
+            append_log(
+                run_log,
+                (
+                    "[loops] warning: failed to clear state hook ledger during reset "
+                    f"({state_hook_ledger_path}): {exc}"
+                ),
+            )
 
     runtime_config = _load_runtime_config(run_dir=resolved_run_dir, run_log=run_log)
     runtime_env = runtime_config.env if runtime_config is not None else None

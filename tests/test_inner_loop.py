@@ -1091,7 +1091,7 @@ def test_inner_loop_uses_existing_needs_input_payload_and_user_response_in_promp
     assert persisted.needs_user_input_payload is None
 
     prompts = prompt_log_path.read_text()
-    assert "Implement the task and open a PR." in prompts
+    assert "Use the $dev.loop skill to implement the task and open a PR." in prompts
     assert "Wait only for review from the a-review subagent." in prompts
     assert (
         "NEVER wait for human PR review/comments inside the agent; the harness "
