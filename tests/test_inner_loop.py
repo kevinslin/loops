@@ -174,7 +174,7 @@ def _runtime_context(
         sleep_fn = lambda _seconds: None
     return inner_loop_module.InnerLoopRuntimeContext(
         run_dir=run_dir,
-        run_id=str(run_dir),
+        run_id=str(run_dir.resolve()),
         run_json_path=run_dir / "run.json",
         run_log=run_dir / "run.log",
         agent_log=run_dir / "agent.log",

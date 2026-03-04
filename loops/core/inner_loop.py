@@ -410,7 +410,10 @@ def run_inner_loop(
             task_provider=task_provider,
         )
         control = LoopControlState(backoff_seconds=initial_poll_seconds)
-        hook_logger = lambda message: append_log(run_log, message)
+
+        def hook_logger(message: str) -> None:
+            append_log(run_log, message)
+
         hook_executor = build_default_hook_executor(
             run_dir=run_dir,
             logger=hook_logger,

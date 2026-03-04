@@ -70,11 +70,16 @@ class StateHookRegistry:
         callback: HookFn,
     ) -> None:
         _validate_state(state)
-        if not hook_id.strip():
+        hook_id = hook_id.strip()
+        if not hook_id:
             raise ValueError("hook_id must be non-empty")
-        self._registry.setdefault(phase, {}).setdefault(state, []).append(
-            _RegisteredHook(hook_id=hook_id, callback=callback)
-        )
+        hooks_for_state = self._registry.setdefault(phase, {}).setdefault(state, [])
+        if any(existing.hook_id == hook_id for existing in hooks_for_state):
+            raise ValueError(
+                "duplicate hook registration "
+                f"phase={phase} state={state} hook_id={hook_id}"
+            )
+        hooks_for_state.append(_RegisteredHook(hook_id=hook_id, callback=callback))
 
 
 class HookExecutor:

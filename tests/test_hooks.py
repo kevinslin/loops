@@ -3,12 +3,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from loops.core.hooks import (
     HookExecutor,
     StateHookRegistry,
     TaskStatusHook,
     TransitionContext,
 )
+from loops.state.constants import STATE_HOOKS_LEDGER_FILE
 from loops.task_providers.base import TaskStatus
 
 
@@ -82,8 +85,24 @@ def test_hook_executor_dedupes_by_run_phase_state_and_hook_id(tmp_path: Path) ->
     executor.execute_on_enter(state="RUNNING", context=context)
 
     assert counter["value"] == 1
-    payload = json.loads((tmp_path / "state_hooks.json").read_text())
+    payload = json.loads((tmp_path / STATE_HOOKS_LEDGER_FILE).read_text())
     assert payload == {"executed": ["run-1:enter:RUNNING:OnceOnlyHook"]}
+
+
+def test_hook_registry_rejects_duplicate_hook_registration() -> None:
+    registry = StateHookRegistry()
+    registry.register_on_enter(
+        "RUNNING",
+        hook_id="TaskStatusHook",
+        callback=lambda _ctx: None,
+    )
+
+    with pytest.raises(ValueError, match="duplicate hook registration"):
+        registry.register_on_enter(
+            "RUNNING",
+            hook_id="TaskStatusHook",
+            callback=lambda _ctx: None,
+        )
 
 
 def test_hook_executor_logs_and_continues_when_hook_fails(tmp_path: Path) -> None:

@@ -41,7 +41,7 @@ Close the loop on building a coding agent harness that can pick up tasks, execut
 
 Type/interface mapping (section 2 and runtime):
 - `Task` concept -> `Task` type.
-- `TaskProvider` concept -> `TaskProvider` interface (`poll(limit?) -> Promise<Task[]>`, `update_status(taskId, status)`).
+- `TaskProvider` concept -> `TaskProvider` protocol (`poll(limit: int | None = None) -> list[Task]`, `update_status(task_id: str, status: TaskStatus) -> None`).
 - `RunRecord` concept -> `RunRecord` type and `run.json`.
 - `RunState` concept -> `RunState` type.
 - `OuterState` concept -> `.loops/outer_state.json` ledger (`OuterLoopState` runtime model).
@@ -189,9 +189,9 @@ type TaskProvider = {
     task_provider_config: any
     // get matching tasks.
     // github_projects_v2 ordering: oldest task first by created_at, then limit
-    poll(limit?: number): Promise<Task[]>
+    poll(limit?: number): Task[]
     // idempotent status update on the provider backend
-    update_status(taskId: string, status: TaskStatus): Promise<void>
+    update_status(taskId: string, status: TaskStatus): void
 } 
 
 type GithubProjectsV2TaskProviderConfig = {
@@ -225,7 +225,7 @@ Key types:
 - `OuterLoopConfig`: poll interval, parallelism, task status filter, force mode, merge-gate controls, handoff strategy, and checkout strategy (`branch` or `worktree`).
 - `InnerLoopConfig`: single prompt, required skills, user handoff handler.
 - `Task`: provider metadata (id, title, status, url, timestamps, optional repo).
-- `TaskProvider`: provider interface with `poll(limit?)`.
+- `TaskProvider`: synchronous provider protocol with `poll(limit?) -> list[Task]` and `update_status(task_id, status) -> None`.
 - `RunState`: `RUNNING | WAITING_ON_REVIEW | NEEDS_INPUT | PR_APPROVED | DONE`.
 - `RunRecord`: persisted run metadata for `run.json`, including checkout strategy and starting commit for the run.
 
@@ -521,7 +521,7 @@ Precedence rule: `NEEDS_INPUT` has priority over `DONE`; if `needs_user_input=tr
 
 - Before state logic, execute `on_enter` hooks for the derived state in registration order.
   - Default hook behavior: entering `RUNNING` updates provider task status to `IN_PROGRESS`, entering `DONE` updates provider task status to `DONE`.
-  - Hook execution is deduped per run using key `${run_id}:${phase}:${state}:${hook_class_name}` and persisted in run-local `state_hooks.json`.
+  - Hook execution is deduped per run using key `${run_id}:${phase}:${state}:${hook_id}` and persisted in run-local `state_hooks.json`.
 - After state logic (or on handler error), execute `on_exit` hooks for the same state in registration order.
 
 - **If `RUNNING`**: execute one Codex turn with `<state>RUNNING</state>`.

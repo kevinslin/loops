@@ -51,7 +51,7 @@ Loops currently launches inner loops via a configured command, but there is no c
 
 ### Important Context
 - Unified prompt from `DESIGN.md`:
-  "Implement the task, open a PR, wait for review, address feedback, and cleanup when approved.\nTask: [task]"
+  "Implement the task, open a PR, address feedback, and cleanup when approved.\nTask: [task]"
 - Prior art: `/Users/kevinlin/code/skills/active/dev.watch/scripts/loops.sh` for Codex invocation.
 
 ---

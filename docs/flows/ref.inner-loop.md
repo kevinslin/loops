@@ -35,7 +35,7 @@ How does the inner loop execute a single run directory end-to-end, derive state 
 
 ### Runtime path
 
-#### Sudocode (inner-loop state machine)
+#### Pseudocode (sudocode; inner-loop state machine)
 
 Source: `loops/core/inner_loop.py`, `loops/state/run_record.py`, `loops/utils/logging.py`
 
@@ -71,7 +71,7 @@ function run_inner_loop(run_dir):
 
 - Core state is derived each iteration from `run.json` (`pr`, `needs_user_input`), not from cached in-memory state.
 - Transition gates include: review freshness (`latest_review_submitted_at > review_addressed_at`), idle polling threshold escalation, and max-iteration fallback.
-- State hooks run around each iteration's state handler (`on_enter` before handler, `on_exit` in `finally`) with per-run dedupe key `${run_id}:${phase}:${state}:${hook_class_name}` persisted in `state_hooks.json`.
+- State hooks run around each iteration's state handler (`on_enter` before handler, `on_exit` in `finally`) with per-run dedupe key `${run_id}:${phase}:${state}:${hook_id}` persisted in `state_hooks.json`.
 - Default state hooks apply deterministic provider status transitions: enter `RUNNING` -> `IN_PROGRESS`, enter `DONE` -> `DONE`.
 - Additional inline review gate: when review is not already approved and `ci_status == success`, if `auto_approve_enabled` is true and `RunRecord.auto_approve` is unset/`none`, run one-time `$ag-judge` and persist judgement on `RunRecord`.
 - Runtime config comes from CLI options plus run-scoped `inner_loop_runtime_config.json`; env fallbacks are limited to designated runtime keys (`CODEX_CMD`, `LOOPS_PROMPT_FILE`/`CODEX_PROMPT_FILE`, `LOOPS_HANDOFF_HANDLER`, `LOOPS_AUTO_APPROVE_ENABLED`, `LOOPS_STREAM_LOGS_STDOUT`) when runtime config is absent or omits them. `stream_logs_stdout` in `inner_loop_runtime_config.json` controls `run.log` stdout mirroring, and malformed runtime config is treated as a startup error.
