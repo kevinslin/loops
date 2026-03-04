@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal, Mapping
@@ -200,8 +201,24 @@ def _load_hook_ledger(path: Path, *, logger: LoggerFn) -> set[str]:
 
 
 def _write_hook_ledger(path: Path, *, executed: set[str], logger: LoggerFn) -> None:
+    tmp_path = path.with_name(f"{path.name}.tmp")
     try:
         payload = {"executed": sorted(executed)}
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tmp_path.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        tmp_path.replace(path)
+        dir_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        dir_fd = os.open(path.parent, dir_flags)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
     except Exception as exc:  # pragma: no cover - defensive filesystem handling
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
         logger(f"[loops][hooks] failed to persist hook ledger path={path}: {exc}")

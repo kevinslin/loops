@@ -31,8 +31,8 @@ def _build_github_projects_v2_provider(
         raise TypeError(
             "github_projects_v2 config model must be GithubProjectsV2TaskProviderConfig"
         )
-    runtime_token = environ.get("GITHUB_TOKEN") or environ.get("GH_TOKEN")
-    if config_model.github_token is None and runtime_token and runtime_token.strip():
+    runtime_token = (environ.get("GITHUB_TOKEN") or environ.get("GH_TOKEN") or "").strip()
+    if config_model.github_token is None and runtime_token:
         config_model = config_model.model_copy(update={"github_token": runtime_token})
     return GithubProjectsV2TaskProvider(config_model)
 

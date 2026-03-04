@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import loops.core.hooks as hooks_module
 from loops.core.hooks import (
     HookExecutor,
     StateHookRegistry,
@@ -180,3 +181,30 @@ def test_task_status_hook_skips_when_provider_missing(tmp_path: Path) -> None:
 
     assert any("missing_provider_or_task_id" in entry for entry in logs)
     assert not (tmp_path / STATE_HOOKS_LEDGER_FILE).exists()
+
+
+def test_write_hook_ledger_persists_with_atomic_replace(tmp_path: Path, monkeypatch) -> None:
+    ledger_path = tmp_path / STATE_HOOKS_LEDGER_FILE
+    replace_calls: list[tuple[Path, Path]] = []
+    real_replace = Path.replace
+
+    def tracking_replace(self: Path, target: Path | str) -> Path:
+        target_path = Path(target)
+        replace_calls.append((self, target_path))
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", tracking_replace)
+
+    hooks_module._write_hook_ledger(
+        ledger_path,
+        executed={"run-1:enter:RUNNING:OnceOnlyHook"},
+        logger=lambda _message: None,
+    )
+
+    payload = json.loads(ledger_path.read_text())
+    assert payload == {"executed": ["run-1:enter:RUNNING:OnceOnlyHook"]}
+    assert len(replace_calls) == 1
+    src_path, dst_path = replace_calls[0]
+    assert src_path.name.endswith(".tmp")
+    assert dst_path == ledger_path
+    assert not src_path.exists()
