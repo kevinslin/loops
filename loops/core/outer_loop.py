@@ -523,11 +523,16 @@ def upgrade_config_payload(payload: Any) -> tuple[dict[str, Any], bool]:
     return upgraded, changed
 
 
-def build_provider(config: LoopsConfig) -> TaskProvider:
+def build_provider(
+    config: LoopsConfig,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> TaskProvider:
     """Construct the task provider for the configured provider id."""
 
+    effective_environ = os.environ if environ is None else environ
     definition = get_provider_definition(config.task_provider_id)
-    _validate_required_secrets(definition.metadata, environ=os.environ)
+    _validate_required_secrets(definition.metadata, environ=effective_environ)
     try:
         provider_config = definition.metadata.provider_config_model.model_validate(
             config.task_provider_config
@@ -537,7 +542,7 @@ def build_provider(config: LoopsConfig) -> TaskProvider:
             f"task_provider_config is invalid for provider "
             f"'{definition.metadata.id}': {exc}"
         ) from exc
-    return definition.build(provider_config)
+    return definition.build(provider_config, effective_environ)
 
 
 def _resolve_provider_review_actor_usernames(provider: TaskProvider) -> tuple[str, ...]:

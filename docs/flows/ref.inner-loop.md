@@ -1,6 +1,6 @@
 # Inner Loop Flow
 
-Last updated: 2026-03-02
+Last updated: 2026-03-03
 
 ## Overview
 
@@ -35,7 +35,7 @@ How does the inner loop execute a single run directory end-to-end, derive state 
 
 ### Runtime path
 
-#### Pseudocode (inner-loop state machine)
+#### Pseudocode (sudocode; inner-loop state machine)
 
 Source: `loops/core/inner_loop.py`, `loops/state/run_record.py`, `loops/utils/logging.py`
 
@@ -47,10 +47,15 @@ function run_inner_loop(run_dir):
   while iteration <= max_iterations:
     run_record = read_run_record(run_json)
     state = derive_run_state(run_record.pr, run_record.needs_user_input)
+    hook_ctx = transition_context(run_id, from_state=run_record.last_state, to_state=state)
+    execute_on_enter_hooks(state, hook_ctx)
 
     if state == DONE:
       return run_record
     transition = dispatch_state_handler(state, run_record, runtime, control)
+    next_state = derive_next_state(transition.run_record)
+    if next_state != state:
+      execute_on_exit_hooks(state, transition_context(run_id, from_state=state, to_state=next_state))
     // handlers:
     // - handle_needs_input_state
     // - handle_running_state
@@ -66,8 +71,12 @@ function run_inner_loop(run_dir):
 
 - Core state is derived each iteration from `run.json` (`pr`, `needs_user_input`), not from cached in-memory state.
 - Transition gates include: review freshness (`latest_review_submitted_at > review_addressed_at`), idle polling threshold escalation, and max-iteration fallback.
+- State hooks run around iteration dispatch boundaries: `on_enter` runs before the state handler, and `on_exit` runs only when the next derived state differs from the current state. Hook dedupe key remains `${run_id}:${phase}:${state}:${hook_id}` and is persisted in `state_hooks.json`.
+- Default state hooks apply deterministic provider status transitions: enter `RUNNING` -> `IN_PROGRESS`, enter `DONE` -> `DONE`.
 - Additional inline review gate: when review is not already approved and `ci_status == success`, if `auto_approve_enabled` is true and `RunRecord.auto_approve` is unset/`none`, run one-time `$ag-judge` and persist judgement on `RunRecord`.
 - Runtime config comes from CLI options plus run-scoped `inner_loop_runtime_config.json`; env fallbacks are limited to designated runtime keys (`CODEX_CMD`, `LOOPS_PROMPT_FILE`/`CODEX_PROMPT_FILE`, `LOOPS_HANDOFF_HANDLER`, `LOOPS_AUTO_APPROVE_ENABLED`, `LOOPS_STREAM_LOGS_STDOUT`) when runtime config is absent or omits them. `stream_logs_stdout` in `inner_loop_runtime_config.json` controls `run.log` stdout mirroring, and malformed runtime config is treated as a startup error.
+- Provider resolution for deterministic state hooks validates required secrets against the run's effective runtime environment (runtime-config env overrides merged over process env), not only the parent process environment.
+- `loops inner-loop --reset` removes run-local `state_hooks.json` so hook dedupe state does not suppress deterministic state transitions on a fresh retry in the same run directory.
 - In sync-mode launches, outer loop writes `stream_logs_stdout=true` in `inner_loop_runtime_config.json`, which causes inner-loop `run.log` appends to be mirrored to stdout.
 - Initial Codex prompt setup now reads `RunRecord.checkout_mode`; when mode is `worktree`, the first RUNNING turn adds explicit instructions to create/switch to a task worktree before edits.
 
@@ -152,6 +161,7 @@ None identified.
 | `pr.merged_at` | Written by PR status poll (`loops/core/inner_loop.py:767`, persisted at `loops/core/inner_loop.py:392`) | Reloaded each iteration (`loops/core/inner_loop.py:87`) | Triggers `DONE` via `derive_run_state` (`loops/state/run_record.py:142`) | Yes |
 | `pr.latest_review_submitted_at` and `pr.review_addressed_at` | Written in gh fetch + review-feedback codex completion (`loops/core/inner_loop.py:767`, `loops/core/inner_loop.py:659`) | Reloaded each iteration (`loops/core/inner_loop.py:87`) | Checked by `_is_new_review` gate (`loops/core/inner_loop.py:727`) | Yes |
 | `codex_session.id` | Extracted and persisted after Codex turn (`loops/core/inner_loop.py`) | Reloaded each iteration (`loops/core/inner_loop.py:87`) | Drives `codex exec resume <session_id>` for follow-up turns and remains durable session metadata | Yes |
+| `state_hooks.json` executed keys | Written by hook executor after successful hook callbacks | Reloaded at inner-loop start and consulted on each hook execution | Prevents duplicate hook execution during retries/restarts | Yes |
 | `handoff_gh_comment_state.json` | Written by `gh_comment_handler` after prompt/reply detection | Reloaded on each NEEDS_INPUT iteration when handler is `gh_comment_handler` | Enforces idempotent prompt posting and reply de-duplication | Yes |
 
 ### Inner loop state-machine execution
@@ -198,11 +208,13 @@ function runInnerLoop(runDir: Path, opts: Options): RunRecord {
 ### Supporting control paths
 
 - Codex turn behavior (`loops/core/inner_loop.py:601`):
+  - Base prompt contract requires using `$dev.loop` to implement the task and open/update the PR.
   - Builds prompt (standard vs review-feedback path).
   - On the first RUNNING turn, if `run_record.checkout_mode == worktree`, prepends worktree setup instructions to the prompt.
   - Base prompt contract says Codex may wait for the `a-review` subagent but must not wait for human PR comments/reviews because the outer harness performs comment monitoring and re-invokes Codex when needed.
   - Base prompt contract requires posting `a-review` output to PR comments whenever `a-review` runs, including explicit no-findings comments.
   - Base prompt contract explicitly forbids using the `gen-notifier` skill while running inside loops.
+  - Base prompt contract explicitly forbids direct issue/project task-status mutations because the harness now applies deterministic state-transition hooks.
   - Base prompt contract requires explicit initial PR sequence while state is `RUNNING`: invoke:commit-code (if needed), run `scripts/push-pr.py`, then invoke:check-ci and invoke:fix-pr on failures.
   - Selects invocation strategy (new session vs `resume <session_id>`) from `run_record.codex_session`.
   - Streams stdout/stderr into `agent.log` and appends the same output to `run.log`.
@@ -333,6 +345,7 @@ A: Inner loop only.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+- 2026-03-03: Added deterministic state-hook lifecycle semantics (`on_enter`/`on_exit`), provider-backed task-status transitions, and hook-ledger (`state_hooks.json`) dedupe details. (019cb477-2e59-7311-add3-9b2f19720d5e)
 - 2026-03-02: Documented run-record checkout metadata (`checkout_mode`, `starting_commit`) and worktree setup instruction injection on initial RUNNING prompts. (019cabf2-f02b-7521-b814-5b0fcafe3d34)
 - 2026-03-02: Removed legacy `inner_loop_approval_config.json` fallback; comment-approval settings now load only from `inner_loop_runtime_config.json`. (019cabe9-52d6-73a2-b856-da28851da5b5)
 - 2026-03-01: Removed state-signal queue references after deleting `loops signal`/`loops.state_signal`; NEEDS_INPUT now documents direct `run.json` handoff behavior. (019cabbd-8be2-7f00-ba1e-0856ed6096dc)

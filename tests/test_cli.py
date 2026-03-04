@@ -17,6 +17,7 @@ from loops.state.inner_loop_runtime_config import (
     InnerLoopRuntimeConfig,
     write_inner_loop_runtime_config,
 )
+from loops.state.constants import STATE_HOOKS_LEDGER_FILE
 from loops.core.outer_loop import (
     LATEST_LOOPS_CONFIG_VERSION,
     LoopsConfig,
@@ -718,6 +719,51 @@ def test_inner_loop_reset_preserves_checkout_metadata(
     record = read_run_record(run_dir / "run.json")
     assert record.checkout_mode == "worktree"
     assert record.starting_commit == "abc123"
+
+
+def test_inner_loop_reset_clears_state_hook_ledger(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runner = CliRunner()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    write_run_record(
+        run_dir / "run.json",
+        RunRecord(
+            task=Task(
+                provider_id="github",
+                id="15",
+                title="Existing task",
+                status="ready",
+                url="https://github.com/acme/api/issues/15",
+                created_at="2026-02-09T00:00:00Z",
+                updated_at="2026-02-09T00:00:00Z",
+            ),
+            pr=None,
+            codex_session=None,
+            needs_user_input=False,
+            last_state="RUNNING",
+            updated_at="",
+        ),
+    )
+    ledger_path = run_dir / STATE_HOOKS_LEDGER_FILE
+    ledger_path.write_text(
+        json.dumps({"executed": ["run-id:enter:RUNNING:TaskStatusHook"]}),
+        encoding="utf-8",
+    )
+
+    def _should_not_run(*_args, **_kwargs) -> None:
+        raise AssertionError("should not run")
+
+    monkeypatch.setattr(cli_module, "run_inner_loop", _should_not_run)
+
+    result = runner.invoke(main, ["inner-loop", "--run-dir", str(run_dir), "--reset"])
+
+    assert result.exit_code == 0, result.output
+    assert not ledger_path.exists()
+    run_log = (run_dir / "run.log").read_text()
+    assert "removed state hook ledger during reset" in run_log
 
 
 def test_inner_loop_reset_runtime_stream_logs_overrides_existing_record(

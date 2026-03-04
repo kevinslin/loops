@@ -26,6 +26,7 @@ from loops.state.inner_loop_runtime_config import (
 import loops.core.inner_loop as inner_loop_module
 from loops.core.inner_loop import run_inner_loop
 import loops.core.cli as cli_module
+from loops.core.hooks import TransitionContext
 from loops.state.run_record import (
     RunAutoApprove,
     RunPR,
@@ -174,6 +175,7 @@ def _runtime_context(
         sleep_fn = lambda _seconds: None
     return inner_loop_module.InnerLoopRuntimeContext(
         run_dir=run_dir,
+        run_id=str(run_dir.resolve()),
         run_json_path=run_dir / "run.json",
         run_log=run_dir / "run.log",
         agent_log=run_dir / "agent.log",
@@ -666,6 +668,221 @@ def test_inner_loop_reaches_done_lifecycle(tmp_path, monkeypatch) -> None:
     assert args == ["exec", "exec resume session-1"]
 
 
+def test_inner_loop_executes_task_status_hooks_for_running_and_done(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(run_dir)
+
+    stub = tmp_path / "codex"
+    _write_codex_cli_stub(stub)
+    counter_path = tmp_path / "counter.txt"
+    monkeypatch.setenv("STUB_COUNTER_PATH", str(counter_path))
+    monkeypatch.setenv(
+        "CODEX_CMD",
+        f"{shlex.quote(str(stub))} exec",
+    )
+
+    class RecordingProvider:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        def poll(self, limit: int | None = None):  # pragma: no cover - not used
+            del limit
+            return []
+
+        def update_status(self, task_id: str, status: str) -> None:
+            self.calls.append((task_id, status))
+
+    provider = RecordingProvider()
+    monkeypatch.setattr(
+        inner_loop_module,
+        "_resolve_task_provider_for_run",
+        lambda **_kwargs: provider,
+    )
+
+    poll_calls = {"count": 0}
+
+    def pr_status_fetcher(pr: RunPR) -> RunPR:
+        poll_calls["count"] += 1
+        if poll_calls["count"] == 1:
+            return RunPR(
+                url=pr.url,
+                number=pr.number,
+                repo=pr.repo,
+                review_status="approved",
+                ci_status="success",
+                merged_at=None,
+                last_checked_at="2026-02-09T00:00:01Z",
+            )
+        return RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="approved",
+            ci_status="success",
+            merged_at="2026-02-09T00:00:02Z",
+            last_checked_at="2026-02-09T00:00:02Z",
+        )
+
+    result = run_inner_loop(
+        run_dir,
+        pr_status_fetcher=pr_status_fetcher,
+        sleep_fn=lambda _seconds: None,
+        max_iterations=20,
+    )
+
+    assert result.last_state == "DONE"
+    assert provider.calls == [("4", "IN_PROGRESS"), ("4", "DONE")]
+
+
+def test_inner_loop_executes_on_exit_hooks_only_when_state_changes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        pr=RunPR(
+            url="https://github.com/acme/api/pull/42",
+            number=42,
+            repo="acme/api",
+            review_status="open",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:00Z",
+        ),
+    )
+
+    class RecordingHookExecutor:
+        def __init__(self) -> None:
+            self.exit_calls: list[tuple[str, str]] = []
+
+        def execute_on_enter(self, *, state: str, context: TransitionContext) -> None:
+            del state, context
+
+        def execute_on_exit(self, *, state: str, context: TransitionContext) -> None:
+            self.exit_calls.append((state, context.to_state))
+
+    hook_executor = RecordingHookExecutor()
+    monkeypatch.setattr(
+        inner_loop_module,
+        "build_default_hook_executor",
+        lambda **_kwargs: hook_executor,
+    )
+
+    poll_calls = {"count": 0}
+
+    def pr_status_fetcher(pr: RunPR) -> RunPR:
+        poll_calls["count"] += 1
+        if poll_calls["count"] == 1:
+            return RunPR(
+                url=pr.url,
+                number=pr.number,
+                repo=pr.repo,
+                review_status="open",
+                merged_at=None,
+                last_checked_at="2026-02-09T00:00:01Z",
+            )
+        return RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="open",
+            merged_at="2026-02-09T00:00:02Z",
+            last_checked_at="2026-02-09T00:00:02Z",
+        )
+
+    result = run_inner_loop(
+        run_dir,
+        pr_status_fetcher=pr_status_fetcher,
+        sleep_fn=lambda _seconds: None,
+        max_iterations=10,
+    )
+
+    assert result.last_state == "DONE"
+    assert poll_calls["count"] == 2
+    assert hook_executor.exit_calls == [("WAITING_ON_REVIEW", "DONE")]
+
+
+def test_resolve_task_provider_for_run_uses_runtime_environ(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    loops_root = tmp_path / ".loops"
+    run_dir = loops_root / "jobs" / "run-1"
+    run_dir.mkdir(parents=True)
+    config_path = loops_root / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "version": 4,
+                "task_provider_id": "github_projects_v2",
+                "task_provider_config": {"url": "https://github.com/orgs/acme/projects/1"},
+                "loop_config": {
+                    "poll_interval_seconds": 30,
+                    "parallel_tasks": False,
+                    "parallel_tasks_limit": 5,
+                    "sync_mode": False,
+                    "emit_on_first_run": False,
+                    "force": False,
+                    "task_ready_status": "Ready",
+                    "auto_approve_enabled": False,
+                    "handoff_handler": "stdin_handler",
+                    "checkout_mode": "branch",
+                },
+                "inner_loop": {
+                    "command": [sys.executable, "-m", "loops", "inner-loop"],
+                    "append_task_url": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    run_log = run_dir / "run.log"
+    task = Task(
+        provider_id="github_projects_v2",
+        id="4",
+        title="Inner loop",
+        status="ready",
+        url="https://github.com/kevinslin/loops/issues/4",
+        created_at="2026-02-09T00:00:00Z",
+        updated_at="2026-02-09T00:00:00Z",
+    )
+    runtime_environ = {"GITHUB_TOKEN": "token-from-runtime"}
+    captured: dict[str, object] = {}
+
+    class _Provider:
+        def poll(self, limit: int | None = None):  # pragma: no cover - not used
+            del limit
+            return []
+
+        def update_status(self, task_id: str, status: str) -> None:  # pragma: no cover - not used
+            del task_id, status
+
+    def fake_build_provider(config, *, environ=None):
+        captured["provider_id"] = config.task_provider_id
+        captured["environ"] = environ
+        return _Provider()
+
+    monkeypatch.setattr(inner_loop_module, "build_provider", fake_build_provider)
+
+    provider = inner_loop_module._resolve_task_provider_for_run(
+        run_dir=run_dir,
+        task=task,
+        run_log=run_log,
+        environ=runtime_environ,
+    )
+
+    assert provider is not None
+    assert captured == {
+        "provider_id": "github_projects_v2",
+        "environ": runtime_environ,
+    }
+
+
 def test_inner_loop_auto_approve_approve_verdict_allows_merge(
     tmp_path: Path,
     monkeypatch,
@@ -1020,7 +1237,7 @@ def test_inner_loop_uses_existing_needs_input_payload_and_user_response_in_promp
     assert persisted.needs_user_input_payload is None
 
     prompts = prompt_log_path.read_text()
-    assert "Use dev.do to implement the task and open a PR." in prompts
+    assert "Use the $dev.loop skill to implement the task and open a PR." in prompts
     assert "Wait only for review from the a-review subagent." in prompts
     assert (
         "NEVER wait for human PR review/comments inside the agent; the harness "
@@ -1037,6 +1254,11 @@ def test_inner_loop_uses_existing_needs_input_payload_and_user_response_in_promp
         "Spawn the a-review subagent exactly once per conversation, only while state is "
         "<state>RUNNING</state>. Do not spawn a-review again in "
         "<state>WAITING_ON_REVIEW</state> or any later turn."
+        in prompts
+    )
+    assert (
+        "Do not update issue/project task status directly; Loops applies deterministic "
+        "status transitions when states change."
         in prompts
     )
     assert "For the initial PR while state is <state>RUNNING</state>:" in prompts

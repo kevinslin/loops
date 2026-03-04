@@ -10,6 +10,7 @@ OUTER_LOG_FILE_NAME = "oloops.log"
 INNER_LOOP_RUNTIME_CONFIG_FILE = "inner_loop_runtime_config.json"
 SIGNAL_OFFSET_FILE = "state_signals.offset"
 PUSH_PR_URL_FILE = "push-pr.url"
+STATE_HOOKS_LEDGER_FILE = "state_hooks.json"
 
 LATEST_LOOPS_CONFIG_VERSION = 4
 CHECKOUT_MODE_BRANCH = "branch"

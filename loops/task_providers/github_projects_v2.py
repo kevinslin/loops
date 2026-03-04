@@ -15,11 +15,16 @@ from loops.state.approval_config import (
 )
 from loops.state.provider_types import LoopsProviderConfig, SecretRequirement
 from loops.state.run_record import Task
+from loops.task_providers.base import TaskStatus
 
 GITHUB_PROJECTS_V2_PROVIDER_ID = "github_projects_v2"
 DEFAULT_GITHUB_PROJECTS_V2_PROJECT_URL = "https://github.com/orgs/YOUR_ORG/projects/1"
 OwnerType = Literal["organization", "user"]
 GH_API_TIMEOUT_SECONDS = 30
+STATUS_FIELD_QUERY_PAGE_SIZE = 100
+IN_PROGRESS_STATUS_NAMES = ("in progress",)
+DONE_STATUS_NAMES = ("done", "completed", "complete")
+TODO_STATUS_NAMES = ("todo", "to do", "backlog", "ready")
 
 
 class GithubProjectsV2TaskProviderConfig(BaseModel):
@@ -83,6 +88,14 @@ class ProjectFilters:
 
     def is_empty(self) -> bool:
         return not self.repositories and not self.tags
+
+
+@dataclass(frozen=True)
+class ProjectStatusField:
+    project_id: str
+    field_id: str
+    option_ids_by_name: dict[str, str]
+    option_names_by_id: dict[str, str]
 
 
 def parse_project_url(url: str) -> ProjectLocator:
@@ -231,6 +244,77 @@ query($login: String!, $number: Int!, $after: String, $first: Int!, $statusField
 }
 """
 
+_ORG_STATUS_FIELD_QUERY = """
+query($login: String!, $number: Int!, $fieldsFirst: Int!, $fieldsAfter: String) {
+  organization(login: $login) {
+    projectV2(number: $number) {
+      id
+      fields(first: $fieldsFirst, after: $fieldsAfter) {
+        pageInfo {
+          endCursor
+          hasNextPage
+        }
+        nodes {
+          __typename
+          ... on ProjectV2SingleSelectField {
+            id
+            name
+            options {
+              id
+              name
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+_USER_STATUS_FIELD_QUERY = """
+query($login: String!, $number: Int!, $fieldsFirst: Int!, $fieldsAfter: String) {
+  user(login: $login) {
+    projectV2(number: $number) {
+      id
+      fields(first: $fieldsFirst, after: $fieldsAfter) {
+        pageInfo {
+          endCursor
+          hasNextPage
+        }
+        nodes {
+          __typename
+          ... on ProjectV2SingleSelectField {
+            id
+            name
+            options {
+              id
+              name
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+_SET_STATUS_MUTATION = """
+mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+  updateProjectV2ItemFieldValue(
+    input: {
+      projectId: $projectId
+      itemId: $itemId
+      fieldId: $fieldId
+      value: {singleSelectOptionId: $optionId}
+    }
+  ) {
+    projectV2Item {
+      id
+    }
+  }
+}
+"""
+
 
 class GithubProjectsV2TaskProvider:
     def __init__(
@@ -240,6 +324,7 @@ class GithubProjectsV2TaskProvider:
     ) -> None:
         self.config = config
         self.gh_bin = gh_bin
+        self.locator = parse_project_url(self.config.url)
         self.filters = _parse_filters(config.filters)
         self.approval_comment_usernames = normalize_approval_usernames(
             config.approval_comment_usernames
@@ -248,21 +333,21 @@ class GithubProjectsV2TaskProvider:
             config.approval_comment_pattern or DEFAULT_APPROVAL_COMMENT_PATTERN
         )
         self.review_actor_allowlist = normalize_approval_usernames(config.allowlist)
+        self._status_field_cache: ProjectStatusField | None = None
 
     def poll(self, limit: int | None = None) -> list[Task]:
         if limit is not None and limit <= 0:
             return []
 
         github_token = _resolve_github_token(self.config)
-        locator = parse_project_url(self.config.url)
         tasks: list[Task] = []
         after: str | None = None
         while True:
             response = _run_gh_graphql(
-                query=_select_query(locator.owner_type),
+                query=_select_query(self.locator.owner_type),
                 variables={
-                    "login": locator.login,
-                    "number": locator.number,
+                    "login": self.locator.login,
+                    "number": self.locator.number,
                     "after": after,
                     "first": self.config.page_size,
                     "statusField": self.config.status_field,
@@ -270,7 +355,7 @@ class GithubProjectsV2TaskProvider:
                 github_token=github_token,
                 gh_bin=self.gh_bin,
             )
-            items, page_info = _extract_items(response, locator.owner_type)
+            items, page_info = _extract_items(response, self.locator.owner_type)
             for item in items:
                 task = _map_item_to_task(item)
                 if task is None:
@@ -289,11 +374,123 @@ class GithubProjectsV2TaskProvider:
             return ordered_tasks
         return ordered_tasks[:limit]
 
+    def update_status(self, task_id: str, status: TaskStatus) -> None:
+        normalized_task_id = task_id.strip()
+        if not normalized_task_id:
+            raise ValueError("task_id must be a non-empty string")
+
+        github_token = _resolve_github_token(self.config)
+        item_id, current_status_name = self._find_project_item_status(
+            task_id=normalized_task_id,
+            github_token=github_token,
+        )
+        status_field = self._load_status_field(github_token=github_token)
+        target_option_id, target_option_name = _resolve_target_status_option(
+            status_field=status_field,
+            status=status,
+        )
+
+        current_normalized = current_status_name.strip().casefold()
+        if current_normalized and current_normalized == target_option_name.casefold():
+            return
+
+        _set_project_item_status(
+            project_id=status_field.project_id,
+            item_id=item_id,
+            status_field_id=status_field.field_id,
+            option_id=target_option_id,
+            github_token=github_token,
+            gh_bin=self.gh_bin,
+        )
+
+    def _find_project_item_status(
+        self,
+        *,
+        task_id: str,
+        github_token: str,
+    ) -> tuple[str, str]:
+        after: str | None = None
+        while True:
+            response = _run_gh_graphql(
+                query=_select_query(self.locator.owner_type),
+                variables={
+                    "login": self.locator.login,
+                    "number": self.locator.number,
+                    "after": after,
+                    "first": self.config.page_size,
+                    "statusField": self.config.status_field,
+                },
+                github_token=github_token,
+                gh_bin=self.gh_bin,
+            )
+            items, page_info = _extract_items(response, self.locator.owner_type)
+            for item in items:
+                content = item.get("content")
+                if not isinstance(content, dict):
+                    continue
+                if str(content.get("id") or "") != task_id:
+                    continue
+                item_id = item.get("id")
+                if not isinstance(item_id, str) or not item_id:
+                    raise RuntimeError("project item id missing for matched task")
+                return item_id, _extract_status_value(item.get("fieldValueByName"))
+            has_next_page = bool(page_info.get("hasNextPage"))
+            if not has_next_page:
+                break
+            after = page_info.get("endCursor")
+            if not after:
+                raise RuntimeError("Pagination missing endCursor while hasNextPage=true")
+        raise RuntimeError(f"Task id {task_id!r} was not found in configured project")
+
+    def _load_status_field(self, *, github_token: str) -> ProjectStatusField:
+        if self._status_field_cache is not None:
+            return self._status_field_cache
+        fields_after: str | None = None
+        while True:
+            response = _run_gh_graphql(
+                query=_select_status_field_query(self.locator.owner_type),
+                variables={
+                    "login": self.locator.login,
+                    "number": self.locator.number,
+                    "fieldsFirst": STATUS_FIELD_QUERY_PAGE_SIZE,
+                    "fieldsAfter": fields_after,
+                },
+                github_token=github_token,
+                gh_bin=self.gh_bin,
+            )
+            project_id, fields, page_info = _extract_project_field_page(
+                payload=response,
+                owner_type=self.locator.owner_type,
+            )
+            target_field = _find_status_field(fields, status_field_name=self.config.status_field)
+            if target_field is not None:
+                status_field = _build_project_status_field(
+                    project_id=project_id,
+                    target_field=target_field,
+                )
+                self._status_field_cache = status_field
+                return status_field
+
+            has_next_page = bool(page_info.get("hasNextPage"))
+            if not has_next_page:
+                break
+            fields_after = page_info.get("endCursor")
+            if not fields_after:
+                raise RuntimeError("Pagination missing endCursor while hasNextPage=true")
+
+        raise RuntimeError(f"project field {self.config.status_field!r} was not found")
+
 
 def _select_query(owner_type: OwnerType) -> str:
     if owner_type == "organization":
         return _normalize_query(_ORG_QUERY)
     return _normalize_query(_USER_QUERY)
+
+
+def _select_status_field_query(owner_type: OwnerType) -> str:
+    if owner_type == "organization":
+        return _normalize_query(_ORG_STATUS_FIELD_QUERY)
+    return _normalize_query(_USER_STATUS_FIELD_QUERY)
 
 
 def _normalize_query(query: str) -> str:
@@ -413,6 +610,28 @@ def _run_gh_graphql(
     return payload
 
 
+def _set_project_item_status(
+    *,
+    project_id: str,
+    item_id: str,
+    status_field_id: str,
+    option_id: str,
+    github_token: str,
+    gh_bin: str,
+) -> None:
+    _run_gh_graphql(
+        query=_normalize_query(_SET_STATUS_MUTATION),
+        variables={
+            "projectId": project_id,
+            "itemId": item_id,
+            "fieldId": status_field_id,
+            "optionId": option_id,
+        },
+        github_token=github_token,
+        gh_bin=gh_bin,
+    )
+
+
 def _extract_items(
     payload: dict[str, Any],
     owner_type: OwnerType,
@@ -441,6 +660,128 @@ def _extract_items(
     else:
         page_info = {"hasNextPage": False, "endCursor": None}
     return nodes, page_info
+
+
+def _extract_project_status_field(
+    *,
+    payload: dict[str, Any],
+    owner_type: OwnerType,
+    status_field_name: str,
+) -> ProjectStatusField:
+    project_id, fields, _page_info = _extract_project_field_page(
+        payload=payload,
+        owner_type=owner_type,
+    )
+    target_field = _find_status_field(fields, status_field_name=status_field_name)
+    if target_field is None:
+        raise RuntimeError(f"project field {status_field_name!r} was not found")
+    return _build_project_status_field(project_id=project_id, target_field=target_field)
+
+
+def _extract_project_field_page(
+    *,
+    payload: dict[str, Any],
+    owner_type: OwnerType,
+) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise RuntimeError("missing data payload while resolving project status field")
+    owner_key = "organization" if owner_type == "organization" else "user"
+    owner = data.get(owner_key)
+    if not isinstance(owner, dict):
+        raise RuntimeError("missing project owner payload while resolving status field")
+    project = owner.get("projectV2")
+    if not isinstance(project, dict):
+        raise RuntimeError("project not found while resolving status field")
+    project_id = project.get("id")
+    if not isinstance(project_id, str) or not project_id:
+        raise RuntimeError("project id missing while resolving status field")
+    fields_payload = project.get("fields")
+    if not isinstance(fields_payload, dict):
+        raise RuntimeError("project fields payload missing while resolving status field")
+    fields = fields_payload.get("nodes") or []
+    if not isinstance(fields, list):
+        raise RuntimeError("project fields payload missing while resolving status field")
+    raw_page_info = fields_payload.get("pageInfo")
+    if isinstance(raw_page_info, dict):
+        page_info = raw_page_info
+    else:
+        page_info = {"hasNextPage": False, "endCursor": None}
+    typed_fields = [field for field in fields if isinstance(field, dict)]
+    return project_id, typed_fields, page_info
+
+
+def _find_status_field(
+    fields: list[dict[str, Any]],
+    *,
+    status_field_name: str,
+) -> dict[str, Any] | None:
+    target_field: dict[str, Any] | None = None
+    for field in fields:
+        raw_name = field.get("name")
+        if not isinstance(raw_name, str):
+            continue
+        if raw_name.strip().casefold() == status_field_name.strip().casefold():
+            target_field = field
+            break
+    return target_field
+
+
+def _build_project_status_field(
+    *,
+    project_id: str,
+    target_field: dict[str, Any],
+) -> ProjectStatusField:
+    field_id = target_field.get("id")
+    if not isinstance(field_id, str) or not field_id:
+        raise RuntimeError("status field id missing while resolving status field")
+    raw_options = target_field.get("options")
+    if not isinstance(raw_options, list) or not raw_options:
+        raise RuntimeError("status field options missing while resolving status field")
+    option_ids_by_name: dict[str, str] = {}
+    option_names_by_id: dict[str, str] = {}
+    for option in raw_options:
+        if not isinstance(option, dict):
+            continue
+        option_id = option.get("id")
+        option_name = option.get("name")
+        if not isinstance(option_id, str) or not option_id:
+            continue
+        if not isinstance(option_name, str) or not option_name.strip():
+            continue
+        normalized_name = option_name.strip().casefold()
+        option_ids_by_name[normalized_name] = option_id
+        option_names_by_id[option_id] = option_name.strip()
+    if not option_ids_by_name:
+        raise RuntimeError("status field did not expose usable options")
+    return ProjectStatusField(
+        project_id=project_id,
+        field_id=field_id,
+        option_ids_by_name=option_ids_by_name,
+        option_names_by_id=option_names_by_id,
+    )
+
+
+def _resolve_target_status_option(
+    *,
+    status_field: ProjectStatusField,
+    status: TaskStatus,
+) -> tuple[str, str]:
+    if status == "IN_PROGRESS":
+        candidates = IN_PROGRESS_STATUS_NAMES
+    elif status == "DONE":
+        candidates = DONE_STATUS_NAMES
+    else:
+        candidates = TODO_STATUS_NAMES
+    for candidate in candidates:
+        option_id = status_field.option_ids_by_name.get(candidate.casefold())
+        if option_id is None:
+            continue
+        return option_id, status_field.option_names_by_id.get(option_id, candidate)
+    available = ", ".join(sorted(status_field.option_ids_by_name))
+    raise RuntimeError(
+        f"could not map internal status {status!r}; available project options: {available}"
+    )
 
 
 def _extract_status_value(field_value: dict[str, Any] | None) -> str:

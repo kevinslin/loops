@@ -34,13 +34,14 @@ Close the loop on building a coding agent harness that can pick up tasks, execut
 - `Turn`: One Codex subprocess invocation/return cycle inside the inner loop.
 - `RunRecord`: Persisted lifecycle snapshot in `run.json`.
 - `RunState`: Derived lifecycle state: `RUNNING | WAITING_ON_REVIEW | NEEDS_INPUT | PR_APPROVED | DONE`.
+- `State hook`: Deterministic lifecycle callbacks executed on state enter/exit.
 - `OuterState`: Outer-loop dedupe ledger persisted in `.loops/outer_state.json`.
 - `Handoff`: `NEEDS_INPUT` user-input collection path (`stdin_handler` or `gh_comment_handler`).
 - `Trigger`: Named inner-loop transition action such as `trigger:fix-pr` and `trigger:merge-pr`.
 
 Type/interface mapping (section 2 and runtime):
 - `Task` concept -> `Task` type.
-- `TaskProvider` concept -> `TaskProvider` interface (`poll(limit?) -> Promise<Task[]>`).
+- `TaskProvider` concept -> `TaskProvider` protocol (`poll(limit: int | None = None) -> list[Task]`, `update_status(task_id: str, status: TaskStatus) -> None`).
 - `RunRecord` concept -> `RunRecord` type and `run.json`.
 - `RunState` concept -> `RunState` type.
 - `OuterState` concept -> `.loops/outer_state.json` ledger (`OuterLoopState` runtime model).
@@ -178,6 +179,8 @@ type RunRecord = {
 }
 
 // Providers
+type TaskStatus = "TODO" | "IN_PROGRESS" | "DONE"
+
 type TaskProvider = {
     // unique identifier. eg. github_projects_v2
     id: string
@@ -186,7 +189,9 @@ type TaskProvider = {
     task_provider_config: any
     // get matching tasks.
     // github_projects_v2 ordering: oldest task first by created_at, then limit
-    poll(limit?: number): Promise<Task[]>
+    poll(limit?: number): Task[]
+    // idempotent status update on the provider backend
+    update_status(task_id: string, status: TaskStatus): void
 } 
 
 type GithubProjectsV2TaskProviderConfig = {
@@ -220,7 +225,7 @@ Key types:
 - `OuterLoopConfig`: poll interval, parallelism, task status filter, force mode, merge-gate controls, handoff strategy, and checkout strategy (`branch` or `worktree`).
 - `InnerLoopConfig`: single prompt, required skills, user handoff handler.
 - `Task`: provider metadata (id, title, status, url, timestamps, optional repo).
-- `TaskProvider`: provider interface with `poll(limit?)`.
+- `TaskProvider`: synchronous provider protocol with `poll(limit?) -> list[Task]` and `update_status(task_id, status) -> None`.
 - `RunState`: `RUNNING | WAITING_ON_REVIEW | NEEDS_INPUT | PR_APPROVED | DONE`.
 - `RunRecord`: persisted run metadata for `run.json`, including checkout strategy and starting commit for the run.
 
@@ -308,6 +313,7 @@ Notes:
 - `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`: legacy fallback task metadata used only when resetting a run with missing `run.json`.
 - `LOOPS_STREAM_LOGS_STDOUT`: direct/manual-run fallback toggle for mirroring `run.log` lines to stdout.
 - Outer-loop-launched runs persist runtime settings in `inner_loop_runtime_config.json` under each run directory, instead of injecting config via child-process env vars. For custom launch commands that are not `loops inner-loop` (or `python -m loops inner-loop`), `inner_loop.env` remains merged into child env.
+- Inner-loop provider resolution for deterministic state hooks validates provider-required secrets against the run's effective runtime environment (`inner_loop_runtime_config.json` env overrides + process env), so hook-backed status updates work when tokens are supplied via `inner_loop.env`.
 - When `inner_loop_runtime_config.json` exists but is malformed, inner loop startup fails fast instead of silently falling back to process environment defaults.
 
 ## 4. Architecture
@@ -344,7 +350,7 @@ Task provider (GitHub Projects V2)
 - Writes inner-loop orchestration logs to `[INNER_LOOP_ROOT]/run.log` and appends Codex output there.
 - Streams Codex/agent output to `[INNER_LOOP_ROOT]/agent.log`.
 - In `sync_mode=true`, also mirrors inner-loop `run.log` lines to stdout.
-- Supports a manual `--reset` operation to clear orchestration/session/input fields in `run.json` while preserving task metadata and existing PR link identity.
+- Supports a manual `--reset` operation to clear orchestration/session/input fields in `run.json`, preserve task metadata and existing PR link identity, and remove `state_hooks.json` so state hooks run again on the next attempt.
 
 #### Task provider
 - Implements `TaskProvider.poll(limit)`.
@@ -514,6 +520,11 @@ Precedence rule: `NEEDS_INPUT` has priority over `DONE`; if `needs_user_input=tr
 
 **Loop** (read `run.json`, derive state, dispatch):
 
+- Before state logic, execute `on_enter` hooks for the derived state in registration order.
+  - Default hook behavior: entering `RUNNING` updates provider task status to `IN_PROGRESS`, entering `DONE` updates provider task status to `DONE`.
+  - Hook execution is deduped per run using key `${run_id}:${phase}:${state}:${hook_id}` and persisted in run-local `state_hooks.json`.
+- After state logic, execute `on_exit` hooks for the prior state only when the next derived state differs (state transition boundary), in registration order.
+
 - **If `RUNNING`**: execute one Codex turn with `<state>RUNNING</state>`.
   - On successful turn without trailing `NEEDS_INPUT`, inner loop reads `${LOOPS_RUN_DIR}/push-pr.url` as the deterministic initial PR artifact only when `run.json.pr` is still missing.
   - If `run.json.pr` already exists, inner loop skips artifact consumption to avoid reusing stale artifact data.
@@ -607,7 +618,8 @@ The inner loop relies on a small explicit skill surface. These skills are part o
 
 | Skill / contract | Where Loops invokes or enforces it | How it makes Loops work |
 |---|---|---|
-| `dev.do` | Base prompt for Codex turns (`RUNNING` and follow-up turns) | Keeps task execution in a single end-to-end implementation workflow (implement -> open/update PR -> continue until terminal state). |
+| implementation workflow prompt contract | Base prompt for Codex turns (`RUNNING` and follow-up turns) | Requires using `$dev.loop` for end-to-end implementation workflow (implement -> open/update PR -> continue until terminal state). |
+| deterministic state hooks | Inner-loop state dispatcher (`on_enter` / `on_exit`) | Applies provider task-status transitions deterministically (`RUNNING` -> `IN_PROGRESS`, `DONE` -> `DONE`) with persisted dedupe and registration-order execution. |
 | `a-review` | Base prompt contract (`RUNNING` only; exactly once per conversation) | Provides an in-turn quality gate before review polling; Loops requires posting the result to PR comments so reviewers and later turns share context. |
 | initial PR push command sequence | `RUNNING` initial PR creation | Executes `invoke:commit-code` (if needed), direct `scripts/push-pr.py` invocation, then `invoke:check-ci`/`invoke:fix-pr`; `push-pr.py` writes `${LOOPS_RUN_DIR}/push-pr.url` for deterministic discovery. |
 | `trigger:fix-pr` | `WAITING_ON_REVIEW` when new review/comment feedback is detected | Re-enters Codex to apply concrete reviewer feedback and updates `review_addressed_at` to prevent duplicate processing. |
@@ -641,12 +653,13 @@ The inner loop builds prompts in `loops/core/inner_loop.py` from a shared base t
 Base template (always present in Codex turns):
 
 ```text
-Use dev.do to implement the task and open a PR.
+Use the $dev.loop skill to implement the task and open a PR.
 You are running inside the loops test harness. NEVER wait for human PR review/comments inside the agent; the harness monitors review activity and will re-invoke you when feedback arrives.
 When you run a-review, always post its response to the PR comments. If there are no findings, explicitly post that no issues were found.
 NEVER use the gen-notifier skill while running inside loops.
 Spawn the a-review subagent exactly once per conversation, only while state is <state>RUNNING</state>. Do not spawn a-review again in <state>WAITING_ON_REVIEW</state> or any later turn.
 The current inner-loop state is passed via a trailing <state>...</state> tag; initial state is <state>RUNNING</state>.
+Do not update issue/project task status directly; Loops applies deterministic status transitions when states change.
 If you need input from user, print what you need help with and end current conversation with <state>NEEDS_INPUT</>
 For the initial PR while state is <state>RUNNING</state>: if there are unstaged changes invoke:commit-code; then resolve REPO_ROOT from LOOPS_RUN_DIR and run python3 "$REPO_ROOT/scripts/push-pr.py" "<pr-title>" "<pr-body-file>"; then invoke:check-ci and if CI fails invoke:fix-pr.
 trigger:merge-pr when the state is exactly <state>PR_APPROVED</state>.
