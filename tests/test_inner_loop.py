@@ -737,6 +737,82 @@ def test_inner_loop_executes_task_status_hooks_for_running_and_done(
     assert provider.calls == [("4", "IN_PROGRESS"), ("4", "DONE")]
 
 
+def test_resolve_task_provider_for_run_uses_runtime_environ(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    loops_root = tmp_path / ".loops"
+    run_dir = loops_root / "jobs" / "run-1"
+    run_dir.mkdir(parents=True)
+    config_path = loops_root / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "version": 4,
+                "task_provider_id": "github_projects_v2",
+                "task_provider_config": {"url": "https://github.com/orgs/acme/projects/1"},
+                "loop_config": {
+                    "poll_interval_seconds": 30,
+                    "parallel_tasks": False,
+                    "parallel_tasks_limit": 5,
+                    "sync_mode": False,
+                    "emit_on_first_run": False,
+                    "force": False,
+                    "task_ready_status": "Ready",
+                    "auto_approve_enabled": False,
+                    "handoff_handler": "stdin_handler",
+                    "checkout_mode": "branch",
+                },
+                "inner_loop": {
+                    "command": [sys.executable, "-m", "loops", "inner-loop"],
+                    "append_task_url": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    run_log = run_dir / "run.log"
+    task = Task(
+        provider_id="github_projects_v2",
+        id="4",
+        title="Inner loop",
+        status="ready",
+        url="https://github.com/kevinslin/loops/issues/4",
+        created_at="2026-02-09T00:00:00Z",
+        updated_at="2026-02-09T00:00:00Z",
+    )
+    runtime_environ = {"GITHUB_TOKEN": "token-from-runtime"}
+    captured: dict[str, object] = {}
+
+    class _Provider:
+        def poll(self, limit: int | None = None):  # pragma: no cover - not used
+            del limit
+            return []
+
+        def update_status(self, task_id: str, status: str) -> None:  # pragma: no cover - not used
+            del task_id, status
+
+    def fake_build_provider(config, *, environ=None):
+        captured["provider_id"] = config.task_provider_id
+        captured["environ"] = environ
+        return _Provider()
+
+    monkeypatch.setattr(inner_loop_module, "build_provider", fake_build_provider)
+
+    provider = inner_loop_module._resolve_task_provider_for_run(
+        run_dir=run_dir,
+        task=task,
+        run_log=run_log,
+        environ=runtime_environ,
+    )
+
+    assert provider is not None
+    assert captured == {
+        "provider_id": "github_projects_v2",
+        "environ": runtime_environ,
+    }
+
+
 def test_inner_loop_auto_approve_approve_verdict_allows_merge(
     tmp_path: Path,
     monkeypatch,

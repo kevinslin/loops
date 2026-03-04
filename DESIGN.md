@@ -313,6 +313,7 @@ Notes:
 - `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`: legacy fallback task metadata used only when resetting a run with missing `run.json`.
 - `LOOPS_STREAM_LOGS_STDOUT`: direct/manual-run fallback toggle for mirroring `run.log` lines to stdout.
 - Outer-loop-launched runs persist runtime settings in `inner_loop_runtime_config.json` under each run directory, instead of injecting config via child-process env vars. For custom launch commands that are not `loops inner-loop` (or `python -m loops inner-loop`), `inner_loop.env` remains merged into child env.
+- Inner-loop provider resolution for deterministic state hooks validates provider-required secrets against the run's effective runtime environment (`inner_loop_runtime_config.json` env overrides + process env), so hook-backed status updates work when tokens are supplied via `inner_loop.env`.
 - When `inner_loop_runtime_config.json` exists but is malformed, inner loop startup fails fast instead of silently falling back to process environment defaults.
 
 ## 4. Architecture

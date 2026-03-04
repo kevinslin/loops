@@ -380,6 +380,7 @@ def run_inner_loop(
             run_dir=run_dir,
             task=initial_run_record.task,
             run_log=run_log,
+            environ=runtime_environ,
         )
         if initial_run_record.stream_logs_stdout != effective_stream_logs_stdout:
             initial_run_record = write_run_record(
@@ -969,6 +970,7 @@ def _resolve_task_provider_for_run(
     run_dir: Path,
     task: Task,
     run_log: Path,
+    environ: Mapping[str, str],
 ) -> TaskProvider | None:
     loops_root = _resolve_loops_root_from_run_dir(run_dir)
     if loops_root is None:
@@ -1010,7 +1012,7 @@ def _resolve_task_provider_for_run(
         return None
 
     try:
-        return build_provider(config)
+        return build_provider(config, environ=environ)
     except Exception as exc:
         append_log(
             run_log,
