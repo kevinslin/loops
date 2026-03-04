@@ -171,7 +171,7 @@ def _update_task_status(*, context: TransitionContext, status: TaskStatus) -> No
         context.log(
             f"task status update skipped status={status} reason=missing_provider_or_task_id"
         )
-        return
+        raise RuntimeError("missing_provider_or_task_id")
     task_provider.update_status(task_id, status)
     context.log(f"task status updated status={status} task_id={task_id}")
 

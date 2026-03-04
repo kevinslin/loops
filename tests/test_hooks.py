@@ -174,6 +174,9 @@ def test_task_status_hook_skips_when_provider_missing(tmp_path: Path) -> None:
         logger=lambda message: logs.append(message),
     )
 
-    executor.execute_on_enter(state="RUNNING", context=_context(provider=None, logger=logs))
+    context = _context(provider=None, logger=logs)
+    executor.execute_on_enter(state="RUNNING", context=context)
+    executor.execute_on_enter(state="RUNNING", context=context)
 
     assert any("missing_provider_or_task_id" in entry for entry in logs)
+    assert not (tmp_path / STATE_HOOKS_LEDGER_FILE).exists()
