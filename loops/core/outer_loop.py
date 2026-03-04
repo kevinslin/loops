@@ -542,7 +542,7 @@ def build_provider(
             f"task_provider_config is invalid for provider "
             f"'{definition.metadata.id}': {exc}"
         ) from exc
-    return definition.build(provider_config)
+    return definition.build(provider_config, effective_environ)
 
 
 def _resolve_provider_review_actor_usernames(provider: TaskProvider) -> tuple[str, ...]:

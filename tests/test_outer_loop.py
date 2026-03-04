@@ -663,6 +663,7 @@ def test_build_provider_uses_explicit_environ_for_required_secrets(monkeypatch) 
     provider = build_provider(config, environ={"GITHUB_TOKEN": "token-from-runtime"})
 
     assert isinstance(provider, GithubProjectsV2TaskProvider)
+    assert provider.config.github_token == "token-from-runtime"
 
 
 def test_build_provider_rejects_missing_required_secret(monkeypatch) -> None:
