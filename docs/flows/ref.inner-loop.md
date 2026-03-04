@@ -50,12 +50,12 @@ function run_inner_loop(run_dir):
     hook_ctx = transition_context(run_id, from_state=run_record.last_state, to_state=state)
     execute_on_enter_hooks(state, hook_ctx)
 
-    try:
-      if state == DONE:
-        return run_record
-      transition = dispatch_state_handler(state, run_record, runtime, control)
-    finally:
-      execute_on_exit_hooks(state, hook_ctx)
+    if state == DONE:
+      return run_record
+    transition = dispatch_state_handler(state, run_record, runtime, control)
+    next_state = derive_next_state(transition.run_record)
+    if next_state != state:
+      execute_on_exit_hooks(state, transition_context(run_id, from_state=state, to_state=next_state))
     // handlers:
     // - handle_needs_input_state
     // - handle_running_state
@@ -71,7 +71,7 @@ function run_inner_loop(run_dir):
 
 - Core state is derived each iteration from `run.json` (`pr`, `needs_user_input`), not from cached in-memory state.
 - Transition gates include: review freshness (`latest_review_submitted_at > review_addressed_at`), idle polling threshold escalation, and max-iteration fallback.
-- State hooks run around each iteration's state handler (`on_enter` before handler, `on_exit` in `finally`) with per-run dedupe key `${run_id}:${phase}:${state}:${hook_id}` persisted in `state_hooks.json`.
+- State hooks run around iteration dispatch boundaries: `on_enter` runs before the state handler, and `on_exit` runs only when the next derived state differs from the current state. Hook dedupe key remains `${run_id}:${phase}:${state}:${hook_id}` and is persisted in `state_hooks.json`.
 - Default state hooks apply deterministic provider status transitions: enter `RUNNING` -> `IN_PROGRESS`, enter `DONE` -> `DONE`.
 - Additional inline review gate: when review is not already approved and `ci_status == success`, if `auto_approve_enabled` is true and `RunRecord.auto_approve` is unset/`none`, run one-time `$ag-judge` and persist judgement on `RunRecord`.
 - Runtime config comes from CLI options plus run-scoped `inner_loop_runtime_config.json`; env fallbacks are limited to designated runtime keys (`CODEX_CMD`, `LOOPS_PROMPT_FILE`/`CODEX_PROMPT_FILE`, `LOOPS_HANDOFF_HANDLER`, `LOOPS_AUTO_APPROVE_ENABLED`, `LOOPS_STREAM_LOGS_STDOUT`) when runtime config is absent or omits them. `stream_logs_stdout` in `inner_loop_runtime_config.json` controls `run.log` stdout mirroring, and malformed runtime config is treated as a startup error.

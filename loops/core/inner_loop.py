@@ -452,7 +452,7 @@ def run_inner_loop(
                 backoff_seconds=control.backoff_seconds,
                 idle_polls=control.idle_polls,
             )
-            transition_context = TransitionContext(
+            enter_context = TransitionContext(
                 run_id=runtime.run_id,
                 task_id=run_record.task.id,
                 task_provider=runtime.task_provider,
@@ -460,42 +460,41 @@ def run_inner_loop(
                 to_state=state,
                 logger=hook_logger,
             )
-            hook_executor.execute_on_enter(state=state, context=transition_context)
+            hook_executor.execute_on_enter(state=state, context=enter_context)
 
-            transition: StateHandlerResult | None = None
-            done_record: RunRecord | None = None
-            try:
-                if state == "DONE":
-                    append_log(run_log, "[loops] run state DONE; exiting inner loop")
-                    done_record = run_record
-                else:
-                    transition = _handle_state(
-                        state=state,
-                        run_record=run_record,
-                        runtime=runtime,
-                        control=control,
-                    )
-            finally:
-                hook_executor.execute_on_exit(state=state, context=transition_context)
-
-            if done_record is not None:
+            if state == "DONE":
+                append_log(run_log, "[loops] run state DONE; exiting inner loop")
                 _log_iteration_exit(
                     run_log,
                     iteration=iteration,
                     next_state=state,
-                    run_record=done_record,
+                    run_record=run_record,
                     action="done_exit",
                     backoff_seconds=control.backoff_seconds,
                     idle_polls=control.idle_polls,
                 )
-                return done_record
+                return run_record
 
-            if transition is None:
-                raise RuntimeError(f"state handler returned no result for state={state}")
+            transition = _handle_state(
+                state=state,
+                run_record=run_record,
+                runtime=runtime,
+                control=control,
+            )
             next_state = _derive_state(
                 transition.run_record,
                 auto_approve_enabled=runtime.auto_approve_enabled,
             )
+            if next_state != state:
+                exit_context = TransitionContext(
+                    run_id=runtime.run_id,
+                    task_id=transition.run_record.task.id,
+                    task_provider=runtime.task_provider,
+                    from_state=state,
+                    to_state=next_state,
+                    logger=hook_logger,
+                )
+                hook_executor.execute_on_exit(state=state, context=exit_context)
             _log_iteration_exit(
                 run_log,
                 iteration=iteration,

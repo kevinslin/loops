@@ -26,6 +26,7 @@ from loops.state.inner_loop_runtime_config import (
 import loops.core.inner_loop as inner_loop_module
 from loops.core.inner_loop import run_inner_loop
 import loops.core.cli as cli_module
+from loops.core.hooks import TransitionContext
 from loops.state.run_record import (
     RunAutoApprove,
     RunPR,
@@ -735,6 +736,75 @@ def test_inner_loop_executes_task_status_hooks_for_running_and_done(
 
     assert result.last_state == "DONE"
     assert provider.calls == [("4", "IN_PROGRESS"), ("4", "DONE")]
+
+
+def test_inner_loop_executes_on_exit_hooks_only_when_state_changes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_run_record(
+        run_dir,
+        pr=RunPR(
+            url="https://github.com/acme/api/pull/42",
+            number=42,
+            repo="acme/api",
+            review_status="open",
+            merged_at=None,
+            last_checked_at="2026-02-09T00:00:00Z",
+        ),
+    )
+
+    class RecordingHookExecutor:
+        def __init__(self) -> None:
+            self.exit_calls: list[tuple[str, str]] = []
+
+        def execute_on_enter(self, *, state: str, context: TransitionContext) -> None:
+            del state, context
+
+        def execute_on_exit(self, *, state: str, context: TransitionContext) -> None:
+            self.exit_calls.append((state, context.to_state))
+
+    hook_executor = RecordingHookExecutor()
+    monkeypatch.setattr(
+        inner_loop_module,
+        "build_default_hook_executor",
+        lambda **_kwargs: hook_executor,
+    )
+
+    poll_calls = {"count": 0}
+
+    def pr_status_fetcher(pr: RunPR) -> RunPR:
+        poll_calls["count"] += 1
+        if poll_calls["count"] == 1:
+            return RunPR(
+                url=pr.url,
+                number=pr.number,
+                repo=pr.repo,
+                review_status="open",
+                merged_at=None,
+                last_checked_at="2026-02-09T00:00:01Z",
+            )
+        return RunPR(
+            url=pr.url,
+            number=pr.number,
+            repo=pr.repo,
+            review_status="open",
+            merged_at="2026-02-09T00:00:02Z",
+            last_checked_at="2026-02-09T00:00:02Z",
+        )
+
+    result = run_inner_loop(
+        run_dir,
+        pr_status_fetcher=pr_status_fetcher,
+        sleep_fn=lambda _seconds: None,
+        max_iterations=10,
+    )
+
+    assert result.last_state == "DONE"
+    assert poll_calls["count"] == 2
+    assert hook_executor.exit_calls == [("WAITING_ON_REVIEW", "DONE")]
 
 
 def test_resolve_task_provider_for_run_uses_runtime_environ(

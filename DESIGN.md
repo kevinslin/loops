@@ -191,7 +191,7 @@ type TaskProvider = {
     // github_projects_v2 ordering: oldest task first by created_at, then limit
     poll(limit?: number): Task[]
     // idempotent status update on the provider backend
-    update_status(taskId: string, status: TaskStatus): void
+    update_status(task_id: string, status: TaskStatus): void
 } 
 
 type GithubProjectsV2TaskProviderConfig = {
@@ -523,7 +523,7 @@ Precedence rule: `NEEDS_INPUT` has priority over `DONE`; if `needs_user_input=tr
 - Before state logic, execute `on_enter` hooks for the derived state in registration order.
   - Default hook behavior: entering `RUNNING` updates provider task status to `IN_PROGRESS`, entering `DONE` updates provider task status to `DONE`.
   - Hook execution is deduped per run using key `${run_id}:${phase}:${state}:${hook_id}` and persisted in run-local `state_hooks.json`.
-- After state logic (or on handler error), execute `on_exit` hooks for the same state in registration order.
+- After state logic, execute `on_exit` hooks for the prior state only when the next derived state differs (state transition boundary), in registration order.
 
 - **If `RUNNING`**: execute one Codex turn with `<state>RUNNING</state>`.
   - On successful turn without trailing `NEEDS_INPUT`, inner loop reads `${LOOPS_RUN_DIR}/push-pr.url` as the deterministic initial PR artifact only when `run.json.pr` is still missing.
