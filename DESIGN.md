@@ -635,6 +635,7 @@ Practical invariant: if this skill contract changes, update `loops/core/inner_lo
 - `python -m loops init` initializes `.loops/` scaffolding (`jobs/`, logs, state, default config).
 - `python -m loops doctor` upgrades config schema/default values in `config.json`.
 - `python -m loops run` starts the outer loop runner.
+- `python -m loops handoff [session-id]` seeds a run from Codex conversation context (PR + tracking task), defaults that run to `WAITING_ON_REVIEW`, and launches the configured inner-loop command.
 - `python -m loops inner-loop` runs one inner-loop execution for a run directory.
 - `python -m loops clean` deletes empty runs and archives completed runs.
 - `python -m loops.cli` is intentionally unsupported; use `loops ...` or `python -m loops ...`.
@@ -731,6 +732,7 @@ Prompt-related configuration and runtime inputs:
 ## 7. PR review and merge gate handling
 
 - For initial PR creation, `scripts/push-pr.py` writes `${LOOPS_RUN_DIR}/push-pr.url`; after a successful `RUNNING` turn, inner loop reads that artifact only when `run.json.pr` is missing, then records the PR in `run.json`.
+- `loops handoff [session-id]` can seed `run.json.pr` directly from conversation-derived PR URL and sets `pr.review_addressed_at = null` so all existing review/comment feedback is treated as unread on first `WAITING_ON_REVIEW` poll.
 - The inner loop polls PR status and updates `pr.review_status`.
 - When a review requests changes, the inner loop records `latest_review_submitted_at` (the review's `submittedAt` timestamp from GitHub) and invokes Codex to address the feedback. After Codex runs, `review_addressed_at` is set to `latest_review_submitted_at`. On subsequent polls, the loop only re-invokes Codex if `latest_review_submitted_at > review_addressed_at`, indicating a genuinely new review event. This prevents duplicate fix attempts when the reviewer has not yet re-reviewed.
 - When status is still open (no formal review decision), the inner loop uses the newest timestamp between `COMMENTED` PR review and plain PR discussion comment events as its feedback signal. It uses the same `latest_review_submitted_at > review_addressed_at` guard to decide whether to resume Codex.

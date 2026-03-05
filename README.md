@@ -124,6 +124,7 @@ Subcommands:
 - `init`: initialize `.loops/` structure and default config.
 - `run`: run the outer loop runner.
 - `inner-loop`: run inner loop for one run directory.
+- `handoff`: seed a run from an existing Codex session and hand review-driving to Loops.
 - `doctor`: upgrade config schema/default keys in `config.json`.
 - `clean`: delete empty run directories and archive completed runs.
 
@@ -134,6 +135,7 @@ loops init
 loops doctor
 loops run --run-once
 loops inner-loop --run-dir .loops/jobs/2026-02-09-example-task-123
+loops handoff 019cab59-95c2-7923-9049-be455a2beb37
 loops clean --dry-run
 ```
 
@@ -267,6 +269,36 @@ Behavior summary:
 Direct module entrypoint:
 
 - `python -m loops`
+
+### `loops handoff`
+
+Seeds and launches a `WAITING_ON_REVIEW` run from an existing Codex session.
+
+Usage:
+
+```sh
+loops handoff [session-id]
+```
+
+Options:
+
+- `--config PATH`: Config file path. Default: `.loops/config.json`.
+- `--pr-url TEXT`: Optional PR URL override when transcript-based discovery is ambiguous or unavailable.
+- `--task-url TEXT`: Optional tracking task URL override when transcript-based discovery is ambiguous or unavailable.
+- `-h, --help`: Show help.
+
+Behavior summary:
+
+- Resolves session id from argument, then `CODEX_THREAD_ID`, then latest `~/.codex/history.jsonl` session.
+- Reads the matching Codex transcript under `~/.codex/sessions` or `~/.codex/archived_sessions`.
+- Derives PR URL and tracking task URL from conversation content; if either cannot be determined, prompts for it interactively (or fails with guidance in non-interactive mode).
+- Maps tracking task URL against provider poll results when possible; otherwise falls back to synthesized task metadata.
+- Creates a new run with:
+  - `codex_session.id` set to the handed-off session id,
+  - `pr.review_status="open"`,
+  - `pr.review_addressed_at=null` (treat all existing PR feedback/comments as unread),
+  - derived state `WAITING_ON_REVIEW`.
+- Launches inner loop using the configured launcher path (`inner_loop.command`) and runtime config behavior.
 
 ## Environment variables
 
