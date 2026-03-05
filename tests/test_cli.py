@@ -1138,6 +1138,7 @@ def test_run_handoff_command_falls_back_when_provider_poll_fails(
     run_dir = captured.get("run_dir")
     assert isinstance(run_dir, Path)
     run_record = read_run_record(run_dir / "run.json")
+    assert run_record.task.id == "https://github.com/acme/api/issues/77"
     assert run_record.task.url == "https://github.com/acme/api/issues/77"
     assert run_record.task.title == "Handoff task 77"
     assert run_record.codex_session is not None
@@ -1146,6 +1147,17 @@ def test_run_handoff_command_falls_back_when_provider_poll_fails(
     assert captured["approval_comment_usernames"] == ()
     assert captured["approval_comment_pattern"] == r"^\s*/approve\b"
     assert captured["review_actor_usernames"] == ()
+
+
+def test_build_synthesized_handoff_task_uses_canonical_url_as_id() -> None:
+    task = cli_module._build_synthesized_handoff_task(
+        "https://github.com/acme/api/issues/77/comments/1",
+        provider_id="github_projects_v2",
+    )
+
+    assert task.id == "https://github.com/acme/api/issues/77"
+    assert task.url == "https://github.com/acme/api/issues/77"
+    assert task.title == "Handoff task 77"
 
 
 def test_resolve_handoff_session_id_uses_codex_home_history(tmp_path: Path, monkeypatch) -> None:

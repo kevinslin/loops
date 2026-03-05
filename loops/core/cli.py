@@ -513,12 +513,14 @@ def _build_synthesized_handoff_task(task_url: str, *, provider_id: str) -> Task:
         canonical_url = normalized_url
     repo = _repo_slug_from_github_url(canonical_url)
     task_id = canonical_url
-    if canonical_url.rstrip("/").split("/")[-1].isdigit():
-        task_id = canonical_url.rstrip("/").split("/")[-1]
+    title_suffix = task_id
+    trailing_token = canonical_url.rstrip("/").split("/")[-1]
+    if trailing_token.isdigit():
+        title_suffix = trailing_token
     return Task(
         provider_id=provider_id,
         id=task_id,
-        title=f"Handoff task {task_id}",
+        title=f"Handoff task {title_suffix}",
         status="handoff",
         url=canonical_url,
         created_at=now_iso,
