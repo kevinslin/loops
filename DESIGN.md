@@ -691,7 +691,7 @@ PR [pr_url] has changes requested. Address review feedback, update the PR, and s
 2. Discussion-feedback prompt (plain PR comment or `COMMENTED` review):
 
 ```text
-PR [pr_url] has new discussion comments. Review the feedback, address requested changes, update the PR, and summarize what changed. If there are no changes requested, summarize that and end the current turn.
+PR [pr_url] has new discussion comments. Examine existing PR comments and see if any action needs to be taken. If so, address it and update the PR. Otherwise stop and await further review.
 <state>WAITING_ON_REVIEW</state>
 ```
 
@@ -709,7 +709,7 @@ State-to-prompt mapping:
 | `RUNNING` | No additional suffix. | `<state>RUNNING</state>` |
 | `WAITING_ON_REVIEW` (no new feedback event) | No Codex prompt is built; inner loop only polls PR state. | N/A |
 | `WAITING_ON_REVIEW` (changes requested review) | `PR [pr_url] has changes requested. Address review feedback, update the PR, and summarize what changed.` | `<state>WAITING_ON_REVIEW</state>` |
-| `WAITING_ON_REVIEW` (new discussion comments) | `PR [pr_url] has new discussion comments. Review the feedback, address requested changes, update the PR, and summarize what changed. If there are no changes requested, summarize that and end the current turn.` | `<state>WAITING_ON_REVIEW</state>` |
+| `WAITING_ON_REVIEW` (new discussion comments) | `PR [pr_url] has new discussion comments. Examine existing PR comments and see if any action needs to be taken. If so, address it and update the PR. Otherwise stop and await further review.` | `<state>WAITING_ON_REVIEW</state>` |
 | `WAITING_ON_REVIEW` (auto-approve evaluation) | `PR [pr_url] is not yet review-approved and has green CI. Run $ag-judge (judge book: references/jb.coding.md) against current diff, review threads, and CI evidence. Post the ag-judge verdict and impact/risk/size scores to the PR comments, then return one verdict plus impact/risk/size scores.` | `<state>WAITING_ON_REVIEW</state>` |
 | `PR_APPROVED` | `PR is approved. Run cleanup now and report completion.` | `<state>PR_APPROVED</state>` |
 | `NEEDS_INPUT` | No Codex prompt is built while waiting. The handoff handler shows `needs_user_input_payload.message` to the user instead. | N/A |

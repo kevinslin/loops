@@ -1629,9 +1629,12 @@ def test_inner_loop_resumes_codex_when_new_plain_pr_comment_feedback(
     assert result.last_state == "DONE"
     assert counter_path.read_text() == "1"
     prompts = prompt_log_path.read_text()
-    assert "has new discussion comments. Review the feedback" in prompts
     assert (
-        "If there are no changes requested, summarize that and end the current turn."
+        "has new discussion comments. Examine existing PR comments and see if any "
+        "action needs to be taken."
+    ) in prompts
+    assert (
+        "Otherwise stop and await further review."
         in prompts
     )
     assert "wait for comments" not in prompts

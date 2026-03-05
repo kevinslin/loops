@@ -1334,9 +1334,9 @@ def _build_comment_feedback_prompt(
         state=None,
     )
     prompt += (
-        f"\nPR {pr_url} has new discussion comments. Review the feedback, address "
-        "requested changes, update the PR, and summarize what changed. If there "
-        "are no changes requested, summarize that and end the current turn.\n"
+        f"\nPR {pr_url} has new discussion comments. Examine existing PR comments "
+        "and see if any action needs to be taken. If so, address it and update "
+        "the PR. Otherwise stop and await further review.\n"
     )
     return _append_state_tag(prompt, PROMPT_STATE_WAITING_ON_REVIEW)
 
