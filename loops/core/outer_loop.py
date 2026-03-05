@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 from urllib.parse import urlsplit, urlunsplit
 
+import click
 from pydantic import ValidationError
 
 from loops.state.approval_config import (
@@ -521,8 +522,18 @@ def upgrade_config_payload(payload: Any) -> tuple[dict[str, Any], bool]:
             upgraded["task_provider_config"] = provider_payload
 
     existing_inner_loop_payload = upgraded.get("inner_loop")
-    if isinstance(existing_inner_loop_payload, dict):
+    if isinstance(existing_inner_loop_payload, str):
+        inner_loop_payload = {"command": existing_inner_loop_payload}
+        upgraded["inner_loop"] = inner_loop_payload
+        changed = True
+    elif existing_inner_loop_payload is None:
+        inner_loop_payload = None
+    elif isinstance(existing_inner_loop_payload, dict):
         inner_loop_payload = dict(existing_inner_loop_payload)
+    else:
+        raise TypeError("inner_loop must be an object")
+
+    if isinstance(inner_loop_payload, dict):
         migrated_command, migrated_command_changed = _migrate_legacy_inner_loop_command(
             inner_loop_payload.get("command")
         )
@@ -696,7 +707,7 @@ def build_inner_loop_launcher(
                 raise SyncModeInterruptedError(run_dir=run_dir) from exc
             if completed.returncode != 0:
                 rendered_command = shlex.join(command)
-                raise RuntimeError(
+                raise click.ClickException(
                     "inner loop command failed "
                     f"(exit={completed.returncode}): {rendered_command}"
                 )

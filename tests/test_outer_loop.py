@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import click
 import pytest
 
 from loops.state.approval_config import (
@@ -382,6 +383,20 @@ def test_load_config_reads_sync_mode(tmp_path: Path) -> None:
     config = load_config(config_path)
     assert config.loop_config.sync_mode is True
     assert config.version == LATEST_LOOPS_CONFIG_VERSION
+
+
+def test_load_config_migrates_legacy_inner_loop_string_payload(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    payload = {
+        "task_provider_id": "github_projects_v2",
+        "task_provider_config": {},
+        "inner_loop": "echo hello",
+    }
+    config_path.write_text(json.dumps(payload))
+
+    config = load_config(config_path)
+    assert config.inner_loop is not None
+    assert config.inner_loop.command == ["echo", "hello"]
 
 
 def test_load_config_migrates_legacy_inner_loop_module_command(tmp_path: Path) -> None:
@@ -834,7 +849,7 @@ def test_build_inner_loop_launcher_sync_mode_interrupt_raises_typed_error(
     assert exc_info.value.run_dir == run_dir
 
 
-def test_build_inner_loop_launcher_sync_mode_raises_on_non_zero_exit(
+def test_build_inner_loop_launcher_sync_mode_raises_click_exception_on_non_zero_exit(
     tmp_path: Path, monkeypatch
 ) -> None:
     run_dir = tmp_path / "run"
@@ -859,7 +874,7 @@ def test_build_inner_loop_launcher_sync_mode_raises_on_non_zero_exit(
 
     monkeypatch.setattr("loops.core.outer_loop.subprocess.run", fake_run)
 
-    with pytest.raises(RuntimeError, match=r"inner loop command failed \(exit=2\)"):
+    with pytest.raises(click.ClickException, match=r"inner loop command failed \(exit=2\)"):
         launcher(run_dir, task)
 
 
