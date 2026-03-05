@@ -447,6 +447,8 @@ def test_normalize_argv_preserves_known_subcommands() -> None:
     assert _normalize_argv(argv) == argv
     clean_argv = ["python", "clean"]
     assert _normalize_argv(clean_argv) == clean_argv
+    handoff_argv = ["python", "handoff", "session-1"]
+    assert _normalize_argv(handoff_argv) == handoff_argv
 
 
 def test_normalize_argv_preserves_removed_signal_subcommand() -> None:
@@ -897,6 +899,372 @@ def test_run_command_passes_task_url_to_outer_loop(tmp_path: Path, monkeypatch) 
     assert captured["task_url"] == "https://github.com/acme/api/issues/42"
 
 
+def test_handoff_command_passes_arguments_to_core_handler(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runner = CliRunner()
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}")
+    captured: dict[str, object] = {}
+
+    def fake_run_handoff_command(
+        *,
+        config_path: Path,
+        session_id: str | None,
+        pr_url: str | None,
+        task_url: str | None,
+    ) -> None:
+        captured["config_path"] = config_path
+        captured["session_id"] = session_id
+        captured["pr_url"] = pr_url
+        captured["task_url"] = task_url
+
+    monkeypatch.setattr(cli_module, "_run_handoff_command", fake_run_handoff_command)
+
+    result = runner.invoke(
+        main,
+        [
+            "handoff",
+            "session-1",
+            "--config",
+            str(config_path),
+            "--pr-url",
+            "https://github.com/acme/api/pull/44",
+            "--task-url",
+            "https://github.com/acme/api/issues/44",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["config_path"] == config_path
+    assert captured["session_id"] == "session-1"
+    assert captured["pr_url"] == "https://github.com/acme/api/pull/44"
+    assert captured["task_url"] == "https://github.com/acme/api/issues/44"
+
+
+def test_run_handoff_command_seeds_waiting_on_review_and_launches(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    loops_root = tmp_path / ".loops"
+    loops_root.mkdir(parents=True)
+    config_path = loops_root / "config.json"
+    config_path.write_text("{}")
+
+    task = Task(
+        provider_id="github_projects_v2",
+        id="issue-node-77",
+        title="Handoff issue",
+        status="Ready",
+        url="https://github.com/acme/api/issues/77",
+        created_at="2026-03-01T00:00:00Z",
+        updated_at="2026-03-01T00:00:00Z",
+        repo="acme/api",
+    )
+    loaded = LoopsConfig(
+        version=LATEST_LOOPS_CONFIG_VERSION,
+        task_provider_id="github_projects_v2",
+        task_provider_config={
+            "url": "https://github.com/orgs/acme/projects/7",
+            "status_field": "Status",
+        },
+        loop_config=OuterLoopConfig(
+            sync_mode=False,
+            checkout_mode="worktree",
+        ),
+        inner_loop=None,
+    )
+
+    class ProviderStub:
+        approval_comment_usernames = ("maintainer", "maintainer")
+        approval_comment_pattern = r"^\s*/shipit\b"
+        review_actor_allowlist = ("reviewer", "reviewer")
+
+        def poll(self, limit: int | None = None) -> list[Task]:
+            assert limit is None
+            return [task]
+
+    provider = ProviderStub()
+    captured: dict[str, object] = {}
+
+    def fake_build_inner_loop_launcher(
+        config: LoopsConfig,
+        *,
+        approval_comment_usernames: tuple[str, ...] = (),
+        approval_comment_pattern: str = r"^\s*/approve\b",
+        review_actor_usernames: tuple[str, ...] = (),
+    ):
+        captured["launcher_config"] = config
+        captured["approval_comment_usernames"] = approval_comment_usernames
+        captured["approval_comment_pattern"] = approval_comment_pattern
+        captured["review_actor_usernames"] = review_actor_usernames
+
+        def _launch(run_dir: Path, launch_task: Task) -> None:
+            captured["run_dir"] = run_dir
+            captured["launch_task"] = launch_task
+
+        return _launch
+
+    monkeypatch.setattr(cli_module, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(cli_module, "build_provider", lambda _config: provider)
+    monkeypatch.setattr(cli_module, "build_inner_loop_launcher", fake_build_inner_loop_launcher)
+    monkeypatch.setattr(
+        cli_module,
+        "_find_codex_session_transcript",
+        lambda _session_id: tmp_path / "session.jsonl",
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_derive_handoff_urls_from_session",
+        lambda _path, **_kwargs: (
+            "https://github.com/acme/api/pull/88",
+            "https://github.com/acme/api/issues/77",
+            ("https://github.com/acme/api/pull/88",),
+            ("https://github.com/acme/api/issues/77",),
+        ),
+    )
+    monkeypatch.setattr(cli_module, "_resolve_starting_commit", lambda _root: "abc123")
+
+    cli_module._run_handoff_command(
+        config_path=config_path,
+        session_id="session-xyz",
+        pr_url=None,
+        task_url=None,
+    )
+
+    run_dir = captured.get("run_dir")
+    assert isinstance(run_dir, Path)
+    run_record = read_run_record(run_dir / "run.json")
+    assert run_record.task.url == "https://github.com/acme/api/issues/77"
+    assert run_record.pr is not None
+    assert run_record.pr.url == "https://github.com/acme/api/pull/88"
+    assert run_record.pr.review_status == "open"
+    assert run_record.pr.review_addressed_at is None
+    assert run_record.codex_session is not None
+    assert run_record.codex_session.id == "session-xyz"
+    assert run_record.needs_user_input is False
+    assert run_record.last_state == "WAITING_ON_REVIEW"
+    assert run_record.checkout_mode == "worktree"
+    assert run_record.starting_commit == "abc123"
+    assert (run_dir / "run.log").exists()
+    assert (run_dir / "agent.log").exists()
+
+    outer_state_payload = json.loads((loops_root / "outer_state.json").read_text())
+    task_entries = list((outer_state_payload.get("tasks") or {}).values())
+    assert len(task_entries) == 1
+    assert task_entries[0]["task"]["url"] == "https://github.com/acme/api/issues/77"
+    assert outer_state_payload["initialized"] is True
+    assert captured["launch_task"] == task
+    assert captured["approval_comment_usernames"] == ("maintainer",)
+    assert captured["approval_comment_pattern"] == r"^\s*/shipit\b"
+    assert captured["review_actor_usernames"] == ("reviewer",)
+
+
+def test_run_handoff_command_falls_back_when_provider_poll_fails(
+    tmp_path: Path,
+    monkeypatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    loops_root = tmp_path / ".loops"
+    loops_root.mkdir(parents=True)
+    config_path = loops_root / "config.json"
+    config_path.write_text("{}")
+    loaded = LoopsConfig(
+        version=LATEST_LOOPS_CONFIG_VERSION,
+        task_provider_id="github_projects_v2",
+        task_provider_config={
+            "url": "https://github.com/orgs/acme/projects/7",
+            "status_field": "Status",
+        },
+        loop_config=OuterLoopConfig(sync_mode=False),
+        inner_loop=None,
+    )
+
+    class ProviderStub:
+        approval_comment_usernames = ()
+        approval_comment_pattern = r"^\s*/approve\b"
+        review_actor_allowlist = ()
+
+        def poll(self, limit: int | None = None) -> list[Task]:
+            assert limit is None
+            raise RuntimeError("poll unavailable")
+
+    provider = ProviderStub()
+    captured: dict[str, object] = {}
+
+    def fake_build_inner_loop_launcher(
+        _config: LoopsConfig,
+        *,
+        approval_comment_usernames: tuple[str, ...] = (),
+        approval_comment_pattern: str = r"^\s*/approve\b",
+        review_actor_usernames: tuple[str, ...] = (),
+    ):
+        captured["approval_comment_usernames"] = approval_comment_usernames
+        captured["approval_comment_pattern"] = approval_comment_pattern
+        captured["review_actor_usernames"] = review_actor_usernames
+
+        def _launch(run_dir: Path, launch_task: Task) -> None:
+            captured["run_dir"] = run_dir
+            captured["launch_task"] = launch_task
+
+        return _launch
+
+    monkeypatch.setattr(cli_module, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(cli_module, "build_provider", lambda _config: provider)
+    monkeypatch.setattr(cli_module, "build_inner_loop_launcher", fake_build_inner_loop_launcher)
+    monkeypatch.setattr(cli_module, "_resolve_starting_commit", lambda _root: "abc123")
+    monkeypatch.setattr(cli_module, "_find_codex_session_transcript", lambda _id: tmp_path / "session.jsonl")
+    monkeypatch.setattr(
+        cli_module,
+        "_derive_handoff_urls_from_session",
+        lambda _path, **_kwargs: (
+            "https://github.com/acme/api/pull/88",
+            "https://github.com/acme/api/issues/77",
+            ("https://github.com/acme/api/pull/88",),
+            ("https://github.com/acme/api/issues/77",),
+        ),
+    )
+
+    cli_module._run_handoff_command(
+        config_path=config_path,
+        session_id="session-fallback",
+        pr_url=None,
+        task_url=None,
+    )
+
+    captured_err = capsys.readouterr().err
+    assert "provider poll unavailable during handoff" in captured_err
+    run_dir = captured.get("run_dir")
+    assert isinstance(run_dir, Path)
+    run_record = read_run_record(run_dir / "run.json")
+    assert run_record.task.id == "https://github.com/acme/api/issues/77"
+    assert run_record.task.url == "https://github.com/acme/api/issues/77"
+    assert run_record.task.title == "Handoff task 77"
+    assert run_record.codex_session is not None
+    assert run_record.codex_session.id == "session-fallback"
+    assert run_record.last_state == "WAITING_ON_REVIEW"
+    assert captured["approval_comment_usernames"] == ()
+    assert captured["approval_comment_pattern"] == r"^\s*/approve\b"
+    assert captured["review_actor_usernames"] == ()
+
+
+def test_build_synthesized_handoff_task_uses_canonical_url_as_id() -> None:
+    task = cli_module._build_synthesized_handoff_task(
+        "https://github.com/acme/api/issues/77/comments/1",
+        provider_id="github_projects_v2",
+    )
+
+    assert task.id == "https://github.com/acme/api/issues/77"
+    assert task.url == "https://github.com/acme/api/issues/77"
+    assert task.title == "Handoff task 77"
+
+
+def test_resolve_handoff_session_id_uses_codex_home_history(tmp_path: Path, monkeypatch) -> None:
+    codex_home = tmp_path / "custom-codex-home"
+    codex_home.mkdir(parents=True)
+    history_path = codex_home / "history.jsonl"
+    history_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"session_id": "older-session"}),
+                json.dumps({"session_id": "latest-session"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+
+    resolved = cli_module._resolve_handoff_session_id(None)
+
+    assert resolved == "latest-session"
+
+
+def test_derive_handoff_urls_from_session_ignores_tool_and_developer_content(
+    tmp_path: Path,
+) -> None:
+    session_path = tmp_path / "session.jsonl"
+    session_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "session_meta", "payload": {}}),
+                json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "function_call_output",
+                            "output": (
+                                "irrelevant https://github.com/acme/api/pull/9 "
+                                "https://github.com/acme/api/issues/9"
+                            ),
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "developer",
+                            "content": [
+                                {
+                                    "type": "input_text",
+                                    "text": "ignore https://github.com/acme/api/issues/77",
+                                }
+                            ],
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": "Opened https://github.com/kevinslin/loops/pull/80",
+                                }
+                            ],
+                        },
+                    }
+                ),
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    discovered_pr, discovered_task, pr_candidates, task_candidates = (
+        cli_module._derive_handoff_urls_from_session(
+            session_path,
+            repo_slug="kevinslin/loops",
+        )
+    )
+
+    assert discovered_pr == "https://github.com/kevinslin/loops/pull/80"
+    assert discovered_task is None
+    assert pr_candidates == ("https://github.com/kevinslin/loops/pull/80",)
+    assert task_candidates == ()
+
+
+def test_select_handoff_url_candidate_strict_repo_filters_cross_repo_candidates() -> None:
+    selected, candidates = cli_module._select_handoff_url_candidate(
+        [
+            "https://github.com/acme/api/issues/9",
+            "https://github.com/acme/api/issues/42",
+        ],
+        repo_slug="kevinslin/loops",
+        strict_repo=True,
+    )
+
+    assert selected is None
+    assert candidates == ()
+
+
 def test_run_outer_loop_task_url_implies_run_once_and_force(
     tmp_path: Path,
     monkeypatch,
@@ -1179,6 +1547,35 @@ def test_doctor_moves_legacy_loop_approval_keys_to_provider_config(
     assert payload["task_provider_config"]["approval_comment_pattern"] == r"^\s*/shipit\b"
     assert "approval_comment_usernames" not in payload["loop_config"]
     assert "approval_comment_pattern" not in payload["loop_config"]
+
+
+def test_doctor_migrates_legacy_inner_loop_module_command(tmp_path: Path) -> None:
+    runner = CliRunner()
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "version": LATEST_LOOPS_CONFIG_VERSION,
+                "task_provider_id": "github_projects_v2",
+                "task_provider_config": {"url": "https://github.com/orgs/acme/projects/7"},
+                "inner_loop": {
+                    "command": ["python3", "-m", "loops.inner_loop"],
+                    "append_task_url": False,
+                },
+            }
+        )
+    )
+
+    result = runner.invoke(main, ["doctor", "--config", str(config_path)])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(config_path.read_text())
+    assert payload["inner_loop"]["command"] == [
+        "python3",
+        "-m",
+        "loops",
+        "inner-loop",
+    ]
 
 
 def test_doctor_upgrades_versionless_legacy_config(tmp_path: Path) -> None:

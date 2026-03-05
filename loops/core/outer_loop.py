@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 from urllib.parse import urlsplit, urlunsplit
 
+import click
 from pydantic import ValidationError
 
 from loops.state.approval_config import (
@@ -520,7 +521,66 @@ def upgrade_config_payload(payload: Any) -> tuple[dict[str, Any], bool]:
         if existing_provider_payload != provider_payload:
             upgraded["task_provider_config"] = provider_payload
 
+    existing_inner_loop_payload = upgraded.get("inner_loop")
+    if isinstance(existing_inner_loop_payload, str):
+        inner_loop_payload = {"command": existing_inner_loop_payload}
+        upgraded["inner_loop"] = inner_loop_payload
+        changed = True
+    elif existing_inner_loop_payload is None:
+        inner_loop_payload = None
+    elif isinstance(existing_inner_loop_payload, dict):
+        inner_loop_payload = dict(existing_inner_loop_payload)
+    else:
+        raise TypeError("inner_loop must be an object")
+
+    if isinstance(inner_loop_payload, dict):
+        migrated_command, migrated_command_changed = _migrate_legacy_inner_loop_command(
+            inner_loop_payload.get("command")
+        )
+        if migrated_command_changed:
+            inner_loop_payload["command"] = migrated_command
+            changed = True
+        if existing_inner_loop_payload != inner_loop_payload:
+            upgraded["inner_loop"] = inner_loop_payload
+
     return upgraded, changed
+
+
+def _migrate_legacy_inner_loop_command(command: Any) -> tuple[Any, bool]:
+    if isinstance(command, str):
+        try:
+            parsed_command = shlex.split(command)
+        except ValueError:
+            return command, False
+        migrated_tokens, changed = _migrate_legacy_inner_loop_tokens(parsed_command)
+        if not changed:
+            return command, False
+        return shlex.join(migrated_tokens), True
+    if isinstance(command, list) and all(isinstance(item, str) for item in command):
+        return _migrate_legacy_inner_loop_tokens(list(command))
+    return command, False
+
+
+def _migrate_legacy_inner_loop_tokens(command: list[str]) -> tuple[list[str], bool]:
+    migrated = list(command)
+    changed = False
+    index = 0
+    while index + 1 < len(migrated):
+        if migrated[index] != "-m":
+            index += 1
+            continue
+        if migrated[index + 1].casefold() != "loops.inner_loop":
+            index += 1
+            continue
+        migrated[index + 1] = "loops"
+        changed = True
+        if (
+            index + 2 >= len(migrated)
+            or migrated[index + 2].casefold() != "inner-loop"
+        ):
+            migrated.insert(index + 2, "inner-loop")
+        index += 3
+    return migrated, changed
 
 
 def build_provider(
@@ -637,7 +697,7 @@ def build_inner_loop_launcher(
 
         if sync_mode:
             try:
-                subprocess.run(
+                completed = subprocess.run(
                     command,
                     cwd=inner_loop.working_dir,
                     env=env,
@@ -645,6 +705,12 @@ def build_inner_loop_launcher(
                 )
             except KeyboardInterrupt as exc:
                 raise SyncModeInterruptedError(run_dir=run_dir) from exc
+            if completed.returncode != 0:
+                rendered_command = shlex.join(command)
+                raise click.ClickException(
+                    "inner loop command failed "
+                    f"(exit={completed.returncode}): {rendered_command}"
+                )
             return
 
         log_fd = os.open(str(run_log), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
@@ -671,7 +737,10 @@ def _is_loops_inner_loop_command(command: list[str]) -> bool:
             if command[index + 1].casefold() == "inner-loop":
                 return True
         if item == "-m" and index + 1 < len(command):
-            if command[index + 1].casefold() == "loops" and index + 2 < len(command):
+            module_name = command[index + 1].casefold()
+            if module_name == "loops.inner_loop":
+                return True
+            if module_name == "loops" and index + 2 < len(command):
                 if command[index + 2].casefold() == "inner-loop":
                     return True
     return False

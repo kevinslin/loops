@@ -1,6 +1,6 @@
 # Inner Loop Flow
 
-Last updated: 2026-03-03
+Last updated: 2026-03-05
 
 ## Overview
 
@@ -28,8 +28,9 @@ How does the inner loop execute a single run directory end-to-end, derive state 
 
 ## Entry points
 
-- CLI command `python -m loops inner-loop` resolves run directory and calls `run_inner_loop(...)` (`loops/core/cli.py`).
+- CLI command `loops inner-loop` resolves run directory and calls `run_inner_loop(...)` (`loops/core/cli.py`).
 - Outer-loop launched process invokes the same inner-loop command with `LOOPS_RUN_DIR`; run-scoped settings are loaded from `inner_loop_runtime_config.json` (`loops/core/outer_loop.py` + `loops/core/inner_loop.py`).
+- `loops handoff [session-id]` seeds a new run in `WAITING_ON_REVIEW` from Codex conversation context (tracking task + PR) and then launches the configured inner-loop command.
 
 ## Call path
 
@@ -144,7 +145,7 @@ None identified.
 
 ### Entry assumptions and boundaries
 
-- Outer loop has created the run directory and initial `run.json` (`loops/core/outer_loop.py:293`).
+- Outer loop (or `loops handoff`) has created the run directory and initial `run.json`.
 - CLI or module entry resolves run dir and calls `run_inner_loop` (`loops/core/cli.py:90`, `loops/core/inner_loop.py:982`).
 - Inner loop owns future `run.json` mutations through `write_run_record` (`loops/state/run_record.py:206`).
 
@@ -345,6 +346,7 @@ A: Inner loop only.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+- 2026-03-05: Added `loops handoff [session-id]` as an inner-loop entry path that seeds `WAITING_ON_REVIEW` runs from Codex conversation-derived PR/task context. (019cbc25-7679-72f2-9fa9-1a6dbf122fca)
 - 2026-03-03: Added deterministic state-hook lifecycle semantics (`on_enter`/`on_exit`), provider-backed task-status transitions, and hook-ledger (`state_hooks.json`) dedupe details. (019cb477-2e59-7311-add3-9b2f19720d5e)
 - 2026-03-02: Documented run-record checkout metadata (`checkout_mode`, `starting_commit`) and worktree setup instruction injection on initial RUNNING prompts. (019cabf2-f02b-7521-b814-5b0fcafe3d34)
 - 2026-03-02: Removed legacy `inner_loop_approval_config.json` fallback; comment-approval settings now load only from `inner_loop_runtime_config.json`. (019cabe9-52d6-73a2-b856-da28851da5b5)
