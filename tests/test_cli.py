@@ -1061,6 +1061,89 @@ def test_run_handoff_command_seeds_waiting_on_review_and_launches(
     assert captured["review_actor_usernames"] == ("reviewer",)
 
 
+def test_derive_handoff_urls_from_session_ignores_tool_and_developer_content(
+    tmp_path: Path,
+) -> None:
+    session_path = tmp_path / "session.jsonl"
+    session_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "session_meta", "payload": {}}),
+                json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "function_call_output",
+                            "output": (
+                                "irrelevant https://github.com/acme/api/pull/9 "
+                                "https://github.com/acme/api/issues/9"
+                            ),
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "developer",
+                            "content": [
+                                {
+                                    "type": "input_text",
+                                    "text": "ignore https://github.com/acme/api/issues/77",
+                                }
+                            ],
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": "Opened https://github.com/kevinslin/loops/pull/80",
+                                }
+                            ],
+                        },
+                    }
+                ),
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    discovered_pr, discovered_task, pr_candidates, task_candidates = (
+        cli_module._derive_handoff_urls_from_session(
+            session_path,
+            repo_slug="kevinslin/loops",
+        )
+    )
+
+    assert discovered_pr == "https://github.com/kevinslin/loops/pull/80"
+    assert discovered_task is None
+    assert pr_candidates == ("https://github.com/kevinslin/loops/pull/80",)
+    assert task_candidates == ()
+
+
+def test_select_handoff_url_candidate_strict_repo_filters_cross_repo_candidates() -> None:
+    selected, candidates = cli_module._select_handoff_url_candidate(
+        [
+            "https://github.com/acme/api/issues/9",
+            "https://github.com/acme/api/issues/42",
+        ],
+        repo_slug="kevinslin/loops",
+        strict_repo=True,
+    )
+
+    assert selected is None
+    assert candidates == ()
+
+
 def test_run_outer_loop_task_url_implies_run_once_and_force(
     tmp_path: Path,
     monkeypatch,
@@ -1343,6 +1426,35 @@ def test_doctor_moves_legacy_loop_approval_keys_to_provider_config(
     assert payload["task_provider_config"]["approval_comment_pattern"] == r"^\s*/shipit\b"
     assert "approval_comment_usernames" not in payload["loop_config"]
     assert "approval_comment_pattern" not in payload["loop_config"]
+
+
+def test_doctor_migrates_legacy_inner_loop_module_command(tmp_path: Path) -> None:
+    runner = CliRunner()
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "version": LATEST_LOOPS_CONFIG_VERSION,
+                "task_provider_id": "github_projects_v2",
+                "task_provider_config": {"url": "https://github.com/orgs/acme/projects/7"},
+                "inner_loop": {
+                    "command": ["python3", "-m", "loops.inner_loop"],
+                    "append_task_url": False,
+                },
+            }
+        )
+    )
+
+    result = runner.invoke(main, ["doctor", "--config", str(config_path)])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(config_path.read_text())
+    assert payload["inner_loop"]["command"] == [
+        "python3",
+        "-m",
+        "loops",
+        "inner-loop",
+    ]
 
 
 def test_doctor_upgrades_versionless_legacy_config(tmp_path: Path) -> None:

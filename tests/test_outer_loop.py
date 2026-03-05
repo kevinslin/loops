@@ -79,6 +79,7 @@ def list_run_dirs(loops_root: Path) -> list[Path]:
         (["uv", "run", "loops", "inner-loop"], True),
         ([sys.executable, "-m", "loops", "inner-loop"], True),
         (["uv", "run", sys.executable, "-X", "dev", "-m", "loops", "inner-loop"], True),
+        ([sys.executable, "-m", "loops.inner_loop"], True),
         (["python", "-m", "loops.other"], False),
         (["echo", "hello"], False),
     ],
@@ -381,6 +382,23 @@ def test_load_config_reads_sync_mode(tmp_path: Path) -> None:
     config = load_config(config_path)
     assert config.loop_config.sync_mode is True
     assert config.version == LATEST_LOOPS_CONFIG_VERSION
+
+
+def test_load_config_migrates_legacy_inner_loop_module_command(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    payload = {
+        "task_provider_id": "github_projects_v2",
+        "task_provider_config": {},
+        "inner_loop": {
+            "command": [sys.executable, "-m", "loops.inner_loop"],
+            "append_task_url": False,
+        },
+    }
+    config_path.write_text(json.dumps(payload))
+
+    config = load_config(config_path)
+    assert config.inner_loop is not None
+    assert config.inner_loop.command == [sys.executable, "-m", "loops", "inner-loop"]
 
 
 def test_load_config_reads_auto_approve_enabled(tmp_path: Path) -> None:
@@ -814,6 +832,35 @@ def test_build_inner_loop_launcher_sync_mode_interrupt_raises_typed_error(
         launcher(run_dir, task)
 
     assert exc_info.value.run_dir == run_dir
+
+
+def test_build_inner_loop_launcher_sync_mode_raises_on_non_zero_exit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    task = make_task("1", "Ship it")
+
+    config = LoopsConfig(
+        version=LATEST_LOOPS_CONFIG_VERSION,
+        task_provider_id="github_projects_v2",
+        task_provider_config={"url": "https://github.com/orgs/acme/projects/1"},
+        loop_config=OuterLoopConfig(sync_mode=True),
+        inner_loop=InnerLoopCommandConfig(
+            command=["echo", "hello"],
+            append_task_url=False,
+        ),
+    )
+    launcher = build_inner_loop_launcher(config)
+
+    def fake_run(command, *, cwd, env, check):
+        del cwd, env, check
+        return subprocess.CompletedProcess(command, 2)
+
+    monkeypatch.setattr("loops.core.outer_loop.subprocess.run", fake_run)
+
+    with pytest.raises(RuntimeError, match=r"inner loop command failed \(exit=2\)"):
+        launcher(run_dir, task)
 
 
 def test_build_inner_loop_launcher_writes_runtime_env_to_run_config(

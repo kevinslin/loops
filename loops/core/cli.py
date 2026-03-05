@@ -163,6 +163,17 @@ def _run_handoff_command(
         discovered=discovered_pr_url,
         candidates=pr_candidates,
     )
+    preferred_task_repo_slug = _repo_slug_from_github_url(resolved_pr_url) or repo_slug
+    if (
+        not (task_url or "").strip()
+        and discovered_task_url is None
+        and task_candidates
+    ):
+        discovered_task_url, task_candidates = _select_handoff_url_candidate(
+            list(task_candidates),
+            repo_slug=preferred_task_repo_slug,
+            strict_repo=True,
+        )
     resolved_task_url = _resolve_required_handoff_url(
         label="tracking task",
         provided=task_url,
@@ -309,9 +320,7 @@ def _derive_handoff_urls_from_session(
             payload = json.loads(stripped)
         except json.JSONDecodeError:
             continue
-        if payload.get("type") == "session_meta":
-            continue
-        for text in _iter_json_strings(payload):
+        for text in _iter_handoff_session_texts(payload):
             for match in GITHUB_PR_URL_PATTERN.finditer(text):
                 pr_candidates.append(match.group(0))
             for match in GITHUB_ISSUE_URL_PATTERN.finditer(text):
@@ -328,23 +337,37 @@ def _derive_handoff_urls_from_session(
     return selected_pr, selected_task, filtered_pr_candidates, filtered_task_candidates
 
 
-def _iter_json_strings(value: object) -> Iterator[str]:
-    if isinstance(value, str):
-        yield value
+def _iter_handoff_session_texts(payload: Mapping[str, object]) -> Iterator[str]:
+    if payload.get("type") != "response_item":
         return
-    if isinstance(value, Mapping):
-        for nested in value.values():
-            yield from _iter_json_strings(nested)
+    nested_payload = payload.get("payload")
+    if not isinstance(nested_payload, Mapping):
         return
-    if isinstance(value, list):
-        for nested in value:
-            yield from _iter_json_strings(nested)
+    if nested_payload.get("type") != "message":
+        return
+    if nested_payload.get("role") not in {"user", "assistant"}:
+        return
+    content = nested_payload.get("content")
+    if not isinstance(content, list):
+        return
+    for item in content:
+        if not isinstance(item, Mapping):
+            continue
+        item_type = item.get("type")
+        if item_type not in {"input_text", "output_text", "text"}:
+            continue
+        text = item.get("text")
+        if isinstance(text, str):
+            stripped = text.strip()
+            if stripped:
+                yield stripped
 
 
 def _select_handoff_url_candidate(
     candidates: list[str],
     *,
     repo_slug: Optional[str],
+    strict_repo: bool = False,
 ) -> tuple[Optional[str], tuple[str, ...]]:
     unique_candidates = _dedupe_preserve_order(candidates)
     if not unique_candidates:
@@ -359,6 +382,8 @@ def _select_handoff_url_candidate(
             return repo_matches[0], repo_matches
         if len(repo_matches) > 1:
             return None, repo_matches
+        if strict_repo:
+            return None, ()
     if len(unique_candidates) == 1:
         return unique_candidates[0], unique_candidates
     return None, unique_candidates
