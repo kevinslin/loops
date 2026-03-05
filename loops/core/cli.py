@@ -181,13 +181,20 @@ def _run_handoff_command(
         candidates=task_candidates,
     )
 
-    polled_tasks = provider.poll(limit=None)
+    task = _build_synthesized_handoff_task(
+        resolved_task_url,
+        provider_id=loops_config.task_provider_id,
+    )
     try:
+        polled_tasks = provider.poll(limit=None)
         task = _select_task_by_url(polled_tasks, resolved_task_url)
     except ValueError:
-        task = _build_synthesized_handoff_task(
-            resolved_task_url,
-            provider_id=loops_config.task_provider_id,
+        pass
+    except Exception as exc:
+        click.echo(
+            "[loops] provider poll unavailable during handoff; "
+            f"using synthesized task metadata ({type(exc).__name__}: {exc})",
+            err=True,
         )
 
     seeded_pr = _build_seed_handoff_pr(resolved_pr_url)
@@ -246,9 +253,8 @@ def _resolve_handoff_session_id(session_id: Optional[str]) -> str:
     if env_session_id:
         return env_session_id
 
-    latest = _read_latest_session_id_from_history(
-        Path.home() / ".codex" / "history.jsonl"
-    )
+    codex_home = _resolve_codex_home()
+    latest = _read_latest_session_id_from_history(codex_home / "history.jsonl")
     if latest is not None:
         return latest
 
@@ -281,7 +287,7 @@ def _read_latest_session_id_from_history(history_path: Path) -> Optional[str]:
 
 
 def _find_codex_session_transcript(session_id: str) -> Optional[Path]:
-    codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+    codex_home = _resolve_codex_home()
     roots = (
         codex_home / "sessions",
         codex_home / "archived_sessions",
@@ -298,6 +304,10 @@ def _find_codex_session_transcript(session_id: str) -> Optional[Path]:
         return max(candidates, key=lambda path: path.stat().st_mtime)
     except OSError:
         return candidates[-1]
+
+
+def _resolve_codex_home() -> Path:
+    return Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
 
 
 def _derive_handoff_urls_from_session(

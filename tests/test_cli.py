@@ -1017,7 +1017,7 @@ def test_run_handoff_command_seeds_waiting_on_review_and_launches(
     monkeypatch.setattr(
         cli_module,
         "_derive_handoff_urls_from_session",
-        lambda _path, repo_slug=None: (
+        lambda _path, **_kwargs: (
             "https://github.com/acme/api/pull/88",
             "https://github.com/acme/api/issues/77",
             ("https://github.com/acme/api/pull/88",),
@@ -1059,6 +1059,115 @@ def test_run_handoff_command_seeds_waiting_on_review_and_launches(
     assert captured["approval_comment_usernames"] == ("maintainer",)
     assert captured["approval_comment_pattern"] == r"^\s*/shipit\b"
     assert captured["review_actor_usernames"] == ("reviewer",)
+
+
+def test_run_handoff_command_falls_back_when_provider_poll_fails(
+    tmp_path: Path,
+    monkeypatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    loops_root = tmp_path / ".loops"
+    loops_root.mkdir(parents=True)
+    config_path = loops_root / "config.json"
+    config_path.write_text("{}")
+    loaded = LoopsConfig(
+        version=LATEST_LOOPS_CONFIG_VERSION,
+        task_provider_id="github_projects_v2",
+        task_provider_config={
+            "url": "https://github.com/orgs/acme/projects/7",
+            "status_field": "Status",
+        },
+        loop_config=OuterLoopConfig(sync_mode=False),
+        inner_loop=None,
+    )
+
+    class ProviderStub:
+        approval_comment_usernames = ()
+        approval_comment_pattern = r"^\s*/approve\b"
+        review_actor_allowlist = ()
+
+        def poll(self, limit: int | None = None) -> list[Task]:
+            assert limit is None
+            raise RuntimeError("poll unavailable")
+
+    provider = ProviderStub()
+    captured: dict[str, object] = {}
+
+    def fake_build_inner_loop_launcher(
+        _config: LoopsConfig,
+        *,
+        approval_comment_usernames: tuple[str, ...] = (),
+        approval_comment_pattern: str = r"^\s*/approve\b",
+        review_actor_usernames: tuple[str, ...] = (),
+    ):
+        captured["approval_comment_usernames"] = approval_comment_usernames
+        captured["approval_comment_pattern"] = approval_comment_pattern
+        captured["review_actor_usernames"] = review_actor_usernames
+
+        def _launch(run_dir: Path, launch_task: Task) -> None:
+            captured["run_dir"] = run_dir
+            captured["launch_task"] = launch_task
+
+        return _launch
+
+    monkeypatch.setattr(cli_module, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(cli_module, "build_provider", lambda _config: provider)
+    monkeypatch.setattr(cli_module, "build_inner_loop_launcher", fake_build_inner_loop_launcher)
+    monkeypatch.setattr(cli_module, "_resolve_starting_commit", lambda _root: "abc123")
+    monkeypatch.setattr(cli_module, "_find_codex_session_transcript", lambda _id: tmp_path / "session.jsonl")
+    monkeypatch.setattr(
+        cli_module,
+        "_derive_handoff_urls_from_session",
+        lambda _path, **_kwargs: (
+            "https://github.com/acme/api/pull/88",
+            "https://github.com/acme/api/issues/77",
+            ("https://github.com/acme/api/pull/88",),
+            ("https://github.com/acme/api/issues/77",),
+        ),
+    )
+
+    cli_module._run_handoff_command(
+        config_path=config_path,
+        session_id="session-fallback",
+        pr_url=None,
+        task_url=None,
+    )
+
+    captured_err = capsys.readouterr().err
+    assert "provider poll unavailable during handoff" in captured_err
+    run_dir = captured.get("run_dir")
+    assert isinstance(run_dir, Path)
+    run_record = read_run_record(run_dir / "run.json")
+    assert run_record.task.url == "https://github.com/acme/api/issues/77"
+    assert run_record.task.title == "Handoff task 77"
+    assert run_record.codex_session is not None
+    assert run_record.codex_session.id == "session-fallback"
+    assert run_record.last_state == "WAITING_ON_REVIEW"
+    assert captured["approval_comment_usernames"] == ()
+    assert captured["approval_comment_pattern"] == r"^\s*/approve\b"
+    assert captured["review_actor_usernames"] == ()
+
+
+def test_resolve_handoff_session_id_uses_codex_home_history(tmp_path: Path, monkeypatch) -> None:
+    codex_home = tmp_path / "custom-codex-home"
+    codex_home.mkdir(parents=True)
+    history_path = codex_home / "history.jsonl"
+    history_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"session_id": "older-session"}),
+                json.dumps({"session_id": "latest-session"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+
+    resolved = cli_module._resolve_handoff_session_id(None)
+
+    assert resolved == "latest-session"
 
 
 def test_derive_handoff_urls_from_session_ignores_tool_and_developer_content(
