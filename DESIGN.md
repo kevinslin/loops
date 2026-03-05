@@ -300,9 +300,8 @@ Notes:
 - `loop_config.handoff_handler` selects built-in NEEDS_INPUT handoff behavior (`stdin_handler` default, `gh_comment_handler` for issue-comment handoff).
 - `loop_config.checkout_mode` sets checkout guidance for agent execution (`branch` default, `worktree` alternate).
 - `inner_loop` is optional when running via the CLI; if omitted, the CLI uses
-  a canonical default builder for `python -m loops inner-loop` with `append_task_url=false`.
-- `python -m loops run --task-url <task-url>` targets exactly one task from the provider poll, implies `run-once`, `force=true`, and `sync_mode=true`, and does not mutate `task_provider_config.url`.
-- Installed package entrypoint `loops` is equivalent to `python -m loops` and uses the same argv normalization.
+  a canonical default builder for `loops inner-loop` with `append_task_url=false`.
+- `loops run --task-url <task-url>` targets exactly one task from the provider poll, implies `run-once`, `force=true`, and `sync_mode=true`, and does not mutate `task_provider_config.url`.
 
 ### Environment variables
 - `GITHUB_TOKEN` or `GH_TOKEN`: required for GitHub provider startup checks (`GH_TOKEN` is supported as alias fallback).
@@ -312,7 +311,7 @@ Notes:
 - `LOOPS_HANDOFF_HANDLER`: direct/manual-run fallback built-in handoff handler name.
 - `LOOPS_TASK_ID`, `LOOPS_TASK_TITLE`, `LOOPS_TASK_URL`, `LOOPS_TASK_PROVIDER`: legacy fallback task metadata used only when resetting a run with missing `run.json`.
 - `LOOPS_STREAM_LOGS_STDOUT`: direct/manual-run fallback toggle for mirroring `run.log` lines to stdout.
-- Outer-loop-launched runs persist runtime settings in `inner_loop_runtime_config.json` under each run directory, instead of injecting config via child-process env vars. For custom launch commands that are not `loops inner-loop` (or `python -m loops inner-loop`), `inner_loop.env` remains merged into child env.
+- Outer-loop-launched runs persist runtime settings in `inner_loop_runtime_config.json` under each run directory, instead of injecting config via child-process env vars. For custom launch commands that are not `loops inner-loop`, `inner_loop.env` remains merged into child env.
 - Inner-loop provider resolution for deterministic state hooks validates provider-required secrets against the run's effective runtime environment (`inner_loop_runtime_config.json` env overrides + process env), so hook-backed status updates work when tokens are supplied via `inner_loop.env`.
 - When `inner_loop_runtime_config.json` exists but is malformed, inner loop startup fails fast instead of silently falling back to process environment defaults.
 
@@ -412,7 +411,7 @@ File organization plan for all existing `loops/` source files:
 | `loops/TODO.md` | `loops/TODO.md` | Local package TODO notes; keep in place. |
 | `loops/cli.py` | `loops/core/cli.py` | Removed legacy path; use canonical CLI module/entrypoint only. |
 | `loops/outer_loop.py` | `loops/core/outer_loop.py` | Removed legacy path; use canonical outer-loop module only. |
-| `loops/inner_loop.py` | `loops/core/inner_loop.py` | Removed legacy path; use `loops inner-loop` or `python -m loops inner-loop`. |
+| `loops/inner_loop.py` | `loops/core/inner_loop.py` | Removed legacy path; use `loops inner-loop`. |
 | `loops/handoff_handlers.py` | `loops/core/handoff_handlers.py` | Removed legacy path; import from `loops.core.handoff_handlers`. |
 | `loops/cleanup.py` | `loops/commands/clean.py` | Removed legacy path; clean behavior lives in command module. |
 | `loops/approval_config.py` | `loops/state/approval_config.py` | Removed legacy path; state/config model moved under `state`. |
@@ -631,14 +630,14 @@ Practical invariant: if this skill contract changes, update `loops/core/inner_lo
 
 ### CLI callers
 
-- `python -m loops` is the top-level wrapper CLI.
-- `python -m loops init` initializes `.loops/` scaffolding (`jobs/`, logs, state, default config).
-- `python -m loops doctor` upgrades config schema/default values in `config.json`.
-- `python -m loops run` starts the outer loop runner.
-- `python -m loops handoff [session-id]` seeds a run from Codex conversation context (PR + tracking task), defaults that run to `WAITING_ON_REVIEW`, and launches the configured inner-loop command.
-- `python -m loops inner-loop` runs one inner-loop execution for a run directory.
-- `python -m loops clean` deletes empty runs and archives completed runs.
-- `python -m loops.cli` is intentionally unsupported; use `loops ...` or `python -m loops ...`.
+- `loops` is the top-level CLI.
+- `loops init` initializes `.loops/` scaffolding (`jobs/`, logs, state, default config).
+- `loops doctor` upgrades config schema/default values in `config.json`.
+- `loops run` starts the outer loop runner.
+- `loops handoff [session-id]` seeds a run from Codex conversation context (PR + tracking task), defaults that run to `WAITING_ON_REVIEW`, and launches the configured inner-loop command.
+- `loops inner-loop` runs one inner-loop execution for a run directory.
+- `loops clean` deletes empty runs and archives completed runs.
+- `loops.cli` is intentionally unsupported; use `loops ...`.
 
 ### Live integration harness targets
 

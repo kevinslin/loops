@@ -28,9 +28,9 @@ How does the inner loop execute a single run directory end-to-end, derive state 
 
 ## Entry points
 
-- CLI command `python -m loops inner-loop` resolves run directory and calls `run_inner_loop(...)` (`loops/core/cli.py`).
+- CLI command `loops inner-loop` resolves run directory and calls `run_inner_loop(...)` (`loops/core/cli.py`).
 - Outer-loop launched process invokes the same inner-loop command with `LOOPS_RUN_DIR`; run-scoped settings are loaded from `inner_loop_runtime_config.json` (`loops/core/outer_loop.py` + `loops/core/inner_loop.py`).
-- `python -m loops handoff [session-id]` seeds a new run in `WAITING_ON_REVIEW` from Codex conversation context (tracking task + PR) and then launches the configured inner-loop command.
+- `loops handoff [session-id]` seeds a new run in `WAITING_ON_REVIEW` from Codex conversation context (tracking task + PR) and then launches the configured inner-loop command.
 
 ## Call path
 

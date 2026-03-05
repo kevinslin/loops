@@ -47,8 +47,6 @@ loops run --run-once
 loops run
 ```
 
-`python -m loops ...` remains supported as an equivalent invocation.
-
 ## Runtime layout
 
 Loops writes runtime state under `.loops/`:
@@ -107,8 +105,8 @@ Top-level config file: `.loops/config.json`
 - `inner_loop.env` (object string->string, optional): run-scoped inner-loop runtime env map (for example `CODEX_CMD`, prompt-file envs, or subprocess tokens) persisted to each run's `inner_loop_runtime_config.json`.
 - `inner_loop.append_task_url` (boolean, default `true`)
 
-If `inner_loop` is omitted and you run via `python -m loops`, the CLI injects:
-- `command = [sys.executable, "-m", "loops", "inner-loop"]`
+If `inner_loop` is omitted, the CLI injects:
+- `command` equivalent to `loops inner-loop`
 - `append_task_url = false`
 
 ## CLI reference
@@ -142,7 +140,6 @@ loops clean --dry-run
 Legacy compatibility:
 
 - `loops --run-once` is accepted and routed to `loops run --run-once`.
-- `python -m loops --run-once` is accepted and routed to `python -m loops run --run-once`.
 
 ### `loops run`
 
@@ -180,7 +177,7 @@ Notes:
 - URL matching for `--task-url` compares normalized URLs (scheme/host case-insensitive, query/fragment removed, trailing slash ignored).
 - `--task-url` bypasses ready-status filtering for the selected task and raises an error when the URL is missing or ambiguous in poll results.
 - Provider filters (`task_provider_config.filters`) are applied during provider polling before outer-loop status filtering.
-- Outer loop always injects `LOOPS_RUN_DIR` into launched inner-loop processes. For custom commands that are not `loops inner-loop` (or `python -m loops inner-loop`), `inner_loop.env` is also merged into child env; for Loops inner-loop commands, runtime settings are read from run-scoped `inner_loop_runtime_config.json`.
+- Outer loop always injects `LOOPS_RUN_DIR` into launched inner-loop processes. For custom commands that are not `loops inner-loop`, `inner_loop.env` is also merged into child env; for Loops inner-loop commands, runtime settings are read from run-scoped `inner_loop_runtime_config.json`.
 - PR approval is detected from GitHub review decision or from allowlisted approval comments configured in `task_provider_config`, after optional review-actor filtering from `task_provider_config.allowlist`.
 
 ### `loops clean`
@@ -266,10 +263,6 @@ Behavior summary:
 - If `run.json` is missing, task fields fall back to `LOOPS_TASK_*` env vars (or defaults).
 - Exact state-mapped prompt strings are documented in `DESIGN.md` under `### Prompt catalog`.
 
-Direct module entrypoint:
-
-- `python -m loops`
-
 ### `loops handoff`
 
 Seeds and launches a `WAITING_ON_REVIEW` run from an existing Codex session.
@@ -289,8 +282,8 @@ Options:
 
 Behavior summary:
 
-- Resolves session id from argument, then `CODEX_THREAD_ID`, then latest `~/.codex/history.jsonl` session.
-- Reads the matching Codex transcript under `~/.codex/sessions` or `~/.codex/archived_sessions`.
+- Resolves session id from argument, then `CODEX_THREAD_ID`, then latest `${CODEX_HOME:-~/.codex}/history.jsonl` session.
+- Reads the matching Codex transcript under `${CODEX_HOME:-~/.codex}/sessions` or `${CODEX_HOME:-~/.codex}/archived_sessions`.
 - Derives PR URL and tracking task URL from conversation content; if either cannot be determined, prompts for it interactively (or fails with guidance in non-interactive mode).
 - Maps tracking task URL against provider poll results when possible; otherwise falls back to synthesized task metadata.
 - Creates a new run with:
