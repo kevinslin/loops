@@ -2,6 +2,9 @@
 
 Loops is a lightweight task runner that picks up ready work from GitHub Projects and drives each task through an inner Codex loop until completion.
 
+> Warning
+> Loops is a preview for trusted environments. It is not hardened for untrusted repositories, untrusted task content, or multi-tenant use.
+
 It has two runtime layers:
 - An outer loop that polls tasks and launches runs.
 - An inner loop that executes Codex turns, tracks PR/review state, and requests user input when needed.
