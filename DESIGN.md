@@ -20,8 +20,6 @@ Close the loop on building a coding agent harness that can pick up tasks, execut
 
 ### Out of scope
 - Full task management UI or assignment workflow.
-- Non-Codex LLMs in the MVP.
-- Automated merge/deploy; loops stops after cleanup.
 - Complex scheduling, task dependencies, or cross-repo orchestration.
 
 ## 1.5 Core concepts

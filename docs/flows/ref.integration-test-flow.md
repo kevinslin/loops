@@ -407,8 +407,8 @@ Useful debug checkpoints:
 
 ## Related docs
 
-- `specs/.archive/2026-02-09-create-integration-testing-harness-for-loops.md`
-- `specs/2026-03-01-end2end-integration-test-target.md`
+- `docs/specs/.archive/2026-02-09-create-integration-testing-harness-for-loops.md`
+- `docs/specs/2026-03-01-end2end-integration-test-target.md`
 - `docs/flows/ref.outer-loop.md`
 - `docs/flows/ref.inner-loop.md`
 - `README.md` (Development -> live integration harness section)

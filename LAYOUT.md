@@ -25,8 +25,11 @@ Runtime flow:
 ├── progress.md
 ├── Makefile
 ├── LAYOUT.md
-├── specs/
-│   └── .archive/
+├── docs/
+│   ├── flows/
+│   ├── research/
+│   └── specs/
+│       └── .archive/
 ├── loops/
 │   ├── __init__.py
 │   ├── __main__.py
@@ -89,11 +92,11 @@ Runtime flow:
 - `Makefile`
   - Convenience command(s), currently `make test`.
 
-- `specs/*.md`
+- `docs/specs/*.md`
   - Active and planned implementation specs and execution plans.
   - Primary place to look before changing in-flight work.
 
-- `specs/.archive/*.md`
+- `docs/specs/.archive/*.md`
   - Completed specs and validation records kept for historical context.
   - Move finished specs here instead of leaving them mixed with active plans.
 

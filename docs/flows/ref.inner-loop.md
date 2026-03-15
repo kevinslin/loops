@@ -11,8 +11,8 @@ It is intended as a fast context-recapture artifact for humans and LLM agents ch
 - `DESIGN.md`
 - `README.md`
 - `LAYOUT.md`
-- `specs/2026-02-09-manage-inner-loop-state-machine.md`
-- `specs/.archive/2026-02-09-implement-inner-loop-runner.md`
+- `docs/specs/2026-02-09-manage-inner-loop-state-machine.md`
+- `docs/specs/.archive/2026-02-09-implement-inner-loop-runner.md`
 
 ## Terminology
 

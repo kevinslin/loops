@@ -2,7 +2,7 @@
 
 ## Usage
 - Always refer to DESIGN.md before starting work.
-- Use the relevant active spec in `specs/` when present. Completed specs live in `specs/.archive/`.
+- Use the relevant active spec in `docs/specs/` when present. Completed specs live in `docs/specs/.archive/`.
 - Keep project-level status in `progress.md`; keep spec-specific progress and learnings in `.agents/runs/`.
 - If current changes deviate or add more detail to DESIGN.md, make sure to also edit DESIGN.md
 - When updating `loop_config` schema/defaults, always update `loops doctor` (config upgrade path + tests) so older configs are backfilled correctly.
