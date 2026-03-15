@@ -301,7 +301,7 @@ Useful debug checkpoints:
 
 - `docs/flows/ref.inner-loop.md`
 - `DESIGN.md`
-- `docs/specs/active/2026-02-17-allow-comment-based-pr-approval.md`
+- `specs/.archive/2026-02-17-allow-comment-based-pr-approval.md`
 - `tests/test_inner_loop.py`
 
 ## Manual Notes 

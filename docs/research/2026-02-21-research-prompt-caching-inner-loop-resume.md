@@ -8,7 +8,7 @@
 
 - `DESIGN.md`
 - `docs/flows/ref.inner-loop.md`
-- `docs/specs/active/2026-02-09-manage-inner-loop-state-machine.md`
+- `specs/2026-02-09-manage-inner-loop-state-machine.md`
 
 * * *
 

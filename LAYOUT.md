@@ -17,14 +17,16 @@ Runtime flow:
 
 ```text
 .
+├── .agents/
+│   └── runs/
 ├── README.md
 ├── DESIGN.md
 ├── AGENTS.md
+├── progress.md
 ├── Makefile
 ├── LAYOUT.md
-├── docs/
-│   └── specs/
-│       └── active/
+├── specs/
+│   └── .archive/
 ├── loops/
 │   ├── __init__.py
 │   ├── __main__.py
@@ -80,12 +82,24 @@ Runtime flow:
 - `AGENTS.md`
   - Agent workflow rules for contributors/LLMs in this repo.
 
+- `progress.md`
+  - Project-wide status board for active work, blockers, and next actions.
+  - Canonical rollup; do not scatter durable status across spec sibling files.
+
 - `Makefile`
   - Convenience command(s), currently `make test`.
 
-- `docs/specs/active/*.md`
-  - Implementation specs and execution plans.
-  - Useful for intent/history; one spec is still marked in progress (`2026-02-09-manage-inner-loop-state-machine.md`).
+- `specs/*.md`
+  - Active and planned implementation specs and execution plans.
+  - Primary place to look before changing in-flight work.
+
+- `specs/.archive/*.md`
+  - Completed specs and validation records kept for historical context.
+  - Move finished specs here instead of leaving them mixed with active plans.
+
+- `.agents/runs/*-progress.md`, `.agents/runs/*-learnings.md`
+  - Spec-specific runtime notes and local working history.
+  - Keep these out of the durable top-level docs.
 
 ### `loops/` package
 

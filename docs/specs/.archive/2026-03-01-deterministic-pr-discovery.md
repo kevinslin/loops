@@ -52,7 +52,7 @@ Current PR discovery is partly heuristic. `_run_codex_turn(...)` currently calls
 
 ### Required Pre-Read (LLM Agent)
 - `DESIGN.md` (state machine + trigger contracts)
-- `docs/specs/active/2026-02-09-manage-inner-loop-state-machine.md`
+- `specs/2026-02-09-manage-inner-loop-state-machine.md`
 - `loops/inner_loop.py` (`_run_codex_turn`, `_extract_pr_from_output`, state/needs-input handling)
 - `loops/run_record.py` (`RunRecord`, `derive_run_state`)
 - `tests/test_inner_loop.py` (turn/state behavior expectations)

@@ -46,7 +46,7 @@ The existing live integration harness proves deterministic task pickup and Codex
 - `docs/flows/ref.outer-loop.md`
 - `docs/flows/ref.inner-loop.md`
 - `docs/flows/ref.integration-test-flow.md`
-- `docs/specs/active/2026-02-09-create-integration-testing-harness-for-loops.md`
+- `specs/.archive/2026-02-09-create-integration-testing-harness-for-loops.md`
 - `tests/integ/test_outer_loop_pickup_live.py`
 - `tests/integ/github_setup.py`
 - `Makefile`

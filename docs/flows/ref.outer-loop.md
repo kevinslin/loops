@@ -12,8 +12,8 @@ It is intended as a fast context-recapture artifact for humans and LLM agents ch
 - `README.md`
 - `LAYOUT.md`
 - `docs/flows/ref.inner-loop.md`
-- `docs/specs/active/2026-02-05-implement-outer-loop-runner.md`
-- `docs/specs/active/2026-02-03-implement-github-projects-v2-task-provider.md`
+- `specs/.archive/2026-02-05-implement-outer-loop-runner.md`
+- `specs/.archive/2026-02-03-implement-github-projects-v2-task-provider.md`
 
 ## Terminology
 

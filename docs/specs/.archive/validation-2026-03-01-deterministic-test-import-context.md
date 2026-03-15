@@ -8,9 +8,9 @@ by the user to confirm the feature implementation and testing is adequate
 It should be updated during the development process, then kept as a record for later
 context once implementation is complete.
 
-**Feature Plan:** [2026-03-01-deterministic-test-import-context.md](active/2026-03-01-deterministic-test-import-context.md)
+**Feature Plan:** [2026-03-01-deterministic-test-import-context.md](./2026-03-01-deterministic-test-import-context.md)
 
-**Implementation Plan:** [2026-03-01-deterministic-test-import-context.md](active/2026-03-01-deterministic-test-import-context.md)
+**Implementation Plan:** [2026-03-01-deterministic-test-import-context.md](./2026-03-01-deterministic-test-import-context.md)
 
 ## Stage 4: Validation Stage
 
