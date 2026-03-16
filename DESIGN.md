@@ -1,4 +1,4 @@
-# Loops design doc
+# Loops Design
 
 ## 0. Context
 Loops is a lightweight LLM harness around coding agents. It has an outer loop that finds ready tasks and an inner loop that executes each task to completion.

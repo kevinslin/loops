@@ -1,377 +1,664 @@
 # Inner Loop Flow
 
-Last updated: 2026-03-05
-
-## Overview
-
-This document describes how Loops executes a single task run in the inner loop, including state derivation, Codex turns, review polling, user handoff, and completion semantics.
-It is intended as a fast context-recapture artifact for humans and LLM agents changing `loops/core/inner_loop.py` behavior.
-
-**Related Documents:**
-- `DESIGN.md`
-- `README.md`
-- `LAYOUT.md`
-- `docs/specs/2026-02-09-manage-inner-loop-state-machine.md`
-- `docs/specs/.archive/2026-02-09-implement-inner-loop-runner.md`
-
-## Terminology
-
-- `Run directory`: Per-task folder under `.loops/jobs/<run>/` containing `run.json`, `run.log`, and `agent.log`.
-- `Run record`: The `RunRecord` payload persisted in `run.json`.
-- `Derived state`: `RUNNING | WAITING_ON_REVIEW | NEEDS_INPUT | PR_APPROVED | DONE`, computed from `pr` + `needs_user_input`.
-- `Auto-approve gate`: inline branch inside `WAITING_ON_REVIEW` that applies only when review is not already approved, CI is green, and `auto_approve_enabled` is true; it runs one-time `$ag-judge` evaluation.
-- `Single-writer model`: Inner loop is the only writer of `run.json`.
+Last updated: 2026-03-15
 
 ## Purpose / Question Answered
 
-How does the inner loop execute a single run directory end-to-end, derive state transitions, and coordinate Codex/review/handoff work while preserving single-writer ownership of `run.json`?
+This document explains how Loops executes one run directory inside the inner loop.
+It answers three debugging questions: how state is derived from `run.json`, when Codex is invoked or resumed, and what causes the loop to wait, re-enter review handling, or exit as `DONE`.
 
 ## Entry points
 
-- CLI command `loops inner-loop` resolves run directory and calls `run_inner_loop(...)` (`loops/core/cli.py`).
-- Outer-loop launched process invokes the same inner-loop command with `LOOPS_RUN_DIR`; run-scoped settings are loaded from `inner_loop_runtime_config.json` (`loops/core/outer_loop.py` + `loops/core/inner_loop.py`).
-- `loops handoff [session-id]` seeds a new run in `WAITING_ON_REVIEW` from Codex conversation context (tracking task + PR) and then launches the configured inner-loop command.
+- `loops/core/cli.py`: `loops inner-loop` resolves `--run-dir` or `LOOPS_RUN_DIR`, then calls `run_inner_loop(...)`.
+- `loops/core/cli.py`: `loops handoff [session-id]` creates a run seeded with task and PR context, then launches the configured inner-loop command.
+- `loops/core/inner_loop.py`: `run_inner_loop(...)` is the runtime entrypoint for direct callers and tests.
 
 ## Call path
 
-### Runtime path
+```text
++----------------------+
+| start or resume run  |
+| load runtime snapshot|
++----------------------+
+           |
+           v
++----------------------+
+| read run.json        |
+| derive state         |
++----------------------+
 
-#### Pseudocode (sudocode; inner-loop state machine)
+  | RUNNING
+  v
++----------------------+
+| Codex task turn      |
++----------------------+
+  | pr found           | needs input
+  v                    v
++----------------------+  +----------------------+
+| WAITING_ON_REVIEW    |  | NEEDS_INPUT          |
++----------------------+  +----------------------+
 
-Source: `loops/core/inner_loop.py`, `loops/state/run_record.py`, `loops/utils/logging.py`
+---
 
-```ts
-function run_inner_loop(run_dir):
-  load run.json + defaults + approval settings
-  resolve handoff handler and codex command
+WAITING_ON_REVIEW
+  |
+  v
++----------------------+
+| poll review and CI   |
++----------------------+
+  | approved or        | new feedback        | idle or fail
+  | auto_approve       v                     v
+  v              +----------------------+  +----------------------+
++----------------+| review Codex turn    |  | NEEDS_INPUT          |
+| PR_APPROVED    |+----------------------+  +----------------------+
++----------------+           |
+                             v
+                       +----------------------+
+                       | WAITING_ON_REVIEW    |
+                       +----------------------+
+---
+PR_APPROVED
+  |
+  v
++----------------------+
+| cleanup and poll     |
+| merge status         |
++----------------------+
+  | merged             | still approved      | idle or fail
+  v                    v                     v
++------+      +----------------------+  +----------------------+
+| DONE |      | PR_APPROVED          |  | NEEDS_INPUT          |
++------+      +----------------------+  +----------------------+
 
-  while iteration <= max_iterations:
-    run_record = read_run_record(run_json)
-    state = derive_run_state(run_record.pr, run_record.needs_user_input)
-    hook_ctx = transition_context(run_id, from_state=run_record.last_state, to_state=state)
-    execute_on_enter_hooks(state, hook_ctx)
-
-    if state == DONE:
-      return run_record
-    transition = dispatch_state_handler(state, run_record, runtime, control)
-    next_state = derive_next_state(transition.run_record)
-    if next_state != state:
-      execute_on_exit_hooks(state, transition_context(run_id, from_state=state, to_state=next_state))
-    // handlers:
-    // - handle_needs_input_state
-    // - handle_running_state
-    // - handle_waiting_on_review_state
-    // - handle_pr_approved_state
-    if transition.terminate:
-      return transition.run_record
-
-  force NEEDS_INPUT and return
+---
+NEEDS_INPUT
+  |
+  v
++----------------------+
+| invoke handoff       |
+| handler              |
++----------------------+
+  | waiting or         | response
+  | terminate          v
+  v              +----------------------+
++----------------+| clear needs_input    |
+| NEEDS_INPUT    |+----------------------+
++----------------+           |
+                             v
+                       +----------------------+
+                       | read run.json        |
+                       | derive state again   |
+                       +----------------------+
 ```
+
+### Phase 1: Startup and state dispatch
+
+Trigger / entry condition:
+- A run directory already exists and `run_inner_loop(...)` starts for that directory.
+
+Entrypoints:
+- `loops/core/inner_loop.py:run_inner_loop`
+- `loops/state/run_record.py:derive_run_state`
+- `loops/core/hooks.py:build_default_hook_executor`
+
+Ordered call path:
+1. Load run-scoped runtime inputs and persist the effective log-streaming snapshot.
+   ```ts
+   // Source: loops/core/inner_loop.py (run_inner_loop, _load_runtime_config, _configure_log_streaming)
+   runtime_config := _load_runtime_config(run_dir=run_dir, run_log=run_log)
+   runtime_env := runtime_config.env if runtime_config is not None else null
+   runtime_environ := _apply_runtime_env_overrides(runtime_env)
+   runtime_environ := _configure_log_streaming(
+     runtime_config=runtime_config,
+     environ=runtime_environ,
+   )
+   runtime_environ["LOOPS_RUN_DIR"] = str(run_dir)
+   effective_stream_logs_stdout := should_stream_logs_to_stdout(environ=runtime_environ)
+
+   initial_run_record := read_run_record(run_json_path)
+   if initial_run_record.stream_logs_stdout != effective_stream_logs_stdout
+     initial_run_record := write_run_record(
+       run_json_path,
+       replace(initial_run_record, stream_logs_stdout=effective_stream_logs_stdout),
+       auto_approve_enabled=auto_approve_enabled,
+     )
+   ```
+2. Build immutable runtime collaborators once for the process.
+   ```ts
+   // Source: loops/core/inner_loop.py (run_inner_loop)
+   base_prompt := _load_prompt_file(...)
+   command := _resolve_codex_command(...)
+   configured_handoff_handler := _resolve_configured_handoff_handler_name(...)
+   auto_approve_enabled := _load_auto_approve_enabled(...)
+   task_provider := _resolve_task_provider_for_run(...)
+   user_handoff_handler := resolve_builtin_handoff_handler(...) ?? caller override
+   runtime := InnerLoopRuntimeContext(
+     command=command,
+     base_prompt=base_prompt,
+     user_handoff_handler=user_handoff_handler,
+     pr_status_fetcher=default_or_injected_fetcher,
+     auto_approve_enabled=auto_approve_enabled,
+     task_provider=task_provider,
+     ...
+   )
+   hook_executor := build_default_hook_executor(run_dir=run_dir, logger=hook_logger)
+   control := LoopControlState(backoff_seconds=initial_poll_seconds)
+   ```
+3. Re-read `run.json` each iteration, derive state, run hooks, dispatch, and stop only on terminal conditions.
+   ```ts
+   // Source: loops/core/inner_loop.py (run_inner_loop); loops/state/run_record.py (derive_run_state)
+   for iteration in range(1, max_iterations + 1)
+     run_record := read_run_record(run_json_path)
+     state := _derive_state(
+       run_record,
+       auto_approve_enabled=runtime.auto_approve_enabled,
+     )
+     hook_executor.execute_on_enter(
+       state=state,
+       context=TransitionContext(from_state=run_record.last_state, to_state=state, ...),
+     )
+
+     if state == "DONE"
+       return run_record
+
+     transition := _handle_state(
+       state=state,
+       run_record=run_record,
+       runtime=runtime,
+       control=control,
+     )
+     next_state := _derive_state(transition.run_record, auto_approve_enabled=runtime.auto_approve_enabled)
+     if next_state != state
+       hook_executor.execute_on_exit(state=state, context=TransitionContext(...))
+     if transition.terminate
+       return transition.run_record
+
+   return _force_needs_input(
+     run_json_path,
+     final_record,
+     message="Inner loop reached max iterations without DONE. Please provide guidance.",
+     auto_approve_enabled=runtime.auto_approve_enabled,
+   )
+   ```
+
+State transitions / outputs:
+- Input: existing run directory, `run.json`, optional `inner_loop_runtime_config.json`, process env.
+- Output: one derived state per iteration: `RUNNING`, `WAITING_ON_REVIEW`, `NEEDS_INPUT`, `PR_APPROVED`, or `DONE`.
+
+Branch points:
+- Invalid runtime config aborts startup if `inner_loop_runtime_config.json` exists but cannot be parsed.
+- `DONE` is derived from persisted state; the loop never trusts model text alone for terminal completion.
+- Handoff handler and PR status fetcher can be injected, otherwise built-in defaults are used.
+
+External boundaries:
+- Provider status updates through default state hooks.
+
+### Phase 2: `RUNNING` Codex turn
+
+Trigger / entry condition:
+- `derive_run_state(...)` returns `RUNNING` because `needs_user_input=false` and `pr is None`.
+
+Entrypoints:
+- `loops/core/inner_loop.py:_handle_running_state`
+- `loops/core/inner_loop.py:_run_codex_turn`
+
+Ordered call path:
+1. Build the normal task prompt and include any deferred human response.
+   ```ts
+   // Source: loops/core/inner_loop.py (_handle_running_state, _run_codex_turn, _build_prompt)
+   updated_record := _run_codex_turn(
+     run_json_path=runtime.run_json_path,
+     run_log=runtime.run_log,
+     agent_log=runtime.agent_log,
+     run_record=run_record,
+     command=runtime.command,
+     environ=runtime.environ,
+     base_prompt=runtime.base_prompt,
+     user_response=control.next_user_response,
+     review_feedback=False,
+     auto_approve_enabled=runtime.auto_approve_enabled,
+   )
+
+   _build_prompt(
+     run_record.task.url,
+     runtime.base_prompt,
+     user_response=control.next_user_response,
+     checkout_mode=run_record.checkout_mode,
+     include_checkout_setup_instruction=run_record.codex_session is None,
+   )
+   ```
+2. Invoke Codex, preferring `resume <session_id>` when a prior session exists.
+   ```ts
+   // Source: loops/core/inner_loop.py (_run_codex_turn, _invoke_codex, _build_codex_turn_command)
+   [output, exit_code, resume_fallback_used] := _invoke_codex(
+     base_command=command,
+     prompt=prompt,
+     agent_log=agent_log,
+     run_log=run_log,
+     codex_session=run_record.codex_session,
+     turn_label="codex turn",
+     environ=environ,
+   )
+   session_id := _extract_session_id(output)
+   codex_session := session_id ? CodexSession(id=session_id, last_prompt=prompt) : prior_or_null
+   ```
+3. Persist the turn result, discovering the PR from `push-pr.url` on the first successful task turn.
+   ```ts
+   // Source: loops/core/inner_loop.py (_run_codex_turn)
+   requested_state := _extract_trailing_state_marker(output)
+   needs_user_input := exit_code != 0 or requested_state == "NEEDS_INPUT"
+   pr := run_record.pr
+
+   if exit_code != 0
+     needs_user_input_payload := {
+       "message": "Codex exited with a non-zero status. Provide guidance.",
+       "context": {"exit_code": exit_code},
+     }
+   elif not review_feedback and run_record.pr is None
+     pr := _extract_pr_from_push_pr_artifact(run_json_path.parent)
+     if pr is None
+       pr := _extract_pr_from_user_response(user_response)
+     if pr is None
+       needs_user_input := True
+       needs_user_input_payload := {
+         "message": "Loops could not determine a PR URL from push-pr.py artifact output. Provide the PR URL or rerun push-pr.py.",
+         "context": {"artifact_path": str(run_json_path.parent / PUSH_PR_URL_FILE)},
+       }
+
+   return write_run_record(
+     run_json_path,
+     replace(run_record, pr=pr, codex_session=codex_session, needs_user_input=needs_user_input, needs_user_input_payload=needs_user_input_payload),
+     auto_approve_enabled=auto_approve_enabled,
+   )
+   ```
+
+State transitions / outputs:
+- Input: `RunRecord` with no PR, plus any deferred user input from `LoopControlState.next_user_response`.
+- Output: updated `run.json` containing refreshed `codex_session`, possible PR metadata, or `needs_user_input=true`.
+
+Branch points:
+- First-turn worktree setup instructions are added only when `checkout_mode == "worktree"` and `codex_session is None`.
+- A successful Codex exit can still force `NEEDS_INPUT` if Loops cannot discover a PR URL.
+- A trailing `<state>NEEDS_INPUT</state>` marker also forces `NEEDS_INPUT`.
+
+External boundaries:
+- Codex subprocess invocation.
+- Filesystem read of `${LOOPS_RUN_DIR}/push-pr.url`.
+
+### Phase 3: `WAITING_ON_REVIEW` poll and review feedback
+
+Trigger / entry condition:
+- `derive_run_state(...)` returns `WAITING_ON_REVIEW` because a PR exists, it is not merged, and it is not yet approved.
+
+Entrypoints:
+- `loops/core/inner_loop.py:_handle_waiting_on_review_state`
+- `loops/core/inner_loop.py:_fetch_pr_status_with_gh_with_context`
+- `loops/core/inner_loop.py:_run_auto_approve_eval`
+
+Ordered call path:
+1. Require PR metadata, then poll GitHub through the configured PR status fetcher.
+   ```ts
+   // Source: loops/core/inner_loop.py (_handle_waiting_on_review_state, _fetch_pr_status_with_gh_with_context)
+   if run_record.pr is None
+     return _force_needs_input(
+       runtime.run_json_path,
+       run_record,
+       message="Run is waiting on review but no PR metadata exists.",
+       auto_approve_enabled=runtime.auto_approve_enabled,
+     )
+
+   updated_pr := runtime.pr_status_fetcher(run_record.pr)
+   run_record := write_run_record(
+     runtime.run_json_path,
+     replace(run_record, pr=updated_pr),
+     auto_approve_enabled=runtime.auto_approve_enabled,
+   )
+   ```
+2. Resume Codex only for new review or comment feedback.
+   ```ts
+   // Source: loops/core/inner_loop.py (_handle_waiting_on_review_state, _should_resume_review_feedback, _run_codex_turn)
+   if run_record.pr is not None and _should_resume_review_feedback(run_record.pr)
+     run_record := _run_codex_turn(
+       run_json_path=runtime.run_json_path,
+       run_log=runtime.run_log,
+       agent_log=runtime.agent_log,
+       run_record=run_record,
+       command=runtime.command,
+       environ=runtime.environ,
+       base_prompt=runtime.base_prompt,
+       user_response=control.next_user_response,
+       review_feedback=True,
+       auto_approve_enabled=runtime.auto_approve_enabled,
+     )
+     control.next_user_response = None
+   ```
+3. Optionally run one auto-approve evaluation, otherwise back off until the PR changes or idle polling escalates.
+   ```ts
+   // Source: loops/core/inner_loop.py (_handle_waiting_on_review_state, _run_auto_approve_eval, _increment_idle_polls, _sleep_with_backoff)
+   if runtime.auto_approve_enabled and run_record.pr is not None
+     if run_record.pr.ci_status == "success" and (run_record.pr.review_status or "open") != "approved"
+       verdict := run_record.auto_approve.verdict if run_record.auto_approve is not None else "none"
+       if verdict == "none" and not control.auto_approve_attempted
+         run_record := _run_auto_approve_eval(run_record=run_record, runtime=runtime, control=control)
+         control.auto_approve_attempted = True
+         return StateHandlerResult(run_record=run_record, action="auto_approve_eval")
+
+   if _derive_state(run_record, auto_approve_enabled=runtime.auto_approve_enabled) == "WAITING_ON_REVIEW"
+     [run_record, control.idle_polls] := _increment_idle_polls(
+       run_json_path=runtime.run_json_path,
+       run_record=run_record,
+       idle_polls=control.idle_polls,
+       max_idle_polls=runtime.max_idle_polls,
+       message="PR has not changed after repeated polls. Please provide manual guidance.",
+       auto_approve_enabled=runtime.auto_approve_enabled,
+     )
+     _sleep_with_backoff(control=control, runtime=runtime)
+   ```
+
+State transitions / outputs:
+- Input: `RunPR` from `run.json`, approval settings snapshot, review actor allowlist, optional deferred user response.
+- Output: refreshed PR review/CI state, possible review-feedback Codex turn, optional persisted `auto_approve`, or escalation to `NEEDS_INPUT`.
+
+Branch points:
+- Missing `pr` is treated as a state/data mismatch and escalates to `NEEDS_INPUT`.
+- Review feedback resumes Codex only when `latest_review_submitted_at > review_addressed_at`.
+- Auto-approve is only considered when CI is green, review is not already approved, and no verdict has been persisted yet.
+- Polling failures and unchanged PR state both count toward idle escalation.
+
+External boundaries:
+- `gh pr view ... --json ...` through the default PR status fetcher.
+- Optional Codex subprocess invocation for review feedback and auto-approve evaluation.
+
+### Phase 4: `PR_APPROVED` cleanup and merge polling
+
+Trigger / entry condition:
+- `derive_run_state(...)` returns `PR_APPROVED` because the PR is approved or auto-approved and not yet merged.
+
+Entrypoints:
+- `loops/core/inner_loop.py:_handle_pr_approved_state`
+- `loops/core/inner_loop.py:_build_cleanup_prompt`
+
+Ordered call path:
+1. Require PR metadata and run cleanup once per PR URL in the current process.
+   ```ts
+   // Source: loops/core/inner_loop.py (_handle_pr_approved_state, _build_cleanup_prompt)
+   if run_record.pr is None
+     return _force_needs_input(
+       runtime.run_json_path,
+       run_record,
+       message="Run is PR_APPROVED but no PR metadata exists.",
+       auto_approve_enabled=runtime.auto_approve_enabled,
+     )
+
+   if control.cleanup_executed_for_pr != run_record.pr.url
+     cleanup_prompt := _build_cleanup_prompt(run_record.task.url, runtime.base_prompt)
+     [output, exit_code, _resume_fallback_used] := _invoke_codex(
+       base_command=runtime.command,
+       prompt=cleanup_prompt,
+       agent_log=runtime.agent_log,
+       run_log=runtime.run_log,
+       codex_session=run_record.codex_session,
+       turn_label="cleanup turn",
+       environ=runtime.environ,
+     )
+     if exit_code != 0
+       return _force_needs_input(... message="Cleanup failed after PR approval. Please advise.", context={"exit_code": exit_code})
+     control.cleanup_executed_for_pr = run_record.pr.url
+   ```
+2. Poll the PR again until merge is visible in persisted PR state.
+   ```ts
+   // Source: loops/core/inner_loop.py (_handle_pr_approved_state)
+   updated_pr := runtime.pr_status_fetcher(run_record.pr)
+   run_record := write_run_record(
+     runtime.run_json_path,
+     replace(run_record, pr=updated_pr),
+     auto_approve_enabled=runtime.auto_approve_enabled,
+   )
+   ```
+3. Keep polling while the derived state remains waiting, otherwise return immediately.
+   ```ts
+   // Source: loops/core/inner_loop.py (_handle_pr_approved_state, _increment_idle_polls, _sleep_with_backoff)
+   if _derive_state(run_record, auto_approve_enabled=runtime.auto_approve_enabled) == "PR_APPROVED"
+     [run_record, control.idle_polls] := _increment_idle_polls(
+       run_json_path=runtime.run_json_path,
+       run_record=run_record,
+       idle_polls=control.idle_polls,
+       max_idle_polls=runtime.max_idle_polls,
+       message="PR is still approved but not merged after repeated polls. Please provide manual guidance.",
+       auto_approve_enabled=runtime.auto_approve_enabled,
+     )
+
+   next_state := _derive_state(run_record, auto_approve_enabled=runtime.auto_approve_enabled)
+   if next_state not in WAITING_STATES
+     return StateHandlerResult(run_record=run_record, action="approved_poll")
+   _sleep_with_backoff(control=control, runtime=runtime)
+   ```
+
+State transitions / outputs:
+- Input: approved PR plus existing Codex session.
+- Output: cleanup side effects, refreshed PR metadata, eventual `DONE` when `pr.merged_at` is persisted.
+
+Branch points:
+- Cleanup failure escalates to `NEEDS_INPUT`.
+- Merge polling failure or repeated non-progress also escalates to `NEEDS_INPUT`.
+- Cleanup is tracked only in `LoopControlState`, so a new process may re-run cleanup for the same PR URL.
+
+External boundaries:
+- Codex subprocess invocation for cleanup.
+- GitHub polling through `runtime.pr_status_fetcher`.
+
+### Phase 5: `NEEDS_INPUT` handoff and resume
+
+Trigger / entry condition:
+- `derive_run_state(...)` returns `NEEDS_INPUT` because `run_record.needs_user_input == true`.
+
+Entrypoints:
+- `loops/core/inner_loop.py:_handle_needs_input_state`
+- `loops/core/inner_loop.py:_handle_needs_input`
+- `loops/core/handoff_handlers.py:resolve_builtin_handoff_handler`
+
+Ordered call path:
+1. Invoke the configured handoff handler with the persisted payload from `run.json`.
+   ```ts
+   // Source: loops/core/inner_loop.py (_handle_needs_input_state, _handle_needs_input)
+   response := _handle_needs_input(
+     run_record,
+     runtime.user_handoff_handler,
+     runtime.run_log,
+   )
+
+   payload := run_record.needs_user_input_payload ?? {
+     "message": "Input required to continue.",
+   }
+   raw_result := handler(payload)
+   handoff_result := _normalize_handoff_result(raw_result)
+   ```
+2. If no response is ready, either keep waiting or terminate early in non-interactive stdin mode.
+   ```ts
+   // Source: loops/core/inner_loop.py (_handle_needs_input_state)
+   if response is None
+     if runtime.non_interactive_default_handoff
+       terminal_record := read_run_record(runtime.run_json_path)
+       return StateHandlerResult(
+         run_record=terminal_record,
+         action="needs_input_non_interactive_exit",
+         terminate=True,
+       )
+     _sleep_with_backoff(control=control, runtime=runtime)
+     return StateHandlerResult(run_record=run_record, action="needs_input_waiting")
+   ```
+3. Clear the persisted handoff request and carry the user response into the next Codex-capable state.
+   ```ts
+   // Source: loops/core/inner_loop.py (_handle_needs_input_state)
+   control.next_user_response = response
+   cleared_record := write_run_record(
+     runtime.run_json_path,
+     replace(
+       run_record,
+       needs_user_input=False,
+       needs_user_input_payload=None,
+     ),
+     auto_approve_enabled=runtime.auto_approve_enabled,
+   )
+   return StateHandlerResult(run_record=cleared_record, action="needs_input_cleared")
+   ```
+
+State transitions / outputs:
+- Input: persisted handoff request in `run.json`.
+- Output: either continued waiting, early process exit, or a cleared run record plus `control.next_user_response`.
+
+Branch points:
+- `stdin_handler` reads from the terminal; `gh_comment_handler` posts a prompt comment and waits for `/loops-reply`.
+- Empty, invalid, or exception-raising handoff results are treated as `waiting`.
+- Clearing `needs_user_input` does not force `RUNNING`; the next derived state depends on whether a PR already exists.
+
+External boundaries:
+- Terminal stdin for `stdin_handler`.
+- GitHub issue comments for `gh_comment_handler`.
 
 ## State, config, and gates
 
-- Core state is derived each iteration from `run.json` (`pr`, `needs_user_input`), not from cached in-memory state.
-- Transition gates include: review freshness (`latest_review_submitted_at > review_addressed_at`), idle polling threshold escalation, and max-iteration fallback.
-- State hooks run around iteration dispatch boundaries: `on_enter` runs before the state handler, and `on_exit` runs only when the next derived state differs from the current state. Hook dedupe key remains `${run_id}:${phase}:${state}:${hook_id}` and is persisted in `state_hooks.json`.
-- Default state hooks apply deterministic provider status transitions: enter `RUNNING` -> `IN_PROGRESS`, enter `DONE` -> `DONE`.
-- Additional inline review gate: when review is not already approved and `ci_status == success`, if `auto_approve_enabled` is true and `RunRecord.auto_approve` is unset/`none`, run one-time `$ag-judge` and persist judgement on `RunRecord`.
-- Runtime config comes from CLI options plus run-scoped `inner_loop_runtime_config.json`; env fallbacks are limited to designated runtime keys (`CODEX_CMD`, `LOOPS_PROMPT_FILE`/`CODEX_PROMPT_FILE`, `LOOPS_HANDOFF_HANDLER`, `LOOPS_AUTO_APPROVE_ENABLED`, `LOOPS_STREAM_LOGS_STDOUT`) when runtime config is absent or omits them. `stream_logs_stdout` in `inner_loop_runtime_config.json` controls `run.log` stdout mirroring, and malformed runtime config is treated as a startup error.
-- Provider resolution for deterministic state hooks validates required secrets against the run's effective runtime environment (runtime-config env overrides merged over process env), not only the parent process environment.
-- `loops inner-loop --reset` removes run-local `state_hooks.json` so hook dedupe state does not suppress deterministic state transitions on a fresh retry in the same run directory.
-- In sync-mode launches, outer loop writes `stream_logs_stdout=true` in `inner_loop_runtime_config.json`, which causes inner-loop `run.log` appends to be mirrored to stdout.
-- Initial Codex prompt setup now reads `RunRecord.checkout_mode`; when mode is `worktree`, the first RUNNING turn adds explicit instructions to create/switch to a task worktree before edits.
+### Core state values (source of truth and usage)
+
+- `run.json`
+  - Source: `write_run_record(...)` in the inner loop and initial materialization by the outer loop.
+  - Consumed by: `read_run_record(...)` at startup and at the top of every iteration.
+  - Risk area: state is always reloaded from disk, so stale in-memory assumptions are intentionally discarded each iteration.
+
+- `InnerLoopRuntimeConfig`
+  - Source: `inner_loop_runtime_config.json` written before launch by the outer loop.
+  - Consumed by: `_load_runtime_config(...)` once at process start.
+  - Risk area: runtime config is snapshotted once per process; later file edits do not affect a running inner loop.
+
+- `LoopControlState.next_user_response`
+  - Source: `_handle_needs_input_state(...)` after a successful handoff response.
+  - Consumed by: `_handle_running_state(...)` and review-feedback `_run_codex_turn(...)`.
+  - Risk area: this value is in-memory only, so it must be consumed before process exit.
+
+- `state_hooks.json`
+  - Source: `HookExecutor` in `loops/core/hooks.py`.
+  - Consumed by: `execute_on_enter(...)` and `execute_on_exit(...)` to dedupe hook side effects across retries.
+  - Risk area: `loops inner-loop --reset` deletes the hook ledger so deterministic enter hooks can run again.
+
+- `handoff_gh_comment_state.json`
+  - Source: `GHCommentHandoffHandler`.
+  - Consumed by: repeated `gh_comment_handler` polling during `NEEDS_INPUT`.
+  - Risk area: this file prevents duplicate prompt comments and re-consuming old `/loops-reply` comments.
+
+Ordering check:
+- Yes. Runtime-config values are initialized before `InnerLoopRuntimeContext` is built, and run-state values are re-read from `run.json` before each handler consumes them.
+
+### Statsig (or `None identified`)
+
+None identified.
+
+### Environment Variables (or `None identified`)
+
+| Name | Where Read | Default | Effect on Flow |
+|---|---|---|---|
+| `LOOPS_RUN_DIR` | `loops/core/cli.py`, then forced again in `loops/core/inner_loop.py` | required when `--run-dir` is omitted | Selects the run directory and guarantees Codex subprocesses receive the same run context. |
+| `CODEX_CMD` | `loops/core/inner_loop.py:_resolve_codex_command` | `codex exec --yolo` | Controls how task turns, review turns, auto-approve evaluation, and cleanup are invoked. |
+| `LOOPS_PROMPT_FILE` / `CODEX_PROMPT_FILE` | `loops/core/inner_loop.py:_load_prompt_file` | unset | Supplies an optional base prompt prepended to all inner-loop prompts. |
+| `LOOPS_HANDOFF_HANDLER` | `loops/core/inner_loop.py:_resolve_configured_handoff_handler_name` | `stdin_handler` | Selects the built-in handoff strategy when runtime config does not provide one. |
+| `LOOPS_AUTO_APPROVE_ENABLED` | `loops/core/inner_loop.py:_load_auto_approve_enabled` | `false` | Enables the extra `WAITING_ON_REVIEW -> PR_APPROVED` path based on persisted `auto_approve.verdict == APPROVE`. |
+| `LOOPS_STREAM_LOGS_STDOUT` | `loops/core/inner_loop.py:_configure_log_streaming`, `loops/utils/logging.py` | unset | Mirrors `run.log` lines to stdout when enabled. |
+| `GITHUB_TOKEN` / `GH_TOKEN` | inherited by `gh` subprocesses in review and handoff code | environment-dependent | Determines whether GitHub review polling and comment-based handoff can talk to GitHub successfully. |
+
+### Other User-Settable Inputs (or `None identified`)
+
+| Name | Type | Where Read | Effect on Flow |
+|---|---|---|---|
+| `--run-dir` | CLI option | `loops/core/cli.py` | Overrides `LOOPS_RUN_DIR` for the target run. |
+| `--prompt-file` | CLI option | `loops/core/cli.py`, then `loops/core/inner_loop.py:_load_prompt_file` | Overrides env-based prompt selection for the current invocation. |
+| `loop_config.handoff_handler` | config field written by outer loop | `inner_loop_runtime_config.json` -> `_resolve_configured_handoff_handler_name(...)` | Chooses `stdin_handler` vs `gh_comment_handler`. |
+| `loop_config.auto_approve_enabled` | config field written by outer loop | `inner_loop_runtime_config.json` -> `_load_auto_approve_enabled(...)` | Enables auto-approve evaluation after successful CI. |
+| `task_provider_config.approval_comment_usernames` / `approval_comment_pattern` | provider config fields | `inner_loop_runtime_config.json` -> `_load_comment_approval_settings(...)` | Allow matching PR comments or review bodies to count as approval signals. |
+| `task_provider_config.allowlist` | provider config field | `inner_loop_runtime_config.json` -> `_load_comment_approval_settings(...)` | Filters review/comment actors considered during PR polling. |
+| `run.json.pr`, `run.json.needs_user_input`, `run.json.auto_approve`, `run.json.checkout_mode` | persisted run state | `loops/state/run_record.py`, `loops/core/inner_loop.py` | Determines state derivation, prompt shape, and whether the loop waits, polls, cleans up, or exits. |
+| `run_inner_loop(...)` parameters | function arguments | `loops/core/inner_loop.py` | Set max iterations, poll cadence, and idle escalation thresholds. |
+
+### Important gates / branch controls
+
+- `derive_run_state(...)`: prioritizes `NEEDS_INPUT`, then `DONE`, then `RUNNING`, then `PR_APPROVED`, otherwise `WAITING_ON_REVIEW`.
+- `_should_resume_review_feedback(pr)`: resumes Codex only for new review or comment feedback.
+- `approval_timestamp > latest_changes_requested_at`: prevents stale approval comments or review bodies from overriding newer requested changes.
+- `pr.ci_status == "success"` plus `auto_approve.verdict == "APPROVE"`: enables the auto-approve promotion path into `PR_APPROVED`.
+- `control.cleanup_executed_for_pr != run_record.pr.url`: runs cleanup once per PR URL per process.
+- `_increment_idle_polls(...)`: converts long periods of no progress into `NEEDS_INPUT`.
 
 ## Sequence diagram
 
 ```mermaid
 sequenceDiagram
-    participant O as Outer loop launcher
-    participant I as Inner loop
-    participant C as Codex subprocess
-    participant G as GitHub (gh pr view)
-    participant FS as Run files
+    participant CLI as "CLI / handoff launcher"
+    participant I as "run_inner_loop"
+    participant FS as "run.json + ledgers"
+    participant C as "Codex"
+    participant GH as "GitHub"
+    participant H as "Handoff handler"
 
-    O->>I: start process (LOOPS_RUN_DIR + env)
+    CLI->>I: start with run_dir
+    I->>FS: read runtime config + run.json
     loop each iteration
         I->>FS: read run.json
-        I->>I: derive state
-        alt RUNNING / review feedback
-            I->>C: run codex turn
-            C-->>I: stdout/stderr
-            I->>FS: append agent.log + run.log
-            I->>FS: write run.json updates
-        else WAITING_ON_REVIEW / PR_APPROVED
-            I->>G: gh pr view
-            G-->>I: PR status payload
-            I->>FS: write run.json updates
+        I->>I: derive state + run enter hooks
+        alt RUNNING
+            I->>C: task prompt / resume
+            C-->>I: output + session id + optional state marker
+            I->>FS: write run.json
+        else WAITING_ON_REVIEW
+            I->>GH: poll PR status
+            GH-->>I: review + CI + merge data
+            I->>FS: write run.json
+            opt new feedback
+                I->>C: review-feedback prompt / resume
+                C-->>I: output
+                I->>FS: write run.json
+            end
+        else PR_APPROVED
+            I->>C: cleanup prompt / resume
+            C-->>I: cleanup result
+            I->>GH: poll merge status
+            GH-->>I: merged / not merged
+            I->>FS: write run.json
         else NEEDS_INPUT
-            I->>I: invoke configured handoff handler
-            I->>FS: write run.json updates or wait/backoff
+            I->>H: send needs_user_input_payload
+            H-->>I: waiting or response
+            I->>FS: clear or preserve handoff state
+        else DONE
+            I-->>CLI: return terminal run record
         end
+        I->>I: run exit hooks when state changes
     end
 ```
 
-## Config
+## Observability
 
-### Statsig
+Metrics:
+- None identified as dedicated metrics. The practical counters come from `run.log` iteration lines, polling failures, and persisted `run.json` state.
 
-None identified.
+Logs:
+- Iteration enter/exit logs include state, action, PR status, CI status, and idle/backoff values.
+- Codex output is appended to both `agent.log` and `run.log`.
+- Review polling logs record allowlist behavior, approval-comment handling, and `gh` failures.
+- Hook execution logs are prefixed with `[loops][hooks]`.
 
-### Environment Variables
+Useful debug checkpoints:
+- `run.json`: current authoritative state and timestamps.
+- `state_hooks.json`: whether enter/exit hooks already fired for this run.
+- `handoff_gh_comment_state.json`: current GitHub-comment handoff cursor.
+- `push-pr.url`: deterministic PR discovery artifact for the first successful task turn.
 
-| Name | Where Read | Default | Effect on Flow |
-|---|---|---|---|
-| `LOOPS_RUN_DIR` | `loops/core/inner_loop.py:973`, `loops/core/cli.py:223` | Required when `--run-dir` is omitted | Selects the run directory that provides `run.json` and runtime logs. |
-| `CODEX_CMD` | `loops/core/inner_loop.py` command resolver fallback | `codex exec --yolo` | Fallback base Codex command when runtime config env payload does not provide `CODEX_CMD` (or runtime config is unavailable). |
-| `LOOPS_PROMPT_FILE` | `loops/core/inner_loop.py` prompt resolver fallback | unset | Fallback prompt file when runtime config env payload does not provide one (or runtime config is unavailable). |
-| `CODEX_PROMPT_FILE` | `loops/core/inner_loop.py` prompt resolver fallback | unset | Secondary fallback prompt file. |
-| `LOOPS_HANDOFF_HANDLER` | `loops/core/inner_loop.py` handoff resolver fallback | `stdin_handler` | Direct/manual-run fallback built-in NEEDS_INPUT handoff strategy. |
-| `LOOPS_STREAM_LOGS_STDOUT` | `loops/utils/logging.py` | unset | When set to truthy values (for example `1`), inner-loop `run.log` writes are mirrored to stdout. |
-| `GITHUB_TOKEN` / `GH_TOKEN` | Read by `gh` subprocess invoked from `loops/core/inner_loop.py:767` | environment-dependent | Determines whether PR status polling via `gh pr view` succeeds in review/merge polling states. |
+## Related docs
 
-### Other User-Settable Inputs
-
-| Name | Type | Where Read | Effect on Flow |
-|---|---|---|---|
-| `--run-dir` | CLI option | `loops/core/cli.py:77`, `loops/core/inner_loop.py:982` | Overrides `LOOPS_RUN_DIR` for the target run. |
-| `--prompt-file` | CLI option | `loops/core/cli.py:84`, `loops/core/inner_loop.py:489` | Overrides prompt-file env fallbacks and changes all Codex prompts for the run. |
-| `task_provider_config.approval_comment_usernames` / `task_provider_config.approval_comment_pattern` | Config file fields (provider) | validated in provider model, then resolved by `loops/core/outer_loop.py` and written to `inner_loop_runtime_config.json` | Controls comment-based approval override behavior in review polling. |
-| `task_provider_config.allowlist` (GitHub provider) | Config file field (outer loop/provider) | `loops/core/cli.py` + `loops/core/outer_loop.py` -> resolved and written to `inner_loop_runtime_config.json` as `review_actor_usernames` | Filters review-phase PR comments/reviews to allowlisted actors during polling. |
-| `loop_config.handoff_handler`, `loop_config.auto_approve_enabled`, `loop_config.sync_mode`, `inner_loop.env` | Config file fields (outer loop) | `loops/core/outer_loop.py` -> written to `inner_loop_runtime_config.json` | Controls runtime handoff strategy, auto-approve gate, log mirroring, and optional run-scoped env payload for inner-loop subprocess behavior. |
-| `run.json` content (`pr`, `needs_user_input`, `needs_user_input_payload`, `stream_logs_stdout`, `checkout_mode`, `starting_commit`) | Persisted state | `loops/state/run_record.py` | Determines state-machine branch selection, exposes effective log-streaming mode, and carries checkout guidance for initial prompt construction. |
-| `run_inner_loop(...)` polling params | Function args | `loops/core/inner_loop.py:58` | Controls max iterations, poll backoff, and idle escalation thresholds. |
-
-## Flow
-
-### Entry assumptions and boundaries
-
-- Outer loop (or `loops handoff`) has created the run directory and initial `run.json`.
-- CLI or module entry resolves run dir and calls `run_inner_loop` (`loops/core/cli.py:90`, `loops/core/inner_loop.py:982`).
-- Inner loop owns future `run.json` mutations through `write_run_record` (`loops/state/run_record.py:206`).
-
-### State Timeline Table
-
-| value | write step | snapshot step | read step | ordering valid? |
-|---|---|---|---|---|
-| comment-approval settings (`usernames`, `pattern`) plus review-actor allowlist (`review_actor_usernames`) | Written by outer loop to `inner_loop_runtime_config.json` | Loaded once at run start before default PR poller closure creation | Used on each `WAITING_ON_REVIEW` poll to evaluate comment-based approval and review-feedback filtering | Yes |
-| runtime settings (`handoff_handler`, `auto_approve_enabled`, `stream_logs_stdout`, optional `env`) | Written by outer loop launcher to `inner_loop_runtime_config.json` | Loaded once at run start before handoff/codex resolution | Used to configure handoff behavior, auto-approve gate, and optional runtime env overrides | Yes |
-| `run_record.stream_logs_stdout` | Written to `run.json` on run creation/reset and at inner-loop startup when effective value changes | Reloaded each iteration with `run.json` | Provides a durable snapshot of effective `run.log` stdout mirroring for diagnostics | Yes |
-| `needs_user_input` | Written in `_run_codex_turn` and `_force_needs_input` (`loops/core/inner_loop.py`) | Reloaded at top of each iteration (`loops/core/inner_loop.py`) | Used by `derive_run_state` (`loops/state/run_record.py`) | Yes |
-| `pr.review_status` | Updated from Codex output or PR poll (`loops/core/inner_loop.py:635`, `loops/core/inner_loop.py:259`, `loops/core/inner_loop.py:392`) | Reloaded each iteration (`loops/core/inner_loop.py:87`) | Branches into `WAITING_ON_REVIEW`/`PR_APPROVED` (`loops/core/inner_loop.py:208`, `loops/core/inner_loop.py:325`) | Yes |
-| `pr` (initial `url/number/repo` plus review fields) | Initial PR link is read from `${LOOPS_RUN_DIR}/push-pr.url` after successful `RUNNING` codex turn only when `run.json.pr` is missing; review fields are updated by PR polling | Reloaded each iteration (`loops/core/inner_loop.py:87`) | Branches into `WAITING_ON_REVIEW`/`PR_APPROVED` and drives merge polling | Yes |
-| `pr.merged_at` | Written by PR status poll (`loops/core/inner_loop.py:767`, persisted at `loops/core/inner_loop.py:392`) | Reloaded each iteration (`loops/core/inner_loop.py:87`) | Triggers `DONE` via `derive_run_state` (`loops/state/run_record.py:142`) | Yes |
-| `pr.latest_review_submitted_at` and `pr.review_addressed_at` | Written in gh fetch + review-feedback codex completion (`loops/core/inner_loop.py:767`, `loops/core/inner_loop.py:659`) | Reloaded each iteration (`loops/core/inner_loop.py:87`) | Checked by `_is_new_review` gate (`loops/core/inner_loop.py:727`) | Yes |
-| `codex_session.id` | Extracted and persisted after Codex turn (`loops/core/inner_loop.py`) | Reloaded each iteration (`loops/core/inner_loop.py:87`) | Drives `codex exec resume <session_id>` for follow-up turns and remains durable session metadata | Yes |
-| `state_hooks.json` executed keys | Written by hook executor after successful hook callbacks | Reloaded at inner-loop start and consulted on each hook execution | Prevents duplicate hook execution during retries/restarts | Yes |
-| `handoff_gh_comment_state.json` | Written by `gh_comment_handler` after prompt/reply detection | Reloaded on each NEEDS_INPUT iteration when handler is `gh_comment_handler` | Enforces idempotent prompt posting and reply de-duplication | Yes |
-
-### Inner loop state-machine execution
-
-- `loops/core/inner_loop.py:52` (main orchestrator)
-```ts
-function runInnerLoop(runDir: Path, opts: Options): RunRecord {
-  initializePathsAndDefaults(runDir, opts)
-  commentApproval = loadCommentApprovalSettings(runtimeConfig) // reads approval fields from inner_loop_runtime_config.json
-  if (commentApproval.usedDefaultPattern) {
-    log("[loops] invalid approval comment pattern in run runtime config; falling back to default")
-  }
-  if (prStatusFetcher is null) {
-    prStatusFetcher = (pr) => {
-      [updatedPr, approvedByComment, approver] = pollPrWithGhAndContext(pr, commentApproval)
-      if (approvedByComment) {
-        log(`[loops] treating PR as approved via allowlisted approval signal by ${approver}`)
-      }
-      return updatedPr
-    }
-  }
-
-  for (iteration = 1; iteration <= maxIterations; iteration++) {
-    record = readRunRecord(runJsonPath)
-    state = deriveRunState(record.pr, record.needsUserInput)
-    logIterationEnter(iteration, state, record, backoff, idlePolls)
-
-    if (state === "DONE") {
-      logDoneAndExit(iteration, record)
-      return record
-    }
-
-    transition = handleState(state, record, runtime, control)
-    logIterationExit(iteration, transition.action, transition.record, control)
-    if (transition.terminate) {
-      return transition.record
-    }
-  }
-
-  return forceNeedsInput("Inner loop reached max iterations without DONE. Please provide guidance.")
-}
-```
-
-### Supporting control paths
-
-- Codex turn behavior (`loops/core/inner_loop.py:601`):
-  - Base prompt contract requires using `$dev.loop` to implement the task and open/update the PR.
-  - Builds prompt (standard vs review-feedback path).
-  - On the first RUNNING turn, if `run_record.checkout_mode == worktree`, prepends worktree setup instructions to the prompt.
-  - Base prompt contract says Codex may wait for the `a-review` subagent but must not wait for human PR comments/reviews because the outer harness performs comment monitoring and re-invokes Codex when needed.
-  - Base prompt contract requires posting `a-review` output to PR comments whenever `a-review` runs, including explicit no-findings comments.
-  - Base prompt contract explicitly forbids using the `gen-notifier` skill while running inside loops.
-  - Base prompt contract explicitly forbids direct issue/project task-status mutations because the harness now applies deterministic state-transition hooks.
-  - Base prompt contract requires explicit initial PR sequence while state is `RUNNING`: invoke:commit-code (if needed), run `scripts/push-pr.py`, then invoke:check-ci and invoke:fix-pr on failures.
-  - Selects invocation strategy (new session vs `resume <session_id>`) from `run_record.codex_session`.
-  - Streams stdout/stderr into `agent.log` and appends the same output to `run.log`.
-  - Extracts session id and trailing `<state>...</state>` marker from output when the final line is marker-only (legacy `</>` close tag is also accepted for compatibility).
-  - For initial `RUNNING` turns (no PR yet), reads deterministic PR artifact `${LOOPS_RUN_DIR}/push-pr.url` instead of parsing PR URLs from Codex stdout.
-  - If artifact discovery fails on initial `RUNNING` turns, can recover from a PR URL present in handoff `user_response`; otherwise sets `needs_user_input=true` with artifact-path context.
-  - Sets `needs_user_input=true` on non-zero exits or on trailing `NEEDS_INPUT` state markers.
-
-- Review polling behavior (`loops/core/inner_loop.py:767`):
-  - Loads comment-approval settings once per run from `inner_loop_runtime_config.json` and compiles approval pattern with safe fallback.
-  - When provider review-actor allowlist is configured, filters `latestReviews`, `reviews`, and `comments` to allowlisted actors before deriving review status/feedback.
-  - Calls `gh pr view ... --json reviewDecision,mergedAt,url,number,latestReviews,reviews,comments`.
-  - Maps decision into `review_status`, captures latest relevant review timestamp, and may override to approved when the newest allowlisted approval signal (plain PR comment or `COMMENTED`/`APPROVED` review body matching pattern) is newer than latest `CHANGES_REQUESTED` review.
-  - When the winning approval signal is a plain PR comment, performs a best-effort idempotent 👍 reaction on that comment node through `gh api graphql addReaction`; reaction failures are logged and do not block state progression.
-  - When review status remains open, chooses the newest timestamp between the latest `COMMENTED` PR review and plain PR discussion comment and uses that as the feedback signal.
-  - When review is approved, the loop derives `PR_APPROVED` via the existing manual path.
-  - If review is not already approved, CI is green, and `auto_approve_enabled` is true with no stored verdict, it runs one-time `trigger:auto-approve-eval` (`$ag-judge`, fixed judge book `references/jb.coding.md`) and persists verdict/scores on `RunRecord.auto_approve`.
-  - Auto-approve prompt contract requires posting `ag-judge` verdict plus impact/risk/size scores to PR comments, alongside the machine-parseable JSON response.
-  - Only `auto_approve.verdict == APPROVE` allows promotion to `PR_APPROVED`; `REJECT`/`ESCALATE` remain blocked in `WAITING_ON_REVIEW` with no automatic re-run.
-
-- Approved-state merge polling behavior (`loops/core/inner_loop.py`):
-  - Runs cleanup once per PR URL, then polls merge status.
-  - Uses the same idle-poll threshold gate as review polling: repeated poll errors or no merge progress force `NEEDS_INPUT` with manual guidance.
-
-- Signal consumption behavior (`loops/core/inner_loop.py:941`):
-  - Reads unread JSONL entries from queue offset.
-  - Applies `NEEDS_INPUT` payloads to run record.
-  - Advances offset only after successful record write.
-
-- Handoff behavior (`loops/core/inner_loop.py`, `loops/core/handoff_handlers.py`):
-  - Resolves built-in handler from run-scoped `inner_loop_runtime_config.json` when present, otherwise from `LOOPS_HANDOFF_HANDLER` fallback (`stdin_handler` default).
-  - `stdin_handler` prompts in terminal.
-  - `gh_comment_handler` requires `task.provider_id=github_projects_v2`, parses `task.url` as issue URL, posts prompt comment, and waits for explicit `/loops-reply ...` comments.
-  - Persists `handoff_gh_comment_state.json` to avoid duplicate prompt comments across retries.
-
-### Exit/handoff contracts
-
-- Inner loop exits normally only when derived state is `DONE` (`loops/core/inner_loop.py:99`).
-- It can return early in non-interactive `NEEDS_INPUT` mode to hand control back to caller (`loops/core/inner_loop.py:119`).
-- It escalates to `NEEDS_INPUT` on repeated polling idleness (both review and approved states) or iteration cap (`loops/core/inner_loop.py:233`, `loops/core/inner_loop.py:409`).
-
-**File(s)**: `loops/core/inner_loop.py`, `loops/state/run_record.py`, `loops/core/outer_loop.py`, `loops/core/cli.py`
-
-## Architecture Diagram
-
-```text
-+------------------+
-| outer_loop       |
-| launcher         |
-| sets env + run   |
-+---------+--------+
-          |
-          v
-+---------------------------------------------------------------+
-| inner_loop.run_inner_loop                                     |
-| - read run.json                                                |
-| - derive state                                                 |
-| - dispatch to state handler                                    |
-|   (running/review/input/approved)                              |
-+---------------------+-------------------------+---------------+
-                      |                         |
-                      v                         v
-             +------------------+      +-----------------------+
-             | Codex subprocess |      | gh pr view polling    |
-             | writes agent.log |      | updates PR state      |
-             +--------+---------+      +-----------+-----------+
-                      |                            |
-                      +------------+---------------+
-                                   v
-                         +--------------------+
-                         | write run.json     |
-                         | (single writer)    |
-                         +--------------------+
-```
-
-## Metrics
-
-No dedicated metrics emitter is implemented in code today.
-
-Useful derived metrics from logs/files:
-
-- Iterations per run (count `iteration ... enter` in `run.log`).
-- Codex failures (count `codex exit code` log entries).
-- Review polling instability (count `failed to poll PR status` / `failed to poll merge status`).
-- NEEDS_INPUT handoffs (count transitions where `needs_user_input` is true in `run.json`).
-- Time-to-done (first and last timestamps around run lifecycle in `run.log` + `run.json.updated_at`).
-
-## Logs
-
-Key logs and emit sites:
-
-- Iteration entry/exit with state/action context: `loops/core/inner_loop.py:428`, `loops/core/inner_loop.py:447`.
-- Non-interactive handoff exit: `loops/core/inner_loop.py:120`.
-- Codex invocation or exit failures: `loops/core/inner_loop.py:567`, `loops/core/inner_loop.py:642`.
-- Missing PR after successful turn: `loops/core/inner_loop.py:655`.
-- Review/merge polling failures: `loops/core/inner_loop.py:231`, `loops/core/inner_loop.py:375`.
-- Agent streamed output destination: `agent.log` (also mirrored to `run.log`).
-- In sync mode (via `inner_loop_runtime_config.json` with `stream_logs_stdout=true`), each `run.log` line is also emitted to stdout.
-
-## FAQ
-
-Q: Why can a successful Codex turn still transition to `NEEDS_INPUT`?
-A: In initial `RUNNING` turns where `run.json.pr` is still missing, if `${LOOPS_RUN_DIR}/push-pr.url` is missing/invalid and user input does not include a usable PR URL, the loop requests manual guidance.
-
-Q: Why does review feedback not always re-trigger Codex?
-A: The loop resumes Codex only for new feedback events (`latest_review_submitted_at > review_addressed_at`): new `changes_requested` reviews, or new open-state feedback where the newest timestamp between `COMMENTED` PR review events and plain PR discussion comments has advanced. Duplicate events with unchanged timestamps are skipped.
-
-Q: Should Codex ever wait for human PR comments/reviews inside a turn?
-A: No. Prompt contract tells Codex to end the turn after handling current feedback; the harness performs polling/comment monitoring and re-invokes Codex when new feedback appears. The only allowed wait inside a turn is for the critical `a-review` subagent.
-
-Q: When does inner loop reuse the same Codex session?
-A: After the first successful turn stores `codex_session.id`, follow-up turns (review-feedback turns and PR-approved cleanup turns) attempt `codex exec resume <session_id>`; if the resolved base command is not codex-shaped, the loop logs fallback and runs the base command.
-
-Q: Can a PR move to `PR_APPROVED` without `reviewDecision=APPROVED`?
-A: Yes. There are two supported paths: (1) manual approval signals (including allowlisted matching approval text newer than latest `CHANGES_REQUESTED` review), and (2) when review is not already approved, CI is green, `auto_approve_enabled=true`, and the one-time auto-approve verdict is `APPROVE`.
-
-Q: How does `gh_comment_handler` know which comment to consume?
-A: It only accepts comments that start with `/loops-reply` and are newer than the current prompt comment, tracked with run-local handoff state.
-
-Q: Where is auto-approve judgement persisted?
-A: On top-level `RunRecord.auto_approve`, not under `RunPR`. The gate runs once per conversation when review is not already approved and CI is green.
-
-Q: Who owns `run.json` updates?
-A: Inner loop only.
+- `DESIGN.md`
+- `docs/flows/ref.outer-loop.md`
+- `docs/flows/ref.pr-status-fetcher.md`
+- `docs/specs/2026-02-09-manage-inner-loop-state-machine.md`
 
 ## Manual Notes 
 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
-- 2026-03-05: Added `loops handoff [session-id]` as an inner-loop entry path that seeds `WAITING_ON_REVIEW` runs from Codex conversation-derived PR/task context. (019cbc25-7679-72f2-9fa9-1a6dbf122fca)
-- 2026-03-03: Added deterministic state-hook lifecycle semantics (`on_enter`/`on_exit`), provider-backed task-status transitions, and hook-ledger (`state_hooks.json`) dedupe details. (019cb477-2e59-7311-add3-9b2f19720d5e)
-- 2026-03-02: Documented run-record checkout metadata (`checkout_mode`, `starting_commit`) and worktree setup instruction injection on initial RUNNING prompts. (019cabf2-f02b-7521-b814-5b0fcafe3d34)
-- 2026-03-02: Removed legacy `inner_loop_approval_config.json` fallback; comment-approval settings now load only from `inner_loop_runtime_config.json`. (019cabe9-52d6-73a2-b856-da28851da5b5)
-- 2026-03-01: Removed state-signal queue references after deleting `loops signal`/`loops.state_signal`; NEEDS_INPUT now documents direct `run.json` handoff behavior. (019cabbd-8be2-7f00-ba1e-0856ed6096dc)
-- 2026-03-01: Added deterministic best-effort 👍 reactions for allowlisted plain-comment approval signals during `WAITING_ON_REVIEW` polling. (019cab4c-0485-7542-b9eb-ff1c83ca0942)
-- 2026-03-01: Documented `run.json.stream_logs_stdout` persistence as the effective log-streaming snapshot loaded from runtime config/env fallbacks. (019cab67-3061-7ce1-81c1-e30f80798fb0)
-- 2026-03-01: Switched initial PR discovery to deterministic `${LOOPS_RUN_DIR}/push-pr.url` artifact consumption and removed stdout PR URL parsing in `RUNNING` turns. (019cab67-3061-7ce1-81c1-e30f80798fb0)
-- 2026-03-01: Switched runtime config transport to run-scoped `inner_loop_runtime_config.json`; env variables remain fallback inputs when runtime config omits keys or is unavailable. (019caae6-1189-7d83-a9cd-1665818fba36)
-- 2026-03-01: Updated prompt contract notes to require posting `a-review` output and `ag-judge` verdict/scores to PR comments. (019caaa4-f4d8-7822-a0d0-03315986d5ef)
-- 2026-03-01: Updated review-allowlist config references to `task_provider_config.allowlist` for config schema v2 alignment. (019caa8b-0807-7603-a519-4a6be2b8e53c)
-- 2026-03-01: Added provider-driven review-actor filtering (`task_provider_config.allowlist`) to inner-loop review polling semantics. (019caa52-baf6-7913-b365-3c89049a5716)
-- 2026-02-28: Removed configurable log timestamp precision; inner-loop log timestamps are local no-timezone format with fixed fractional precision. (019ca742-f800-78a3-a5f3-11d807a04164)
-- 2026-02-28: Added base-prompt guardrail that forbids `gen-notifier` skill usage while running inside loops. (019ca742-f800-78a3-a5f3-11d807a04164)
-- 2026-02-28: Clarified `PR_APPROVED` derivation to keep manual approval path unchanged and add conditional auto-approve path only when review is not already approved, CI is green, and `auto_approve_enabled` is true. (019ca742-f800-78a3-a5f3-11d807a04164)
-- 2026-02-28: Simplified auto-approve flow to keep old state topology and run CI + one-time `$ag-judge` gating inline within `WAITING_ON_REVIEW`, with judgement stored on `RunRecord.auto_approve`. (019ca742-f800-78a3-a5f3-11d807a04164)
-- 2026-02-28: Documented prompt contract forbidding in-turn human-review waiting and limiting in-turn waiting to `a-review` subagent completion. (019ca6dd-2edd-75c0-91e9-96d280d202ac)
-- 2026-02-28: Refactored flow sudocode to match kernel+dispatch runtime structure (`run_inner_loop` dispatching to per-state handlers). (019ca688-39ba-7f12-9fba-23a0aeac144c)
-- 2026-02-28: Documented bounded idle escalation in `PR_APPROVED` merge polling and aligned pseudocode with the runtime guardrail. (019ca583-faf1-7f72-95c8-b8e9cdd16046)
-- 2026-02-16: Created inner-loop flow doc for runtime state-machine behavior and integration points. (019c6863-d581-7f83-9809-fabbefa042e8)
-- 2026-02-17: Documented allowlisted comment-based approval detection and ordering guard against newer changes-requested reviews. (019c68ed-a6c5-78e0-891a-6b70a1a1450c)
-- 2026-02-17: Updated flow to use run-scoped `inner_loop_approval_config.json` transport instead of env-based approval settings. (019c68ed-a6c5-78e0-891a-6b70a1a1450c)
-- 2026-02-17: Updated inner-loop pseudocode to reflect run-scoped approval config loading and context-aware PR polling path. (019c68ed-a6c5-78e0-891a-6b70a1a1450c)
-- 2026-02-19: Added built-in handoff handler flow (`stdin_handler` and `gh_comment_handler`) including GitHub issue comment handoff state tracking. (019c747a-a05e-7be1-b09d-66c5debb37c4)
-- 2026-02-28: Documented `LOOPS_STREAM_LOGS_STDOUT` behavior for sync-mode mirroring of inner-loop `run.log` lines to stdout. (019ca579-eb69-7883-a6a5-ff48348ca2ab)
-- 2026-02-28: Updated review-feedback flow to include new plain PR comment signals in `WAITING_ON_REVIEW` resume logic. (019ca579-eb69-7883-a6a5-ff48348ca2ab)
-- 2026-02-28: Updated review-feedback flow to select the newest feedback timestamp across `COMMENTED` PR reviews and plain PR comments. (019ca579-eb69-7883-a6a5-ff48348ca2ab)
-- 2026-02-28: Expanded allowlisted approval-pattern matching to include `COMMENTED`/`APPROVED` review bodies in addition to plain PR comments. (019ca579-eb69-7883-a6a5-ff48348ca2ab)
-- 2026-02-28: Documented Codex session continuity contract (`codex exec resume <session_id>` on follow-up turns when supported by `CODEX_CMD`). (019ca57b-2249-72f2-b89a-13a186f6c753)
+- 2026-03-15: Simplified the inner-loop flow doc into the current phase-based template and re-verified state ordering, handlers, hooks, and handoff behavior against current code. (019cf3e3-b2c2-7e12-b2cd-cf186f3b4db3)
